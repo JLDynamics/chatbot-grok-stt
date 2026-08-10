@@ -5,14 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "speech-to-speech"
 version = "0.2.12"
-description = "Low-latency speech-to-speech pipeline"
+description = "Personal local voice chatbot with long-term memory"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
-    { name = "Hugging Face" },
+    { name = "Jack" },
 ]
+# Built on huggingface/speech-to-speech (Apache-2.0). The original copyright
+# notice lives in LICENSE; this field records who maintains *this* fork.
 keywords = ["speech-to-speech", "voice-agents", "speech-recognition", "text-to-speech", "openai"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -87,9 +89,9 @@ whisper-mlx = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/huggingface/speech-to-speech"
-Repository = "https://github.com/huggingface/speech-to-speech"
-Issues = "https://github.com/huggingface/speech-to-speech/issues"
+Homepage = "https://github.com/JLDynamics/chatbot"
+Repository = "https://github.com/JLDynamics/chatbot"
+Issues = "https://github.com/JLDynamics/chatbot/issues"
 
 [project.scripts]
 speech-to-speech = "speech_to_speech.cli:main"
