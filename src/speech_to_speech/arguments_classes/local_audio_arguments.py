@@ -22,6 +22,16 @@ class LocalAudioArguments:
             "help": "Pause local microphone capture while audio is playing. Disabled by default so barge-in works."
         },
     )
+    local_audio_barge_in_level: float = field(
+        default=0.0,
+        metadata={
+            "help": "Level-gated barge-in, for speaker setups where the mic hears the assistant. "
+            "Only meaningful with --local_audio_block_mic_during_playback. During playback, mic audio "
+            "is forwarded only when its peak exceeds this value (0.0-1.0), so the assistant's own "
+            "voice bleeding into the mic is ignored while your louder, closer speech still interrupts. "
+            "0.0 (default) keeps the all-or-nothing behaviour. Typical speaker setups: 0.2-0.4."
+        },
+    )
     local_audio_print_json: bool = field(
         default=False,
         metadata={"help": "Print raw Realtime events received by the packaged local audio client."},

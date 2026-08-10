@@ -309,10 +309,8 @@ def check_mac_settings(module_kwargs: ModuleArguments) -> None:
             logger.warning(
                 "For macOS users, it is recommended to use mlx-lm. You can activate it by passing --llm_backend mlx-lm."
             )
-        if module_kwargs.tts not in ("pocket", "kokoro", "qwen3"):
-            logger.warning(
-                "For macOS users, it is recommended to use qwen3 for TTS (pocket and kokoro are also valid options)."
-            )
+        if module_kwargs.tts != "qwen3":
+            logger.warning("For macOS users, it is recommended to use qwen3 for TTS.")
 
 
 def prepare_module_args(module_kwargs: ModuleArguments, llm_backend: BackendSelection) -> None:
@@ -598,6 +596,7 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
             output_device=local_audio.local_audio_output_device,
             print_json=local_audio.local_audio_print_json,
             block_mic_during_playback=local_audio.local_audio_block_mic_during_playback,
+            barge_in_level=local_audio.local_audio_barge_in_level,
         ),
     )
     return ThreadManager([*server_manager.handlers, client])

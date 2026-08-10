@@ -115,6 +115,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         language: str = "auto",
         speaker: Optional[str] = "Aiden",
         instruct: Optional[str] = None,
+        temperature: float = 0.9,
         xvec_only: bool = False,
         parity_mode: bool = False,
         non_streaming_mode: bool | None = True,
@@ -137,6 +138,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.language = self._normalize_language(language)
         self.speaker = speaker
         self.instruct = instruct
+        self.temperature = float(temperature)
         self.xvec_only = xvec_only
         self.parity_mode = parity_mode
         self.non_streaming_mode = non_streaming_mode
@@ -932,6 +934,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                 speaker=speaker,
                 language=self.language,
                 instruct=self.instruct,
+                temperature=self.temperature,
             )
             return
 

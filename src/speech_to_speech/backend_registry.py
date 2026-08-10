@@ -17,7 +17,6 @@ from speech_to_speech.arguments_classes.facebookmms_tts_arguments import Faceboo
 from speech_to_speech.arguments_classes.faster_whisper_stt_arguments import (
     FasterWhisperSTTHandlerArguments,
 )
-from speech_to_speech.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from speech_to_speech.arguments_classes.language_model_arguments import LanguageModelHandlerArguments
 from speech_to_speech.arguments_classes.mlx_audio_whisper_arguments import (
     MLXAudioWhisperSTTHandlerArguments,
@@ -26,7 +25,6 @@ from speech_to_speech.arguments_classes.paraformer_stt_arguments import Paraform
 from speech_to_speech.arguments_classes.parakeet_tdt_arguments import (
     ParakeetTDTSTTHandlerArguments,
 )
-from speech_to_speech.arguments_classes.pocket_tts_arguments import PocketTTSHandlerArguments
 from speech_to_speech.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandlerArguments
 from speech_to_speech.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
@@ -434,32 +432,6 @@ TTS_BACKENDS = build_backend_registry(
                 context_kwargs=True,
             ),
             normalize_config=_normalize_facebook_mms_config,
-        ),
-        BackendSpec(
-            "pocket",
-            "tts",
-            PocketTTSHandlerArguments,
-            _simple_handler_factory(
-                "speech_to_speech.TTS.pocket_tts_handler",
-                "PocketTTSHandler",
-                setup_should_listen=True,
-                context_kwargs=True,
-            ),
-            config_prefix="pocket_tts",
-            required_extra="pocket",
-        ),
-        BackendSpec(
-            "kokoro",
-            "tts",
-            KokoroTTSHandlerArguments,
-            _simple_handler_factory(
-                "speech_to_speech.TTS.kokoro_handler",
-                "KokoroTTSHandler",
-                setup_should_listen=True,
-                context_kwargs=True,
-            ),
-            config_prefix="kokoro",
-            required_extra="kokoro",
         ),
         BackendSpec(
             "qwen3",

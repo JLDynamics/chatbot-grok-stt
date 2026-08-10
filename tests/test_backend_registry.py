@@ -208,9 +208,9 @@ def test_parser_carries_only_selected_normalized_configs():
             "--llm_gen_max_new_tokens",
             "64",
             "--tts",
-            "pocket",
-            "--pocket_tts_voice",
-            "alba",
+            "facebookMMS",
+            "--tts_language",
+            "en",
         ]
     )
 
@@ -222,8 +222,8 @@ def test_parser_carries_only_selected_normalized_configs():
     }
     assert args.llm_backend.name == "transformers"
     assert args.llm_backend.config["gen_kwargs"]["max_new_tokens"] == 64
-    assert args.tts_backend.name == "pocket"
-    assert args.tts_backend.config["voice"] == "alba"
+    assert args.tts_backend.name == "facebookMMS"
+    assert args.tts_backend.config["language"] == "en"
     assert not hasattr(args, "whisper_stt_handler_kwargs")
     assert not hasattr(args, "qwen3_tts_handler_kwargs")
 
@@ -329,8 +329,8 @@ def test_parser_warning_ignores_known_options_for_inactive_backends(caplog):
             "--language=auto",
             "--tts",
             "qwen3",
-            "--pocket_tts_voice",
-            "alba",
+            "--chat_tts_chunk_size",
+            "256",
         ]
     )
 
@@ -338,10 +338,10 @@ def test_parser_warning_ignores_known_options_for_inactive_backends(caplog):
     assert args.tts_backend.name == "qwen3"
     assert args.stt_backend.config["language"] is None
     assert "mlx_audio_whisper_model_name" not in args.stt_backend.config
-    assert "pocket_tts_voice" not in args.tts_backend.config
+    assert "chat_tts_chunk_size" not in args.tts_backend.config
     assert "--language" in caplog.text
     assert "--mlx_audio_whisper_model_name" in caplog.text
-    assert "--pocket_tts_voice" in caplog.text
+    assert "--chat_tts_chunk_size" in caplog.text
     assert "unused/whisper" not in caplog.text
 
 

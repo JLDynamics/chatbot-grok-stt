@@ -19,6 +19,7 @@ from threading import Event, Lock
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+import numpy as np
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class RealtimeAudioClientConfig:
     voice: Optional[str] = None
     print_json: bool = False
     block_mic_during_playback: bool = False
+    barge_in_level: float = 0.0
     connection_retry_timeout_s: float = 30.0
 
 
@@ -342,7 +344,19 @@ async def _run_audio_session(
         if status:
             logger.warning("Microphone status: %s", status)
         if config.block_mic_during_playback and playback.is_active():
-            return
+            # On speakers the mic hears the assistant, and Silero scores that bleed as
+            # speech no matter how quiet it is -- so amplitude, not the VAD threshold,
+            # is the only thing that separates the user from the echo. With a level set,
+            # forward only chunks louder than it: the user's closer voice interrupts,
+            # the bleed does not. Level 0 keeps the original all-or-nothing block.
+            if config.barge_in_level <= 0.0:
+                return
+            samples = np.frombuffer(indata, dtype=np.int16)
+            if samples.size == 0:
+                return
+            peak = float(np.abs(samples).max()) / 32768.0
+            if peak < config.barge_in_level:
+                return
         try:
             mic_queue.put_nowait(bytes(indata))
         except Full:

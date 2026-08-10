@@ -2719,3 +2719,55 @@ body.cam-on .footer {
   .footer { display: none; }
   .circle { width: clamp(120px, min(50vw, 46vh), 240px); }
 }
+
+/* ── Orb brightness ─────────────────────────────────────────────────────────
+ * The orb is the interface (it is the start button), so it cannot be removed --
+ * but its glow is harsh in a dim room. --orb-brightness scales every layer at
+ * once: 1 = original, 0.6 = softer, 0.35 = very dim. It composes with the
+ * per-state colour/opacity animations rather than overriding them, because
+ * nothing else sets `filter` on .circle.
+ */
+:root { --orb-brightness: 0.6; }
+.circle { filter: brightness(var(--orb-brightness, 1)); }
+
+/* ── Memory list (Settings) ─────────────────────────────────────────────── */
+.memories-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.memories-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-secondary, #b6b6c2);
+  background: var(--bg-elev, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+.memories-list .memories-empty {
+  background: none;
+  border: none;
+  opacity: 0.6;
+  justify-content: flex-start;
+}
+.memory-delete {
+  flex: none;
+  border: none;
+  background: none;
+  color: inherit;
+  opacity: 0.55;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.memory-delete:hover { opacity: 1; }

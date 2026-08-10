@@ -45,6 +45,9 @@ import asyncio
 import json
 import logging
 import os
+import re
+from datetime import datetime, timezone
+from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import auth
@@ -56,8 +59,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 logger = logging.getLogger("s2s.search")
+# uvicorn leaves the root logger at WARNING, which would swallow the per-search
+# diagnostic below. That line is the only way to tell "no key reached the server"
+# from "the provider rejected the key", so it has to be visible.
+logger.setLevel(logging.INFO)
 
 SERPER_KEY = os.environ.get("SERPER_API_KEY", "").strip()
+# Tavily is an alternative search backend. Its free tier renews monthly, where
+# Serper's free credits are a one-off allocation, so it suits a permanently free
+# setup better. Either key works: the provider is chosen from the key's shape
+# (Tavily keys start with "tvly-"), so a user can paste either one into the same
+# Settings field with no extra UI.
+TAVILY_KEY = os.environ.get("TAVILY_API_KEY", "").strip()
 # Speech-to-speech load balancer URL. When set, the browser POSTs /api/session
 # (which proxies <lb>/session here, server-side) and connects to the URL the LB
 # returns (the original flow). The LB address itself is never sent to the browser.
@@ -129,6 +142,8 @@ def _webrtc_calls_url(s2s_url: str) -> str:
 
 
 SERPER_URL = "https://google.serper.dev/search"
+TAVILY_URL = "https://api.tavily.com/search"
+TAVILY_KEY_PREFIX = "tvly-"
 # Cap results so the tool output stays small enough to feed back to the model.
 MAX_RESULTS = 5
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -173,7 +188,7 @@ def config():
     whether HF sign-in is available, and whether the user may instead set a direct
     s2s server URL. The LB address itself is intentionally NOT included."""
     return {
-        "search": bool(SERPER_KEY),
+        "search": bool(SERPER_KEY or TAVILY_KEY),
         "lb": bool(LOAD_BALANCER_URL),
         "allowDirect": not LOAD_BALANCER_URL,
         # Deploy-pinned direct s2s URL (empty when unset). Not a secret: the
@@ -214,6 +229,26 @@ async def me(request: Request):
     return resp
 
 
+def _clean_key(raw: Optional[str]) -> str:
+    """Normalise a pasted API key.
+
+    People paste what they were given, and what they are usually given is a
+    shell line: `export TAVILY_API_KEY=tvly-...`. Pasted whole, that key starts
+    with "expor", so provider detection sends it to the wrong service and the
+    error says "Unauthorized" rather than "you pasted the wrong thing". Strip an
+    `export`/`set` prefix, a `NAME=` assignment, and surrounding quotes.
+    """
+    key = (raw or "").strip()
+    if not key:
+        return ""
+    key = re.sub(r"^\s*(?:export|set)\s+", "", key, flags=re.IGNORECASE)
+    key = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*\s*=\s*", "", key)
+    key = key.strip().strip("'\"").strip()
+    # A key never contains whitespace; if something else trailed along, keep the
+    # first token rather than sending the whole line upstream.
+    return key.split()[0] if key.split() else ""
+
+
 @app.post("/api/search")
 async def search(req: SearchRequest):
     """Proxy a Google search via Serper.dev. The key stays on the server unless
@@ -222,28 +257,68 @@ async def search(req: SearchRequest):
     if not query:
         raise HTTPException(status_code=400, detail="Empty query.")
 
-    key = (req.key or "").strip() or SERPER_KEY
+    user_key = _clean_key(req.key)
+    key = user_key or SERPER_KEY or TAVILY_KEY
     if not key:
         # No server key and the user didn't supply one — search is unavailable.
+        # Logged, not just raised: silent 503s make this look like a broken tool
+        # when the real cause is simply that no key reached the server.
+        logger.warning(
+            "search: no key available (browser sent none, no SERPER_API_KEY/TAVILY_API_KEY set)"
+        )
         raise HTTPException(status_code=503, detail="Search is not configured.")
 
-    headers = {"X-API-KEY": key, "Content-Type": "application/json"}
-    payload = {"q": query, "num": MAX_RESULTS}
+    # Pick the provider from the key itself, so either kind can be pasted into
+    # the same Settings box without a provider dropdown.
+    is_tavily = key.startswith(TAVILY_KEY_PREFIX)
+    provider = "Tavily" if is_tavily else "Serper"
+    # Never log the key itself -- only enough to tell a wrong-provider or
+    # truncated-paste problem from a genuine auth failure.
+    # WARNING, not INFO: uvicorn's root handler drops INFO records, and this one
+    # line is what distinguishes "no key reached the server" from "the provider
+    # rejected the key". One line per search is a fair price for that.
+    logger.warning(
+        "search: provider=%s source=%s key_len=%d prefix=%r query=%r",
+        provider,
+        "browser" if user_key else "server-env",
+        len(key),
+        key[:5],
+        query[:60],
+    )
+
+    if is_tavily:
+        url = TAVILY_URL
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        payload = {
+            "query": query,
+            "max_results": MAX_RESULTS,
+            # Tavily can return a synthesised answer, matching Serper's answerBox
+            # so the model gets the same shape either way.
+            "include_answer": True,
+        }
+    else:
+        url = SERPER_URL
+        headers = {"X-API-KEY": key, "Content-Type": "application/json"}
+        payload = {"q": query, "num": MAX_RESULTS}
+
     try:
         async with httpx.AsyncClient(timeout=12.0) as http:
-            resp = await http.post(SERPER_URL, headers=headers, json=payload)
+            resp = await http.post(url, headers=headers, json=payload)
     except httpx.RequestError as exc:
-        logger.warning("Serper unreachable: %r", exc)
+        logger.warning("%s unreachable: %r", provider, exc)
         raise HTTPException(status_code=502, detail="Search provider unreachable.")
 
     if resp.status_code != 200:
-        # Serper's error body carries the real reason (e.g. "Not enough
+        # The provider's error body carries the real reason (e.g. "Not enough
         # credits") and contains no key, so it's safe to log and relay.
         body = resp.text[:300]
-        logger.warning("Serper error %s: %s", resp.status_code, body)
+        logger.warning("%s error %s: %s", provider, resp.status_code, body)
         msg = None
         try:
-            msg = resp.json().get("message")
+            payload_err = resp.json()
+            msg = payload_err.get("message") or payload_err.get("detail") or payload_err.get("error")
+            if isinstance(msg, dict):
+                msg = msg.get("message")
         except Exception:
             pass
         detail = f"Search provider error ({resp.status_code})"
@@ -253,23 +328,135 @@ async def search(req: SearchRequest):
 
     data = resp.json()
     results = []
-    for item in (data.get("organic") or [])[:MAX_RESULTS]:
-        results.append(
-            {
-                "title": item.get("title", ""),
-                "snippet": item.get("snippet", ""),
-                "url": item.get("link", ""),
-            }
-        )
+    if is_tavily:
+        for item in (data.get("results") or [])[:MAX_RESULTS]:
+            results.append(
+                {
+                    "title": item.get("title", ""),
+                    # Tavily calls the excerpt "content"; trim it so tool output
+                    # stays small enough to feed back to the model.
+                    "snippet": (item.get("content") or "")[:300],
+                    "url": item.get("url", ""),
+                }
+            )
+        answer = data.get("answer") or None
+    else:
+        for item in (data.get("organic") or [])[:MAX_RESULTS]:
+            results.append(
+                {
+                    "title": item.get("title", ""),
+                    "snippet": item.get("snippet", ""),
+                    "url": item.get("link", ""),
+                }
+            )
 
-    # A direct answer when Google has one — saves the model a hop.
-    box = data.get("answerBox") or {}
-    answer = box.get("answer") or box.get("snippet") or None
-    if not answer:
-        kg = data.get("knowledgeGraph") or {}
-        answer = kg.get("description") or None
+        # A direct answer when Google has one — saves the model a hop.
+        box = data.get("answerBox") or {}
+        answer = box.get("answer") or box.get("snippet") or None
+        if not answer:
+            kg = data.get("knowledgeGraph") or {}
+            answer = kg.get("description") or None
 
     return JSONResponse({"query": query, "answer": answer, "results": results})
+
+
+# ── Memories ────────────────────────────────────────────────────────────────
+#
+# Long-term memory for the voice agent. The model calls the client-side
+# `remember`/`forget` tools; the client POSTs here; every new session loads the
+# stored facts into its instructions. Deliberately a flat JSON file, not a
+# vector store: one user's durable facts number in the dozens, where "search"
+# is just "read them all into the prompt".
+
+MEMORIES_PATH = os.path.expanduser(
+    os.environ.get("S2S_MEMORIES_PATH", "~/.speech-to-speech/memories.json")
+)
+_memories_lock = asyncio.Lock()
+
+
+def _load_memories() -> list[dict]:
+    try:
+        with open(MEMORIES_PATH) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_memories(items: list[dict]) -> None:
+    os.makedirs(os.path.dirname(MEMORIES_PATH), exist_ok=True)
+    tmp = MEMORIES_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(items, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, MEMORIES_PATH)
+
+
+class MemoryRequest(BaseModel):
+    text: str
+
+
+@app.get("/api/memories")
+async def list_memories():
+    async with _memories_lock:
+        return JSONResponse({"memories": _load_memories()})
+
+
+@app.post("/api/memories")
+async def add_memory(req: MemoryRequest):
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty memory.")
+    if len(text) > 500:
+        text = text[:500]
+    async with _memories_lock:
+        items = _load_memories()
+        # Exact-duplicate guard so "remember X" twice doesn't double-store.
+        for item in items:
+            if item.get("text", "").strip().lower() == text.lower():
+                return JSONResponse({"memory": item, "duplicate": True})
+        record = {
+            "id": max((int(i.get("id", 0)) for i in items), default=0) + 1,
+            "text": text,
+            "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        }
+        items.append(record)
+        _save_memories(items)
+    return JSONResponse({"memory": record, "duplicate": False})
+
+
+@app.delete("/api/memories/{memory_id}")
+async def delete_memory(memory_id: int):
+    async with _memories_lock:
+        items = _load_memories()
+        kept = [i for i in items if int(i.get("id", -1)) != memory_id]
+        if len(kept) == len(items):
+            raise HTTPException(status_code=404, detail="No such memory.")
+        _save_memories(kept)
+    return JSONResponse({"ok": True})
+
+
+class ForgetRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/memories/forget")
+async def forget_memory(req: ForgetRequest):
+    """Voice-friendly delete: match by content, since the model speaks in
+    facts ("forget my sister's birthday"), not in row ids."""
+    needle = (req.text or "").strip().lower()
+    if not needle:
+        raise HTTPException(status_code=400, detail="Empty forget request.")
+    async with _memories_lock:
+        items = _load_memories()
+        matches = [
+            i for i in items
+            if needle in i.get("text", "").lower() or i.get("text", "").lower() in needle
+        ]
+        if not matches:
+            return JSONResponse({"forgotten": [], "remaining": len(items)})
+        kept = [i for i in items if i not in matches]
+        _save_memories(kept)
+    return JSONResponse({"forgotten": [m["text"] for m in matches], "remaining": len(kept)})
 
 
 @app.post("/api/calls")

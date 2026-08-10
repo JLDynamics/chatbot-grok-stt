@@ -22,6 +22,15 @@ class Qwen3TTSHandlerArguments:
             "help": "Data type for inference. Options: 'auto', 'float16', 'bfloat16', 'float32'. Default is 'auto'."
         },
     )
+    qwen3_tts_temperature: float = field(
+        default=0.9,
+        metadata={
+            "help": "Sampling temperature for speech generation. Lower values make pitch and pacing "
+            "more consistent from one utterance to the next; higher values are more expressive but "
+            "each reply can land at a noticeably different pitch. Default is 0.9 (the model default). "
+            "0.5 measured ~2x steadier reply-to-reply pitch on Apple Silicon."
+        },
+    )
     qwen3_tts_attn_implementation: str = field(
         default="eager",
         metadata={

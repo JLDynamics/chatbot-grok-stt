@@ -97,7 +97,7 @@ def test_mac_optimal_settings_preserves_explicit_component_overrides():
             "--llm_backend",
             "transformers",
             "--tts",
-            "kokoro",
+            "chatTTS",
             "--model_name",
             "custom/transformers-model",
         ]
@@ -108,7 +108,7 @@ def test_mac_optimal_settings_preserves_explicit_component_overrides():
     assert args.module_kwargs.device == "cpu"
     assert args.module_kwargs.stt == "whisper"
     assert args.module_kwargs.llm_backend == "transformers"
-    assert args.module_kwargs.tts == "kokoro"
+    assert args.module_kwargs.tts == "chatTTS"
     assert args.llm_backend.config["device"] == "cpu"
     assert args.llm_backend.config["model_name"] == "custom/transformers-model"
     assert args.tts_backend.config["device"] == "cpu"

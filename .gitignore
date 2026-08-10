@@ -229,3 +229,5 @@ dmypy.json
 cover/
 .tox/
 uv.lock
+# macOS Finder metadata
+.DS_Store

@@ -72,7 +72,6 @@ Any OpenAI Realtime-compatible client can connect. See [Realtime API](#realtime-
 * [Realtime API](#realtime-api)
 * [LLM backends](#llm-backends)
 * [Multi-language support](#multi-language-support)
-* [Pocket TTS](#pocket-tts)
 * [CLI reference](#cli-reference)
 * [Contributing](#contributing)
 * [Star history](#star-history)
@@ -133,8 +132,6 @@ To use the previous CUDA-graphs implementation instead of GGML, pass `--qwen3_tt
 Optional components are installed with pip extras:
 
 ```bash
-pip install "speech-to-speech[kokoro]"          # Kokoro-82M TTS on non-macOS
-pip install "speech-to-speech[pocket]"          # Pocket TTS
 pip install "speech-to-speech[chattts]"         # ChatTTS
 pip install "speech-to-speech[faster-whisper]"  # Faster Whisper STT
 pip install "speech-to-speech[whisper-mlx]"     # Lightning Whisper MLX STT on macOS
@@ -144,7 +141,7 @@ pip install "speech-to-speech[mlx-lm]"          # mlx-vlm support for vision mod
 
 Deprecated implementations, including MeloTTS, live in [`archive/`](./archive) and are no longer wired into the CLI.
 
-**Note on DeepFilterNet:** DeepFilterNet, used for optional audio enhancement in VAD, requires `numpy<2` and conflicts with Pocket TTS, which requires `numpy>=2`. Install it manually only in environments where you are not using Pocket TTS.
+**Note on DeepFilterNet:** DeepFilterNet, used for optional audio enhancement in VAD, requires `numpy<2`. Install it manually if you want audio enhancement.
 
 ### From Source
 
@@ -171,8 +168,6 @@ This installs the package in editable mode and makes the `speech-to-speech` CLI 
 | LLM | [Transformers](https://huggingface.co/models?pipeline_tag=text-generation&sort=trending) | CUDA / CPU | built-in |
 | LLM | [mlx-lm](https://github.com/ml-explore/mlx-lm) | Apple Silicon | built-in on macOS |
 | TTS | [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice) (default) | GGML / CUDA on Linux, mlx-audio on macOS | built-in |
-| TTS | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) | CUDA / CPU, Apple Silicon | `kokoro` on non-macOS; built-in on macOS |
-| TTS | [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) | CPU / CUDA | `pocket` |
 | TTS | [ChatTTS](https://github.com/2noise/ChatTTS) | CUDA / CPU | `chattts` |
 | TTS | [MMS TTS](https://huggingface.co/docs/transformers/model_doc/mms) | CUDA / CPU | built-in |
 
@@ -244,7 +239,6 @@ This setting:
 
 The preset supplies these as defaults only: explicit `--device`, component-device flags such as `--qwen3_tts_device`, and `--stt`, `--llm_backend`, `--model_name`, and `--tts` all win. Use it with `serve` instead of `local` when you want to expose the server without starting the microphone/speaker client.
 
-`--tts pocket` and `--tts kokoro` are also valid on macOS.
 
 To compare the MLX quantization variants locally:
 
@@ -515,7 +509,6 @@ Language coverage depends on the STT and TTS backends you pick, not on the pipel
 | STT | Whisper / Whisper MLX / Faster Whisper | Broad multilingual coverage, depending on the selected Whisper checkpoint |
 | STT | Paraformer | Depends on the selected FunASR checkpoint; the default is Chinese-oriented |
 | TTS | Qwen3-TTS (default) | Multilingual, with `--qwen3_tts_language auto` by default |
-| TTS | Kokoro | Multiple language/voice mappings, depending on backend availability |
 | TTS | ChatTTS | English and Chinese |
 | TTS | MMS TTS | Broad multilingual coverage through MMS checkpoints |
 
@@ -547,18 +540,6 @@ speech-to-speech serve \
 
 Both commands also work with `--mac-optimal-settings`; explicit `--stt` flags override the defaults it sets.
 
-## Pocket TTS
-
-Pocket TTS from Kyutai Labs provides streaming TTS with voice cloning:
-
-```bash
-speech-to-speech serve \
-    --tts pocket \
-    --pocket_tts_voice jean \
-    --pocket_tts_device cpu
-```
-
-Available voice presets: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`. Custom voice files and Hugging Face paths also work.
 
 ## CLI Reference
 
@@ -687,4 +668,4 @@ If you use this pipeline, please also cite the component models you run. The def
 }
 ```
 
-Citations for optional backends such as Kokoro, Pocket TTS, ChatTTS, Whisper variants, Paraformer, and MMS live in the respective [component READMEs](./src/speech_to_speech).
+Citations for optional backends such as ChatTTS, Whisper variants, Paraformer, and MMS live in the respective [component READMEs](./src/speech_to_speech).

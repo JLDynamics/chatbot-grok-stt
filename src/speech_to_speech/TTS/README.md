@@ -6,11 +6,7 @@ Runtime-supported values in `s2s_pipeline.py`:
 
 - `chatTTS` → `chatTTS_handler.py`
 - `facebookMMS` → `facebookmms_handler.py`
-- `pocket` → `pocket_tts_handler.py`
-- `kokoro` → `kokoro_handler.py`
 - `qwen3` → `qwen3_tts_handler.py`
-
-Deprecated TTS implementations, including MeloTTS, live in [`../../../archive/TTS`](../../../archive/TTS) and are no longer wired into `s2s_pipeline.py`.
 
 ## Usage
 
@@ -39,39 +35,7 @@ speech-to-speech serve \
 
 This handler maps STT language codes (e.g. `en`, `fr`, `es`) to MMS model suffixes (e.g. `eng`, `fra`, `spa`) and reloads the model on language changes.
 
-### 3) Pocket TTS (`--tts pocket`)
-
-Primary args prefix: `--pocket_tts_*`
-
-```bash
-speech-to-speech serve \
-  --tts pocket \
-  --pocket_tts_voice jean \
-  --pocket_tts_device cpu \
-  --pocket_tts_sample_rate 16000
-```
-
-Available preset voices include:
-`alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`.
-
-### 4) Kokoro (`--tts kokoro`)
-
-Primary args prefix: `--kokoro_*`
-
-```bash
-speech-to-speech serve \
-  --tts kokoro \
-  --kokoro_device auto \
-  --kokoro_voice bm_fable \
-  --kokoro_lang_code b
-```
-
-Behavior:
-- Uses MLX backend on Apple Silicon (`mlx-community/Kokoro-82M-bf16`)
-- Uses native kokoro pipeline otherwise (`hexgrad/Kokoro-82M`)
-- Can auto-switch voice/language based on STT language code mapping
-
-### 5) Qwen3-TTS (`--tts qwen3`)
+### 3) Qwen3-TTS (`--tts qwen3`)
 
 Primary args prefix: `--qwen3_tts_*`
 
@@ -195,7 +159,7 @@ This will run separate benchmark entries for `qwen3[bf16]`, `qwen3[4bit]`, `qwen
 ```bash
 speech-to-speech serve \
   --stt whisper \
-  --tts pocket
+  --tts qwen3
 ```
 
 ### Apple Silicon setup
@@ -205,4 +169,3 @@ speech-to-speech local \
   --mac-optimal-settings
 ```
 
-`--tts pocket` and `--tts kokoro` are also valid options on macOS.

@@ -24,7 +24,26 @@ import { ChatView } from "./ui/chat.js";
 import { Account } from "./ui/account.js";
 
 const DEFAULT_VOICE = "Aiden";
+// Written for speech, not text. The rules that matter for TTS: no lists, no
+// markdown, short sentences (each sentence is a TTS batch), spoken-style
+// numbers. The rules that matter for engagement: react before adding, real
+// opinions, no filler praise, follow-up questions sometimes but not always.
 const DEFAULT_INSTRUCTIONS =
+  "You are a sharp, warm conversation partner talking out loud with Jack. " +
+  "Speak like a person, not an assistant: contractions, everyday words, short sentences. " +
+  "No lists, no markdown, no emoji. Everything you say is read aloud. " +
+  "Usually answer in one to three sentences. Go longer only when the topic truly needs it or Jack asks. " +
+  "React to what Jack actually said before adding your own thought. " +
+  "When it feels natural, end with one short question that moves things forward, but not every turn. " +
+  "Have opinions: if asked what you think, say it plainly and give your reason. " +
+  "Never say 'great question', never flatter, never pad with disclaimers. " +
+  "If you don't know something, say so in one sentence. " +
+  "Say numbers, dates, and units the way people speak them.";
+
+// The pre-rewrite default. If this exact string is what's stored, the user
+// never customised it — migrate them to the new default instead of pinning
+// them to the old personality forever.
+const LEGACY_DEFAULT_INSTRUCTIONS =
   "You are a friendly voice assistant. " +
   "Keep replies short, warm, and spoken. Avoid long monologues.";
 
@@ -44,6 +63,8 @@ const STORAGE_KEYS = {
   voice: "s2s.ws.voice",
   instructions: "s2s.ws.instructions",
   tools: "s2s.ws.tools",
+  // Marks that the one-time camera_snapshot reset in loadTools() has run.
+  camDefaultReset: "s2s.ws.camDefaultReset",
   searchKey: "s2s.ws.searchKey",
   noiseGate: "s2s.ws.noiseGate",
   // "ws" | "webrtc". Not under the historical "s2s.ws." prefix — it selects
@@ -97,6 +118,37 @@ const TOOL_DEFS = {
       "asks you to look.",
     parameters: { type: "object", properties: {}, required: [] },
   },
+  remember: {
+    type: "function",
+    name: "remember",
+    description:
+      "Save one durable fact about the user for future conversations (their name, " +
+      "job, people in their life, preferences, ongoing projects, important dates). " +
+      "Call it when the user shares something worth keeping or asks you to remember. " +
+      "State the fact in third person, e.g. 'Jack works at Costco in the Majors department'. " +
+      "Do not save small talk or things only relevant to this conversation.",
+    parameters: {
+      type: "object",
+      properties: {
+        fact: { type: "string", description: "The single fact to remember, one sentence." },
+      },
+      required: ["fact"],
+    },
+  },
+  forget: {
+    type: "function",
+    name: "forget",
+    description:
+      "Delete a previously saved memory when the user asks you to forget something " +
+      "or tells you a stored fact is wrong. Describe the memory to delete.",
+    parameters: {
+      type: "object",
+      properties: {
+        memory: { type: "string", description: "The memory to delete, described in a few words." },
+      },
+      required: ["memory"],
+    },
+  },
 };
 
 /** Longest edge of the snapshot sent to the VLM, in px (keeps payload sane). */
@@ -122,7 +174,14 @@ function loadSettings() {
   return {
     directUrl: localStorage.getItem(STORAGE_KEYS.directUrl) || "",
     voice: localStorage.getItem(STORAGE_KEYS.voice) || DEFAULT_VOICE,
-    instructions: localStorage.getItem(STORAGE_KEYS.instructions) || DEFAULT_INSTRUCTIONS,
+    instructions: (() => {
+      const stored = localStorage.getItem(STORAGE_KEYS.instructions);
+      // Saving Settings persists whatever was in the box, so most users have
+      // the old default stored without ever having chosen it. Treat that
+      // exact string as "not customised" and pick up the new default.
+      if (!stored || stored === LEGACY_DEFAULT_INSTRUCTIONS) return DEFAULT_INSTRUCTIONS;
+      return stored;
+    })(),
     noiseGate: loadGateThreshold(),
     // Default WebSocket: the proven path stays the first-run experience.
     transport: localStorage.getItem(STORAGE_KEYS.transport) === "webrtc" ? "webrtc" : "ws",
@@ -159,16 +218,25 @@ function saveSettings(s) {
 function loadTools() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.tools) || "{}");
-    // Both tools default ON (web search still only activates when a key exists).
-    // We never call getUserMedia on page load — the camera only actually starts
-    // on a user gesture (conversation start), so a default-on flag doesn't
-    // silently resume the webcam; an explicit saved `false` is respected.
+    // Web search defaults ON (it still only activates when a key exists).
+    // The camera defaults OFF: turning the webcam on is not something to opt a
+    // user into silently, and a voice conversation does not need it. Enable it
+    // per-browser in Settings -> Tools when you actually want the assistant to
+    // see something. An explicit saved `true` is respected.
+    // One-time reset: the old build auto-saved camera_snapshot:true the moment
+    // the browser permission flipped to "granted", so a stored `true` may be
+    // something the user never chose. Clear it once, then respect the setting
+    // normally from here on (the Settings toggle still works and persists).
+    if (!localStorage.getItem(STORAGE_KEYS.camDefaultReset)) {
+      localStorage.setItem(STORAGE_KEYS.camDefaultReset, "1");
+      if (raw.camera_snapshot) raw.camera_snapshot = false;
+    }
     return {
       web_search: raw.web_search ?? true,
-      camera_snapshot: raw.camera_snapshot ?? true,
+      camera_snapshot: raw.camera_snapshot ?? false,
     };
   } catch {
-    return { web_search: true, camera_snapshot: true };
+    return { web_search: true, camera_snapshot: false };
   }
 }
 
@@ -229,12 +297,15 @@ const settingsBtn = $("#settings-btn");
 /** @type {HTMLDialogElement} */
 const settingsModal = $("#settings-modal");
 
-/** @type {HTMLButtonElement} */
-const aboutBtn = $("#about-btn");
-/** @type {HTMLDialogElement} */
-const aboutModal = $("#about-modal");
-/** @type {HTMLButtonElement} */
-const aboutClose = $("#about-close");
+// The about UI was removed with the upstream branding. `$` throws on a missing
+// element (it's for wiring required UI), so these use querySelector directly —
+// null when absent, and every listener below is guarded on that.
+/** @type {HTMLButtonElement | null} */
+const aboutBtn = document.querySelector("#about-btn");
+/** @type {HTMLDialogElement | null} */
+const aboutModal = document.querySelector("#about-modal");
+/** @type {HTMLButtonElement | null} */
+const aboutClose = document.querySelector("#about-close");
 
 /** @type {HTMLButtonElement} */
 const toolsBtn = $("#tools-btn");
@@ -357,12 +428,78 @@ function activeToolDefs() {
   const defs = [];
   if (toolsEnabled.web_search && searchAvailable()) defs.push(TOOL_DEFS.web_search);
   if (toolsEnabled.camera_snapshot) defs.push(TOOL_DEFS.camera_snapshot);
+  // Memory needs no key and no toggle: an agent that silently forgets is the
+  // failure mode, not the feature.
+  defs.push(TOOL_DEFS.remember, TOOL_DEFS.forget);
   return defs;
 }
 
-/** Instructions plus the hidden tool-use hint when any tool is active. */
+// Long-term memories, loaded from the server at boot and refreshed after every
+// remember/forget. Injected into the session instructions so each new
+// conversation starts already knowing them.
+let knownMemories = [];
+
+/** Reload memories and push refreshed instructions into the live session, so a
+ *  fact remembered mid-conversation is already in context on the next turn. */
+async function refreshMemoriesIntoSession() {
+  await loadMemories();
+  if (client && LIVE_STATES.has(currentState)) {
+    client.updateSession({ instructions: effectiveInstructions() });
+  }
+}
+
+async function loadMemories() {
+  try {
+    const res = await fetch("api/memories");
+    if (res.ok) knownMemories = (await res.json()).memories || [];
+  } catch { /* server without the endpoint: memory quietly off */ }
+  renderMemoriesList();
+}
+
+/** Render the saved-memories list in Settings, with per-item delete. */
+function renderMemoriesList() {
+  const list = document.querySelector("#memories-list");
+  if (!list) return;
+  list.textContent = "";
+  if (!knownMemories.length) {
+    const li = document.createElement("li");
+    li.className = "memories-empty";
+    li.textContent = "Nothing saved yet.";
+    list.appendChild(li);
+    return;
+  }
+  for (const m of knownMemories) {
+    const li = document.createElement("li");
+    const span = document.createElement("span");
+    span.textContent = m.text;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "memory-delete";
+    del.textContent = "×";
+    del.setAttribute("aria-label", `Forget: ${m.text}`);
+    del.addEventListener("click", async () => {
+      await fetch(`api/memories/${m.id}`, { method: "DELETE" });
+      await refreshMemoriesIntoSession();
+    });
+    li.appendChild(span);
+    li.appendChild(del);
+    list.appendChild(li);
+  }
+}
+
+function memoriesBlock() {
+  if (!knownMemories.length) return "";
+  const lines = knownMemories.map((m) => `- ${m.text}`).join("\n");
+  return (
+    "\n\nThings you remember about the user from earlier conversations. " +
+    "Treat them as true unless the user corrects you, and use them naturally " +
+    "without reciting the list:\n" + lines
+  );
+}
+
+/** Instructions plus stored memories plus the tool-use hint when tools are active. */
 function effectiveInstructions() {
-  const base = settings.instructions;
+  const base = settings.instructions + memoriesBlock();
   return activeToolDefs().length ? base + TOOL_USE_HINT : base;
 }
 
@@ -613,15 +750,24 @@ mgaHit.addEventListener("pointercancel", endGateDrag);
 
 settingsBtn.addEventListener("click", openSettings);
 
-// About panel: native <dialog>, Esc closes for free; also close on the X and
-// on a click in the backdrop (a click whose target is the dialog itself).
-aboutBtn.addEventListener("click", () => aboutModal.showModal());
-// Mobile twin of the (i), living in the right-hand control cluster.
-$("#about-btn-m").addEventListener("click", () => aboutModal.showModal());
-aboutClose.addEventListener("click", () => aboutModal.close());
-aboutModal.addEventListener("click", (e) => {
-  if (e.target === aboutModal) aboutModal.close();
-});
+// About panel: removed along with the upstream branding — the buttons and the
+// dialog are gone from the HTML, so all listeners are guarded to keep the rest
+// of the boot sequence alive if any element is absent.
+if (aboutBtn && aboutModal) {
+  aboutBtn.addEventListener("click", () => aboutModal.showModal());
+}
+const aboutBtnM = document.querySelector("#about-btn-m");
+if (aboutBtnM && aboutModal) {
+  aboutBtnM.addEventListener("click", () => aboutModal.showModal());
+}
+if (aboutClose && aboutModal) {
+  aboutClose.addEventListener("click", () => aboutModal.close());
+}
+if (aboutModal) {
+  aboutModal.addEventListener("click", (e) => {
+    if (e.target === aboutModal) aboutModal.close();
+  });
+}
 
 // ── Tools panel ───────────────────────────────────────────────────────────
 
@@ -642,10 +788,10 @@ function syncToolsUi() {
   } else {
     searchKeyInput.disabled = false;
     searchKeyInput.value = userSearchKey;
-    searchKeyInput.placeholder = "Paste a Serper key to enable web search";
+    searchKeyInput.placeholder = "Paste a Serper or Tavily key to enable web search";
     toolWebHint.textContent = userSearchKey
       ? "Using your key — stored in this browser only."
-      : "No server key configured. Add your own Serper key to enable web search.";
+      : "No server key configured. Add your own Serper or Tavily key (tvly-…) to enable web search.";
   }
 }
 
@@ -706,9 +852,19 @@ searchKeyInput.addEventListener("input", () => {
     saveTools();
     pushToolsToSession();
   }
+  // ...and gaining one re-enables it. Without this the two directions are
+  // asymmetric: loading the page with no key force-saves web_search:false, so
+  // pasting a key afterwards leaves the tool silently off and the assistant
+  // keeps saying it cannot search — with no visible reason why.
+  if (avail && !toolsEnabled.web_search) {
+    toolsEnabled.web_search = true;
+    toolWebSwitch.checked = true;
+    saveTools();
+    pushToolsToSession();
+  }
   toolWebHint.textContent = userSearchKey
     ? "Using your key — stored in this browser only."
-    : "No server key configured. Add your own Serper key to enable web search.";
+    : "No server key configured. Add your own Serper or Tavily key (tvly-…) to enable web search.";
 });
 
 // ── Camera ──────────────────────────────────────────────────────────────────
@@ -764,7 +920,10 @@ async function watchCameraPermission() {
     if (!status) return;
     status.addEventListener("change", () => {
       if (status.state === "granted") {
-        if (!toolsEnabled.camera_snapshot) { toolsEnabled.camera_snapshot = true; saveTools(); }
+        // Having permission is not the same as wanting the webcam on. Granting
+        // it once used to force the tool back on and re-open the camera, which
+        // silently overrode the user's choice (and any default). Only start the
+        // camera if the tool is already enabled in Settings.
         void autoStartCamera();
         syncToolsUi();
       } else if (status.state === "denied") {
@@ -873,6 +1032,42 @@ async function runTool(name, argsJson, callId) {
         result.output = "The camera is not available right now.";
         client.sendToolOutput(callId, result.output);
       }
+    } else if (name === "remember") {
+      const fact = typeof args.fact === "string" ? args.fact.trim() : "";
+      if (!fact) {
+        result.output = "No fact provided.";
+      } else {
+        const res = await fetch("api/memories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: fact }),
+        });
+        if (res.ok) {
+          const j = await res.json();
+          result.output = j.duplicate ? "Already remembered." : "Remembered.";
+          await refreshMemoriesIntoSession();
+        } else {
+          result.output = "Could not save that memory.";
+        }
+      }
+      client.sendToolOutput(callId, result.output);
+    } else if (name === "forget") {
+      const memory = typeof args.memory === "string" ? args.memory.trim() : "";
+      const res = await fetch("api/memories/forget", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: memory }),
+      });
+      if (res.ok) {
+        const j = await res.json();
+        result.output = j.forgotten.length
+          ? `Forgotten: ${j.forgotten.join("; ")}`
+          : "No matching memory found.";
+        await refreshMemoriesIntoSession();
+      } else {
+        result.output = "Could not forget that.";
+      }
+      client.sendToolOutput(callId, result.output);
     } else {
       result.output = `Unknown tool: ${name}`;
       client.sendToolOutput(callId, result.output);
@@ -912,7 +1107,7 @@ async function execWebSearch(query) {
   // rather than its (older) training knowledge.
   const today = new Date().toISOString().slice(0, 10);
   /** @type {string[]} */
-  const lines = [`Google search result from ${today}:`];
+  const lines = [`Web search result from ${today}:`];
   if (json.answer) lines.push(`Answer: ${json.answer}`);
   for (const r of json.results || []) {
     lines.push(`- ${r.title}: ${r.snippet} (${r.url})`);
@@ -1720,6 +1915,8 @@ void fetchConfig();
 // react to later permission changes (re-grant after a denial re-enables it).
 void autoStartCamera();
 void watchCameraPermission();
+// Load long-term memories so the first session already carries them.
+void loadMemories();
 
 // Reconcile a live session if the tab is closed/hidden mid-call (no teardown).
 window.addEventListener("pagehide", () => { endTrackedSession(); endQueueTicket(); });
