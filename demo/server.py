@@ -42,11 +42,14 @@ the moment a slot is actually claimed (a grant), never while queued.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -358,6 +361,181 @@ async def search(req: SearchRequest):
             answer = kg.get("description") or None
 
     return JSONResponse({"query": query, "answer": answer, "results": results})
+
+
+# ── Web fetch ───────────────────────────────────────────────────────────────
+#
+# web_search returns titles and snippets, never page content, so the model can
+# know a URL exists and still be unable to read it. This fetches one page and
+# reduces it to plain text the model can actually reason over.
+
+FETCH_MAX_BYTES = 2_000_000     # stop pulling a page that is clearly not an article
+FETCH_MAX_CHARS = 20_000        # cap what goes into the model's context
+FETCH_TIMEOUT_S = 15.0
+
+
+class _TextExtractor(HTMLParser):
+    """Strip a page to readable text.
+
+    No bs4/lxml: this needs to run in the demo's own tiny dependency set. Good
+    enough for READMEs, docs and articles, which is what gets asked about.
+    """
+
+    SKIP = {"script", "style", "noscript", "svg", "head", "nav", "footer", "form"}
+    BREAK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article"}
+
+    MAIN = {"main", "article"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skip_depth = 0
+        self._parts: list[str] = []
+        # Collected separately: if the page marks its content region, everything
+        # outside it is navigation and sign-in chrome. GitHub spends ~2000
+        # characters on that before the README starts.
+        self._main_parts: list[str] = []
+        self._main_depth = 0
+        self.title: str | None = None
+        self._in_title = False
+
+    def _sink(self) -> list[str]:
+        return self._main_parts if self._main_depth else self._parts
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self._skip_depth += 1
+            return
+        if tag in self.MAIN or dict(attrs).get("role") == "main":
+            self._main_depth += 1
+            return
+        if tag == "title":
+            self._in_title = True
+        elif tag in self.BREAK:
+            self._sink().append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if tag in self.MAIN and self._main_depth:
+            self._main_depth -= 1
+            return
+        if tag == "title":
+            self._in_title = False
+        elif tag in self.BREAK:
+            self._sink().append("\n")
+
+    def handle_data(self, data):
+        if self._in_title and self.title is None:
+            self.title = data.strip() or None
+        if self._skip_depth:
+            return
+        text = data.strip()
+        if text:
+            self._sink().append(text + " ")
+
+    @staticmethod
+    def _clean(parts: list[str]) -> str:
+        raw = "".join(parts)
+        raw = re.sub(r"[ \t]+", " ", raw)
+        raw = re.sub(r"\n\s*\n\s*\n+", "\n\n", raw)
+        return raw.strip()
+
+    def text(self) -> str:
+        main = self._clean(self._main_parts)
+        # Only trust <main> if it actually holds the substance; some pages wrap
+        # a nav bar in <main> and put the article outside it.
+        if len(main) >= 200:
+            return main
+        return self._clean(self._parts)
+
+
+def _is_public_url(url: str) -> tuple[bool, str]:
+    """Reject anything that is not a public http(s) address.
+
+    This server runs on Jack's machine, so an unrestricted fetcher would happily
+    read localhost admin pages, the speech server itself, or LAN devices on
+    behalf of whatever a web page told the model to do.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return False, "Only http and https URLs can be fetched."
+    host = parts.hostname
+    if not host:
+        return False, "That URL has no host."
+    if host.rstrip(".").lower() in ("localhost", "localhost.localdomain"):
+        return False, "Refusing to fetch a local address."
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False, f"Could not resolve {host}."
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+            return False, "Refusing to fetch a private or loopback address."
+    return True, ""
+
+
+class FetchRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/fetch")
+async def fetch_page(req: FetchRequest):
+    url = (req.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="No URL given.")
+    if "://" not in url:
+        url = "https://" + url
+
+    ok, why = _is_public_url(url)
+    if not ok:
+        logger.warning("fetch: refused %r (%s)", url[:120], why)
+        raise HTTPException(status_code=400, detail=why)
+
+    logger.warning("fetch: %s", url[:200])
+    try:
+        async with httpx.AsyncClient(
+            timeout=FETCH_TIMEOUT_S,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; chatbot/1.0)"},
+        ) as http:
+            resp = await http.get(url)
+    except httpx.RequestError as exc:
+        logger.warning("fetch: unreachable %r", exc)
+        raise HTTPException(status_code=502, detail="Could not reach that page.")
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"That page returned {resp.status_code}.")
+
+    ctype = resp.headers.get("content-type", "")
+    body = resp.content[:FETCH_MAX_BYTES]
+
+    if "html" in ctype:
+        parser = _TextExtractor()
+        try:
+            parser.feed(body.decode(resp.encoding or "utf-8", errors="replace"))
+        except Exception:
+            raise HTTPException(status_code=502, detail="Could not parse that page.")
+        title, text = parser.title, parser.text()
+    elif "text/" in ctype or "json" in ctype or "xml" in ctype:
+        title, text = None, body.decode(resp.encoding or "utf-8", errors="replace").strip()
+    else:
+        raise HTTPException(status_code=415, detail=f"That is not a readable page ({ctype or 'unknown type'}).")
+
+    truncated = len(text) > FETCH_MAX_CHARS
+    if truncated:
+        text = text[:FETCH_MAX_CHARS]
+
+    return JSONResponse({
+        "url": str(resp.url),
+        "title": title,
+        "text": text,
+        "truncated": truncated,
+    })
 
 
 # ── Memories ────────────────────────────────────────────────────────────────

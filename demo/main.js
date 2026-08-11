@@ -134,6 +134,20 @@ const TOOL_DEFS = {
       "asks you to look.",
     parameters: { type: "object", properties: {}, required: [] },
   },
+  web_fetch: {
+    type: "function",
+    name: "web_fetch",
+    description:
+      "Open a specific web page and read its text. Use this when you have a URL " +
+      "and need what is actually ON the page — a GitHub repo, documentation, an " +
+      "article. web_search only returns short snippets; this returns the content. " +
+      "If the user is showing you a URL on their screen, read it and fetch it.",
+    parameters: {
+      type: "object",
+      properties: { url: { type: "string", description: "The full URL to open." } },
+      required: ["url"],
+    },
+  },
   screen_snapshot: {
     type: "function",
     name: "screen_snapshot",
@@ -460,6 +474,8 @@ function activeToolDefs() {
   // Only offered while a display stream is actually live — the model should not
   // be able to promise a look at a screen it has no access to.
   if (screenStream) defs.push(TOOL_DEFS.screen_snapshot);
+  // No key required, so always available.
+  defs.push(TOOL_DEFS.web_fetch);
   // Memory needs no key and no toggle: an agent that silently forgets is the
   // failure mode, not the feature.
   defs.push(TOOL_DEFS.remember, TOOL_DEFS.forget);
@@ -1143,6 +1159,27 @@ async function runTool(name, argsJson, callId) {
         result.output = "The camera is not available right now.";
         client.sendToolOutput(callId, result.output);
       }
+    } else if (name === "web_fetch") {
+      const url = typeof args.url === "string" ? args.url.trim() : "";
+      if (!url) {
+        result.output = "No URL provided.";
+      } else {
+        const res = await fetch("api/fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url }),
+        });
+        if (res.ok) {
+          const j = await res.json();
+          const head = j.title ? `${j.title}\n${j.url}` : j.url;
+          result.output = `${head}\n\n${j.text}${j.truncated ? "\n\n[truncated]" : ""}`;
+        } else {
+          let detail = String(res.status);
+          try { detail = (await res.json()).detail || detail; } catch {}
+          result.output = `Could not read that page: ${detail}`;
+        }
+      }
+      client.sendToolOutput(callId, result.output);
     } else if (name === "screen_snapshot") {
       const dataUrl = captureScreen();
       if (dataUrl) {
