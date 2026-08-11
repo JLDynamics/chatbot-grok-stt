@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="style.css?v=9" />
+    <link rel="stylesheet" href="style.css?v=10" />
   </head>
   <!--
     `booting` disables transitions/animations until the first paint commits.
@@ -121,6 +121,8 @@
     <div id="bubble-stack" class="bubble-stack" aria-live="polite" aria-atomic="false"></div>
 
     <!-- Webcam self-view, shown bottom-left while the camera tool is enabled -->
+    <video id="screen-video" autoplay playsinline muted style="display:none"></video>
+
     <div id="cam-pip" class="cam-pip" aria-hidden="true">
       <video id="cam-video" class="cam-video" autoplay playsinline muted></video>
       <span class="cam-flash" aria-hidden="true"></span>
@@ -304,6 +306,18 @@
           </div>
           <small id="tool-cam-hint" class="tool-hint">A live preview shows bottom-left while the camera is on.</small>
 
+          <div class="tool-row tool-row-sep" id="tool-screen-row">
+            <div class="tool-info">
+              <span class="tool-name">Screen</span>
+              <span class="tool-desc">Let the assistant look at your screen when you ask.</span>
+            </div>
+            <label class="switch">
+              <input id="tool-screen" type="checkbox" />
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <small id="tool-screen-hint" class="tool-hint">Off. Turn on and pick a window or screen to share.</small>
+
           <div class="tool-row tool-row-sep" id="memories-row">
             <div class="tool-info">
               <span class="tool-name">Memory</span>
@@ -333,6 +347,6 @@
       </div>
     </dialog>
 
-    <script type="module" src="main.js?v=9"></script>
+    <script type="module" src="main.js?v=10"></script>
   </body>
 </html>

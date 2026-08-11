@@ -134,6 +134,15 @@ const TOOL_DEFS = {
       "asks you to look.",
     parameters: { type: "object", properties: {}, required: [] },
   },
+  screen_snapshot: {
+    type: "function",
+    name: "screen_snapshot",
+    description:
+      "Capture what is currently on the user's screen so you can see it. Use it " +
+      "whenever they ask you to look at their screen, read something on it, or help " +
+      "with what they are looking at (an error message, a design, a page, a document).",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
   remember: {
     type: "function",
     name: "remember",
@@ -440,10 +449,17 @@ function searchAvailable() {
 }
 
 /** Tool definitions for the currently-enabled (and usable) tools. */
+/** Live display-capture stream, or null. Declared here because
+ *  activeToolDefs() below reads it, and `let` has no hoisting grace. */
+let screenStream = null;
+
 function activeToolDefs() {
   const defs = [];
   if (toolsEnabled.web_search && searchAvailable()) defs.push(TOOL_DEFS.web_search);
   if (toolsEnabled.camera_snapshot) defs.push(TOOL_DEFS.camera_snapshot);
+  // Only offered while a display stream is actually live — the model should not
+  // be able to promise a look at a screen it has no access to.
+  if (screenStream) defs.push(TOOL_DEFS.screen_snapshot);
   // Memory needs no key and no toggle: an agent that silently forgets is the
   // failure mode, not the feature.
   defs.push(TOOL_DEFS.remember, TOOL_DEFS.forget);
@@ -883,6 +899,85 @@ searchKeyInput.addEventListener("input", () => {
     : "No server key configured. Add your own Serper or Tavily key (tvly-…) to enable web search.";
 });
 
+// ── Screen sharing ──────────────────────────────────────────────────────────
+//
+// getDisplayMedia needs a real user gesture, and a voice command is not one --
+// so the stream is opened once from the Settings toggle and kept alive, exactly
+// like the webcam. The tool then grabs a frame from it on demand.
+
+const screenVideo = /** @type {HTMLVideoElement} */ (document.querySelector("#screen-video"));
+const screenSwitch = /** @type {HTMLInputElement} */ (document.querySelector("#tool-screen"));
+const screenHint = document.querySelector("#tool-screen-hint");
+
+function setScreenHint(text) {
+  if (screenHint) screenHint.textContent = text;
+}
+
+async function enableScreen() {
+  if (screenStream) return;
+  screenStream = await navigator.mediaDevices.getDisplayMedia({
+    video: { frameRate: 1 },   // a still is all the model needs; 1fps keeps it cheap
+    audio: false,
+  });
+  screenVideo.srcObject = screenStream;
+  try { await screenVideo.play(); } catch { /* muted video autoplay quirks */ }
+  // The browser's own "stop sharing" button ends the track behind our back.
+  for (const track of screenStream.getVideoTracks()) {
+    track.addEventListener("ended", () => {
+      disableScreen();
+      if (screenSwitch) screenSwitch.checked = false;
+      setScreenHint("Sharing stopped. Turn on again to let the assistant look.");
+      pushToolsToSession();
+    });
+  }
+  setScreenHint("Sharing. Ask the assistant to look at your screen.");
+}
+
+function disableScreen() {
+  if (screenStream) {
+    for (const t of screenStream.getTracks()) t.stop();
+    screenStream = null;
+  }
+  screenVideo.srcObject = null;
+}
+
+/** Grab the current screen frame as a downscaled JPEG data URL. */
+function captureScreen() {
+  if (!screenStream || !screenVideo.videoWidth) return null;
+  const vw = screenVideo.videoWidth;
+  const vh = screenVideo.videoHeight;
+  // Screens are large and mostly text, so keep a longer edge than the webcam
+  // uses -- unreadable text is worse than a slightly bigger payload.
+  const maxEdge = 1280;
+  const scale = Math.min(1, maxEdge / Math.max(vw, vh));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(vw * scale));
+  canvas.height = Math.max(1, Math.round(vh * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.75);
+}
+
+if (screenSwitch) {
+  screenSwitch.addEventListener("change", async () => {
+    if (screenSwitch.checked) {
+      try {
+        await enableScreen();
+      } catch (err) {
+        // User dismissed the picker, or the browser refused.
+        screenSwitch.checked = false;
+        setScreenHint("Screen sharing was not allowed.");
+        console.warn("[screen] getDisplayMedia declined/failed:", err);
+      }
+    } else {
+      disableScreen();
+      setScreenHint("Off. Turn on and pick a window or screen to share.");
+    }
+    pushToolsToSession();
+  });
+}
+
 // ── Camera ──────────────────────────────────────────────────────────────────
 
 async function enableCamera() {
@@ -1046,6 +1141,18 @@ async function runTool(name, argsJson, callId) {
       } else {
         console.warn("[tool] camera_snapshot: no frame — camera off or not ready");
         result.output = "The camera is not available right now.";
+        client.sendToolOutput(callId, result.output);
+      }
+    } else if (name === "screen_snapshot") {
+      const dataUrl = captureScreen();
+      if (dataUrl) {
+        if (DEBUG) console.debug(`[tool] screen_snapshot captured (${dataUrl.length} chars)`);
+        result = { output: "Screenshot captured and attached as an image.", image: dataUrl };
+        client.sendToolOutput(callId, result.output);
+      } else {
+        result.output = screenStream
+          ? "The screen frame is not ready yet. Ask again in a second."
+          : "Screen sharing is off. Turn on Screen in Settings first.";
         client.sendToolOutput(callId, result.output);
       }
     } else if (name === "remember") {
