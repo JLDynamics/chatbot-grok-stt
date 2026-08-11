@@ -1,7 +1,7 @@
 // @ts-check
 /**
- * Minimal voice conversation app, talking to a Hugging Face speech-to-speech
- * backend over **WebSocket** or **WebRTC**.
+ * Minimal voice conversation app, talking to the chatbot backend over
+ * **WebSocket** or **WebRTC**.
  *
  * Click the orb -> we ask for the mic, connect (WS dial, or SDP handshake via
  * the /api/calls proxy), push session.update + mic audio, play back the TTS
