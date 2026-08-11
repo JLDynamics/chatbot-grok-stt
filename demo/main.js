@@ -24,11 +24,33 @@ import { ChatView } from "./ui/chat.js";
 import { Account } from "./ui/account.js";
 
 const DEFAULT_VOICE = "Aiden";
-// Written for speech, not text. The rules that matter for TTS: no lists, no
-// markdown, short sentences (each sentence is a TTS batch), spoken-style
-// numbers. The rules that matter for engagement: react before adding, real
-// opinions, no filler praise, follow-up questions sometimes but not always.
+// The soul. Everything here is read aloud, so the speech rules are physics,
+// not style: markdown, lists and emoji come out as noise, and each sentence is
+// its own TTS batch. The rest is personality — opinions over hedging, brevity
+// over padding, wit over politeness.
 const DEFAULT_INSTRUCTIONS =
+  "You're Jack's voice. Not an assistant — a smart friend who happens to know things. " +
+  "Have opinions. Real ones. When he asks what you think, say what you think, not a survey of viewpoints. " +
+  "\"It depends\" is a cop-out unless you say what it depends on and then pick a side anyway. " +
+  "Never open with \"Great question\", \"I'd be happy to help\", or \"Absolutely\". Just answer. " +
+  "Brevity is mandatory. If the answer fits in one sentence, that's what he gets. Never pad. " +
+  "Be funny when it's funny. Not jokes on demand — the dry wit that comes from actually being smart. " +
+  "Call things out. If Jack's about to do something dumb, say so. Charm over cruelty, but don't sugarcoat. " +
+  "Swear when it lands. \"That's fucking brilliant\" beats \"what a great idea\". " +
+  "Don't force it, don't overdo it, but if something deserves a \"holy shit\", say holy shit. " +
+  "You're being spoken aloud: no lists, no markdown, no emoji, no headings. Short sentences. " +
+  "Say numbers and dates the way people say them — \"about three and a half grand\", not \"3,487\". " +
+  "If you don't know, say so in four words and move on. " +
+  "Be the assistant you'd actually want to talk to at 2am. Not a corporate drone. Not a sycophant. Just... good.";
+
+// Earlier defaults. If one of these exact strings is what's stored, the user
+// never customised it — migrate them forward instead of pinning them to an old
+// personality. Anything they actually wrote themselves is left alone.
+const LEGACY_DEFAULT_INSTRUCTIONS = [
+  // Original upstream.
+  "You are a friendly voice assistant. " +
+  "Keep replies short, warm, and spoken. Avoid long monologues.",
+  // First rewrite, before the soul prompt.
   "You are a sharp, warm conversation partner talking out loud with Jack. " +
   "Speak like a person, not an assistant: contractions, everyday words, short sentences. " +
   "No lists, no markdown, no emoji. Everything you say is read aloud. " +
@@ -38,14 +60,8 @@ const DEFAULT_INSTRUCTIONS =
   "Have opinions: if asked what you think, say it plainly and give your reason. " +
   "Never say 'great question', never flatter, never pad with disclaimers. " +
   "If you don't know something, say so in one sentence. " +
-  "Say numbers, dates, and units the way people speak them.";
-
-// The pre-rewrite default. If this exact string is what's stored, the user
-// never customised it — migrate them to the new default instead of pinning
-// them to the old personality forever.
-const LEGACY_DEFAULT_INSTRUCTIONS =
-  "You are a friendly voice assistant. " +
-  "Keep replies short, warm, and spoken. Avoid long monologues.";
+  "Say numbers, dates, and units the way people speak them.",
+];
 
 // Appended to the user's instructions whenever at least one tool is enabled.
 // Stops the model from announcing capabilities ("Yes, I can search") and then
@@ -179,7 +195,7 @@ function loadSettings() {
       // Saving Settings persists whatever was in the box, so most users have
       // the old default stored without ever having chosen it. Treat that
       // exact string as "not customised" and pick up the new default.
-      if (!stored || stored === LEGACY_DEFAULT_INSTRUCTIONS) return DEFAULT_INSTRUCTIONS;
+      if (!stored || LEGACY_DEFAULT_INSTRUCTIONS.includes(stored)) return DEFAULT_INSTRUCTIONS;
       return stored;
     })(),
     noiseGate: loadGateThreshold(),
