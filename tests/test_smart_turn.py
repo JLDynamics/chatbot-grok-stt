@@ -7,14 +7,14 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
-from speech_to_speech.VAD.smart_turn import (
+from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.VAD.smart_turn import (
     MAX_AUDIO_SECONDS,
     MODEL_SAMPLE_RATE,
     SmartTurnAnalyzer,
     SmartTurnResult,
 )
-from speech_to_speech.VAD.vad_handler import VADHandler
+from chatbot.VAD.vad_handler import VADHandler
 
 
 class _FakeAnalyzer:
@@ -105,7 +105,7 @@ def test_unanswered_reopen_cap_covers_smart_turn_wait(monkeypatch) -> None:
 
     monkeypatch.setattr(torch.hub, "load", lambda *_args, **_kwargs: (FakeSileroModel(), None))
     monkeypatch.setattr(
-        "speech_to_speech.VAD.smart_turn.SmartTurnAnalyzer",
+        "chatbot.VAD.smart_turn.SmartTurnAnalyzer",
         lambda **_kwargs: object(),
     )
     tracker = SpeculativeTurnTracker()

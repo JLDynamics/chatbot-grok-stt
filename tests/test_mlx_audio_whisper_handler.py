@@ -22,9 +22,9 @@ import types
 import numpy as np
 import pytest
 
-from speech_to_speech.pipeline.messages import VADAudio
-from speech_to_speech.STT.mlx_audio_whisper_handler import MLXAudioWhisperSTTHandler
-from speech_to_speech.utils import mlx_lock
+from chatbot.pipeline.messages import VADAudio
+from chatbot.STT.mlx_audio_whisper_handler import MLXAudioWhisperSTTHandler
+from chatbot.utils import mlx_lock
 
 
 class FakeResult:

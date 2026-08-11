@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import soundfile as sf
 
-from speech_to_speech.pipeline.messages import VADAudio
+from chatbot.pipeline.messages import VADAudio
 
 logging.basicConfig(
     level=logging.INFO,
@@ -125,7 +125,7 @@ def benchmark_handler(
 
         handler: Any = None
         if handler_name == "whisper":
-            from speech_to_speech.STT.whisper_stt_handler import WhisperSTTHandler
+            from chatbot.STT.whisper_stt_handler import WhisperSTTHandler
             setup_kwargs = handler_kwargs or {
                 "model_name": "distil-whisper/distil-large-v3",
                 "device": "cuda",
@@ -139,7 +139,7 @@ def benchmark_handler(
             )
 
         elif handler_name == "whisper-mlx":
-            from speech_to_speech.STT.lightning_whisper_mlx_handler import LightningWhisperSTTHandler
+            from chatbot.STT.lightning_whisper_mlx_handler import LightningWhisperSTTHandler
             setup_kwargs = handler_kwargs or {
                 "model_name": "large-v3",
                 "device": "mps",
@@ -152,7 +152,7 @@ def benchmark_handler(
             )
 
         elif handler_name == "mlx-audio-whisper":
-            from speech_to_speech.STT.mlx_audio_whisper_handler import MLXAudioWhisperSTTHandler
+            from chatbot.STT.mlx_audio_whisper_handler import MLXAudioWhisperSTTHandler
             setup_kwargs = handler_kwargs or {
                 "model_name": "mlx-community/whisper-large-v3-turbo",
             }
@@ -164,7 +164,7 @@ def benchmark_handler(
             )
 
         elif handler_name == "faster-whisper":
-            from speech_to_speech.STT.faster_whisper_handler import FasterWhisperSTTHandler
+            from chatbot.STT.faster_whisper_handler import FasterWhisperSTTHandler
             setup_kwargs = handler_kwargs or {
                 "model_name": "large-v3",
                 "device": "auto",
@@ -186,7 +186,7 @@ def benchmark_handler(
             )
 
         elif handler_name == "parakeet-tdt":
-            from speech_to_speech.STT.parakeet_tdt_handler import ParakeetTDTSTTHandler
+            from chatbot.STT.parakeet_tdt_handler import ParakeetTDTSTTHandler
             setup_kwargs = handler_kwargs or {
                 "device": "mps",
                 "enable_live_transcription": False,
@@ -199,7 +199,7 @@ def benchmark_handler(
             )
 
         elif handler_name == "parakeet-tdt-progressive":
-            from speech_to_speech.STT.parakeet_tdt_handler import ParakeetTDTSTTHandler
+            from chatbot.STT.parakeet_tdt_handler import ParakeetTDTSTTHandler
             setup_kwargs = handler_kwargs or {
                 "device": "mps",
                 "enable_live_transcription": True,

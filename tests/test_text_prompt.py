@@ -1,6 +1,6 @@
-from speech_to_speech.LLM.text_prompt import TEXT_SYSTEM_PROMPT, build_text_system_prompt
-from speech_to_speech.LLM.tool_call.function_tool import FunctionTool
-from speech_to_speech.LLM.tool_call.tool_prompt import build_tool_system_prompt
+from chatbot.LLM.text_prompt import TEXT_SYSTEM_PROMPT, build_text_system_prompt
+from chatbot.LLM.tool_call.function_tool import FunctionTool
+from chatbot.LLM.tool_call.tool_prompt import build_tool_system_prompt
 
 
 def test_text_prompt_keeps_persona_in_session_prompt():

@@ -13,7 +13,7 @@ To prepare a release:
 
 1. Confirm the intended version is not already published on PyPI.
 2. Bump `version` in `pyproject.toml`.
-3. Bump `__version__` in `src/speech_to_speech/__init__.py`.
+3. Bump `__version__` in `src/chatbot/__init__.py`.
 4. Open and merge a pull request with only the release preparation changes.
 
 To publish after the release PR is merged:

@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import speech_to_speech.api.openai_realtime.audio_client as audio_client_module
-from speech_to_speech.api.openai_realtime.audio_client import (
+import chatbot.api.openai_realtime.audio_client as audio_client_module
+from chatbot.api.openai_realtime.audio_client import (
     PlaybackBuffer,
     RealtimeAudioClientConfig,
     _FriendlyEventRenderer,

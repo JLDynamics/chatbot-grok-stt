@@ -1,9 +1,9 @@
 from queue import Queue
 from threading import Event
 
-from speech_to_speech.pipeline.control import SESSION_END
-from speech_to_speech.pipeline.messages import EndOfResponse, TTSInput
-from speech_to_speech.TTS.qwen3_tts_handler import Qwen3TTSHandler
+from chatbot.pipeline.control import SESSION_END
+from chatbot.pipeline.messages import EndOfResponse, TTSInput
+from chatbot.TTS.qwen3_tts_handler import Qwen3TTSHandler
 
 
 def _make_handler():

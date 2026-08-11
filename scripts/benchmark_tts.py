@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from speech_to_speech.pipeline.messages import TTSInput
+from chatbot.pipeline.messages import TTSInput
 
 logging.basicConfig(
     level=logging.INFO,
@@ -110,7 +110,7 @@ def benchmark_handler(
         start_setup = time.perf_counter()
 
         if handler_name == "kokoro":
-            from speech_to_speech.TTS.kokoro_handler import KokoroTTSHandler
+            from chatbot.TTS.kokoro_handler import KokoroTTSHandler
             setup_kwargs = {"device": "auto", **setup_kwargs}
             handler = KokoroTTSHandler(
                 stop_event,
@@ -120,7 +120,7 @@ def benchmark_handler(
                 setup_kwargs=setup_kwargs,
             )
         elif handler_name == "pocket_tts":
-            from speech_to_speech.TTS.pocket_tts_handler import PocketTTSHandler
+            from chatbot.TTS.pocket_tts_handler import PocketTTSHandler
             setup_kwargs = {"device": "cpu", **setup_kwargs}
             handler = PocketTTSHandler(
                 stop_event,
@@ -130,7 +130,7 @@ def benchmark_handler(
                 setup_kwargs=setup_kwargs,
             )
         elif handler_name == "qwen3":
-            from speech_to_speech.TTS.qwen3_tts_handler import Qwen3TTSHandler
+            from chatbot.TTS.qwen3_tts_handler import Qwen3TTSHandler
             setup_kwargs = {
                 "device": "cuda",
                 "model_name": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
@@ -145,7 +145,7 @@ def benchmark_handler(
                 setup_kwargs=setup_kwargs,
             )
         elif handler_name == "chatTTS":
-            from speech_to_speech.TTS.chatTTS_handler import ChatTTSHandler
+            from chatbot.TTS.chatTTS_handler import ChatTTSHandler
             setup_kwargs = {"device": "cuda", **setup_kwargs}
             handler = ChatTTSHandler(
                 stop_event,
@@ -155,7 +155,7 @@ def benchmark_handler(
                 setup_kwargs=setup_kwargs,
             )
         elif handler_name == "facebookMMS":
-            from speech_to_speech.TTS.facebookmms_handler import FacebookMMSTTSHandler
+            from chatbot.TTS.facebookmms_handler import FacebookMMSTTSHandler
             setup_kwargs = {"device": "cuda", "language": "en", **setup_kwargs}
             handler = FacebookMMSTTSHandler(
                 stop_event,

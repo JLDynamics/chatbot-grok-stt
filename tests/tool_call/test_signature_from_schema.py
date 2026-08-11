@@ -1,7 +1,7 @@
 from typing import Any, Literal, Optional, Union
 
-from speech_to_speech.LLM.tool_call.function_tool import FunctionTool
-from speech_to_speech.LLM.tool_call.signature_from_schema import _annotation_from_spec, signature_from_schema
+from chatbot.LLM.tool_call.function_tool import FunctionTool
+from chatbot.LLM.tool_call.signature_from_schema import _annotation_from_spec, signature_from_schema
 
 # --- _annotation_from_spec tests ---
 

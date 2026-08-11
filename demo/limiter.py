@@ -1,5 +1,5 @@
 """
-Per-day talk-time budget for the speech-to-speech demo.
+Per-day talk-time budget for the chatbot demo.
 
 Our server isn't in the audio path (the browser dials the compute WebSocket
 directly), so it can't cut a live stream. What it *can* do is meter time with a

@@ -32,19 +32,19 @@ from aiortc import RTCPeerConnection, RTCSessionDescription  # noqa: E402
 from aiortc.mediastreams import AudioStreamTrack, MediaStreamError  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
-import speech_to_speech.api.openai_realtime.websocket_router as router_module  # noqa: E402
-from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit  # noqa: E402
-from speech_to_speech.api.openai_realtime.service import CHUNK_SIZE_BYTES, RealtimeService  # noqa: E402
-from speech_to_speech.api.openai_realtime.transports import SessionTransport  # noqa: E402
-from speech_to_speech.api.openai_realtime.webrtc_session import (  # noqa: E402
+import chatbot.api.openai_realtime.websocket_router as router_module  # noqa: E402
+from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit  # noqa: E402
+from chatbot.api.openai_realtime.service import CHUNK_SIZE_BYTES, RealtimeService  # noqa: E402
+from chatbot.api.openai_realtime.transports import SessionTransport  # noqa: E402
+from chatbot.api.openai_realtime.webrtc_session import (  # noqa: E402
     WEBRTC_FRAME_SAMPLES,
     WEBRTC_SAMPLE_RATE,
     PcmResampler,
     PipelineAudioTrack,
 )
-from speech_to_speech.pipeline.cancel_scope import CancelScope  # noqa: E402
-from speech_to_speech.pipeline.events import SpeechStartedEvent  # noqa: E402
-from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE  # noqa: E402
+from chatbot.pipeline.cancel_scope import CancelScope  # noqa: E402
+from chatbot.pipeline.events import SpeechStartedEvent  # noqa: E402
+from chatbot.pipeline.messages import AUDIO_RESPONSE_DONE  # noqa: E402
 
 from .test_openai_client import _ServerEnv  # noqa: E402
 
@@ -548,7 +548,7 @@ class TestWebRTCLoopback:
     async def test_setup_failure_releases_unit(self, server_env, monkeypatch):
         """A failure between claiming the unit and negotiate() (e.g. peer
         connection construction) must release the unit, not leak it."""
-        import speech_to_speech.api.openai_realtime.websocket_router as router_module
+        import chatbot.api.openai_realtime.websocket_router as router_module
 
         def _boom():
             raise RuntimeError("boom")

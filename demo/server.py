@@ -1,5 +1,5 @@
 """
-Tiny server for the speech-to-speech demo.
+Tiny server for the chatbot demo.
 
 The demo used to ship as a `sdk: static` Space, but the web-search tool needs a
 search key the browser must NOT see. A static Space has no runtime process, so it
@@ -7,7 +7,7 @@ can't hold a secret the front-end uses. This server fixes that: it serves the
 unchanged front-end AND exposes a same-origin `/api/search` proxy that holds the
 Serper key server-side (see docs/adr/0001).
 
-Everything lives in one container; the speech-to-speech backend stays a separate,
+Everything lives in one container; the chatbot backend stays a separate,
 load-balanced service the browser talks to over WebSocket as before. The load
 balancer's address is a secret too (like the Serper key): the browser never sees
 it. `/api/session` proxies the session handshake server-side so only the
@@ -147,7 +147,7 @@ TAVILY_KEY_PREFIX = "tvly-"
 # Cap results so the tool output stays small enough to feed back to the model.
 MAX_RESULTS = 5
 HERE = os.path.dirname(os.path.abspath(__file__))
-LB_USER_AGENT = "speech-to-speech-demo"
+LB_USER_AGENT = "chatbot-demo"
 
 app = FastAPI(title="s2s-demo")
 
@@ -369,7 +369,7 @@ async def search(req: SearchRequest):
 # is just "read them all into the prompt".
 
 MEMORIES_PATH = os.path.expanduser(
-    os.environ.get("S2S_MEMORIES_PATH", "~/.speech-to-speech/memories.json")
+    os.environ.get("S2S_MEMORIES_PATH", "~/.chatbot/memories.json")
 )
 _memories_lock = asyncio.Lock()
 

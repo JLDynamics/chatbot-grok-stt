@@ -87,7 +87,7 @@ jobs:
           python -m venv .venv-smoke
           source .venv-smoke/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install dist/speech_to_speech-*.whl
+          python -m pip install dist/chatbot-*.whl
           python -m pip check
       - name: Run installed CLI smoke test
         shell: bash

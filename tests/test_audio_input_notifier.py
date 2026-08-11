@@ -4,10 +4,10 @@ from time import sleep
 
 import numpy as np
 
-from speech_to_speech.LLM.audio_input_notifier import AudioInputNotifier
-from speech_to_speech.pipeline.events import AudioInputCompletedEvent
-from speech_to_speech.pipeline.messages import VADAudio
-from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.LLM.audio_input_notifier import AudioInputNotifier
+from chatbot.pipeline.events import AudioInputCompletedEvent
+from chatbot.pipeline.messages import VADAudio
+from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 
 
 def _notifier(

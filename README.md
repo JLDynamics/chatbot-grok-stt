@@ -1,34 +1,41 @@
-<div align="center">
-  <div>&nbsp;</div>
-  <img src="https://raw.githubusercontent.com/huggingface/speech-to-speech/main/logo.png" width="600"/>
+# Chatbot
 
-# Speech To Speech: Build voice agents with open-source models
+A personal, local voice chatbot for Apple Silicon: **VAD -> STT -> LLM -> TTS**,
+exposed through an **OpenAI Realtime-compatible WebSocket API**, with a browser
+UI, long-term memory, and web search.
 
-[![PyPI](https://img.shields.io/pypi/v/speech-to-speech)](https://pypi.org/project/speech-to-speech/)
-[![Python](https://img.shields.io/pypi/pyversions/speech-to-speech)](https://pypi.org/project/speech-to-speech/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
-[![GitHub Trending: #1 Repository of the Day](https://img.shields.io/badge/GitHub%20Trending-%231%20Repository%20of%20the%20Day-7B2CBF?logo=github&logoColor=white)](https://trendshift.io/repositories/20645)
+| Stage | What runs | Where |
+|---|---|---|
+| Ears (STT) | `parakeet-tdt` | local, MPS |
+| Brain (LLM) | any OpenAI-compatible endpoint (via OpenRouter) | remote |
+| Mouth (TTS) | `qwen3` | local, MPS |
 
-</div>
+## Quick start
 
-A low-latency, fully modular voice-agent pipeline: **VAD -> STT -> LLM -> TTS**, exposed through an **OpenAI Realtime-compatible WebSocket API**. Every component is swappable. The LLM slot speaks OpenAI-compatible protocols, so you can point it at a hosted provider, at [HF Inference Providers](https://huggingface.co/inference-providers), or at a vLLM or llama.cpp server on your own hardware for a fully local, fully open stack.
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...
+./run-browser.sh            # browser UI at http://localhost:7860
+./run-openrouter.sh         # terminal mic/speaker client
+```
 
-This pipeline runs in production as the conversation backend for thousands of [Reachy Mini](https://huggingface.co/blog/reachy-mini) robots.
+See [LEARNING_GUIDE.md](./LEARNING_GUIDE.md) for how the pipeline fits together.
+
+Built on [huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech) (Apache-2.0).
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/endpoint-swap-dark.gif">
     <source media="(prefers-color-scheme: light)" srcset="./docs/assets/endpoint-swap-light.gif">
-    <img src="./docs/assets/endpoint-swap-light.gif" alt="Switching an OpenAI Realtime client endpoint from hosted OpenAI to a self-hosted speech-to-speech server" width="640">
+    <img src="./docs/assets/endpoint-swap-light.gif" alt="Switching an OpenAI Realtime client endpoint from hosted OpenAI to a self-hosted chatbot server" width="640">
   </picture>
 </p>
 
 ## Quickstart
 
 ```bash
-pip install speech-to-speech
+uv sync   # from a clone of this repo
 export OPENAI_API_KEY=...
-speech-to-speech serve
+chatbot serve
 ```
 
 This starts an OpenAI Realtime-compatible server at `ws://localhost:8765/v1/realtime` using Parakeet TDT for local STT, an OpenAI-compatible LLM, and Qwen3-TTS for local speech output.
@@ -36,13 +43,13 @@ This starts an OpenAI Realtime-compatible server at `ws://localhost:8765/v1/real
 Talk to it from a second terminal:
 
 ```bash
-speech-to-speech talk --url ws://127.0.0.1:8765/v1/realtime
+chatbot talk --url ws://127.0.0.1:8765/v1/realtime
 ```
 
 To start the server and packaged microphone/speaker client in one command:
 
 ```bash
-speech-to-speech local
+chatbot local
 ```
 
 Prefer to keep the LLM on your own machine? Serve Gemma 4 with llama.cpp:
@@ -54,7 +61,7 @@ llama-server -hf ggml-org/gemma-4-E4B-it-GGUF -np 2 -c 65536 -fa on --swa-full
 Then point the OpenAI-compatible LLM backend at it:
 
 ```bash
-speech-to-speech serve \
+chatbot serve \
     --model_name "ggml-org/gemma-4-E4B-it-GGUF" \
     --responses_api_base_url "http://127.0.0.1:8080/v1" \
     --responses_api_api_key ""
@@ -93,7 +100,7 @@ Every stage has multiple interchangeable backends, selected via CLI flags. The c
 Requires Python 3.10+.
 
 ```bash
-pip install speech-to-speech
+uv sync   # from a clone of this repo
 ```
 
 The default install covers the standard realtime path:
@@ -107,7 +114,7 @@ macOS and non-macOS dependencies are resolved automatically via platform markers
 
 ### CUDA Note for Qwen3-TTS
 
-On Linux, the Qwen3-TTS GGML backend comes from `faster-qwen3-tts[ggml]`. Its default `qwentts-cpp-python` wheel on PyPI targets CUDA 12.8. If your machine does not have the CUDA 12 runtime that wheel expects, install the matching wheel from the Hugging Face wheelhouse before installing `speech-to-speech`:
+On Linux, the Qwen3-TTS GGML backend comes from `faster-qwen3-tts[ggml]`. Its default `qwentts-cpp-python` wheel on PyPI targets CUDA 12.8. If your machine does not have the CUDA 12 runtime that wheel expects, install the matching wheel from the Hugging Face wheelhouse before installing `chatbot`:
 
 ```bash
 # CUDA 13.x
@@ -122,7 +129,7 @@ pip install "qwentts-cpp-python==0.3.1+cu124" \
 pip install "qwentts-cpp-python==0.3.1+cpu" \
   -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cpu
 
-pip install speech-to-speech
+uv sync   # from a clone of this repo
 ```
 
 To use the previous CUDA-graphs implementation instead of GGML, pass `--qwen3_tts_backend torch`.
@@ -132,11 +139,11 @@ To use the previous CUDA-graphs implementation instead of GGML, pass `--qwen3_tt
 Optional components are installed with pip extras:
 
 ```bash
-pip install "speech-to-speech[chattts]"         # ChatTTS
-pip install "speech-to-speech[faster-whisper]"  # Faster Whisper STT
-pip install "speech-to-speech[whisper-mlx]"     # Lightning Whisper MLX STT on macOS
-pip install "speech-to-speech[paraformer]"      # Paraformer STT through FunASR
-pip install "speech-to-speech[mlx-lm]"          # mlx-vlm support for vision models on macOS
+uv sync --extra chattts         # ChatTTS
+uv sync --extra faster-whisper  # Faster Whisper STT
+uv sync --extra whisper-mlx     # Lightning Whisper MLX STT on macOS
+uv sync --extra paraformer      # Paraformer STT through FunASR
+uv sync --extra mlx-lm          # mlx-vlm support for vision models on macOS
 ```
 
 Deprecated implementations, including MeloTTS, live in [`archive/`](./archive) and are no longer wired into the CLI.
@@ -146,12 +153,12 @@ Deprecated implementations, including MeloTTS, live in [`archive/`](./archive) a
 ### From Source
 
 ```bash
-git clone https://github.com/huggingface/speech-to-speech.git
-cd speech-to-speech
+git clone https://github.com/huggingface/chatbot.git
+cd chatbot
 uv sync
 ```
 
-This installs the package in editable mode and makes the `speech-to-speech` CLI available.
+This installs the package in editable mode and makes the `chatbot` CLI available.
 
 ## Supported Components
 
@@ -171,7 +178,7 @@ This installs the package in editable mode and makes the `speech-to-speech` CLI 
 | TTS | [ChatTTS](https://github.com/2noise/ChatTTS) | CUDA / CPU | `chattts` |
 | TTS | [MMS TTS](https://huggingface.co/docs/transformers/model_doc/mms) | CUDA / CPU | built-in |
 
-Select implementations with `--stt`, `--llm_backend`, and `--tts`. The CLI constructs configuration only for the selected backends; known options for inactive backends remain accepted for compatibility but are ignored with a warning. JSON configuration may likewise include extra inactive-backend keys, which are ignored. Run `speech-to-speech serve -h` for the defaults, or pass selectors before `-h` to see another combination's backend-specific flags (for example, `speech-to-speech serve --stt mlx-audio-whisper -h`).
+Select implementations with `--stt`, `--llm_backend`, and `--tts`. The CLI constructs configuration only for the selected backends; known options for inactive backends remain accepted for compatibility but are ignored with a warning. JSON configuration may likewise include extra inactive-backend keys, which are ignored. Run `chatbot serve -h` for the defaults, or pass selectors before `-h` to see another combination's backend-specific flags (for example, `chatbot serve --stt mlx-audio-whisper -h`).
 
 ## Commands
 
@@ -185,19 +192,19 @@ Select implementations with `--stt`, `--llm_backend`, and `--tts`. The CLI const
 
 ### Migrating from `--mode`
 
-`--mode` is deprecated and will stop working soon. During this migration window, `speech-to-speech --mode realtime` runs `speech-to-speech serve`, and `speech-to-speech --mode local` runs `speech-to-speech local`; both print a warning. All other mode values have been removed and exit with guidance to use the new commands.
+`--mode` is deprecated and will stop working soon. During this migration window, `chatbot --mode realtime` runs `chatbot serve`, and `chatbot --mode local` runs `chatbot local`; both print a warning. All other mode values have been removed and exit with guidance to use the new commands.
 
 ### Realtime Server
 
 ```bash
 export OPENAI_API_KEY=...
-speech-to-speech serve
+chatbot serve
 ```
 
 This is equivalent to:
 
 ```bash
-speech-to-speech serve \
+chatbot serve \
     --thresh 0.6 \
     --stt parakeet-tdt \
     --llm_backend responses-api \
@@ -219,13 +226,13 @@ The default model is `gpt-5.4-mini` through the OpenAI Responses API. Override i
 ### Local Mac
 
 ```bash
-speech-to-speech local --mac-optimal-settings
+chatbot local --mac-optimal-settings
 ```
 
 Optionally with a specific LLM:
 
 ```bash
-speech-to-speech local \
+chatbot local \
     --mac-optimal-settings \
     --model_name mlx-community/Qwen3-4B-Instruct-2507-bf16
 ```
@@ -295,7 +302,7 @@ with client.realtime.connect(model="local") as conn:
         print(event.type)
 ```
 
-The server implements the core Realtime event set: `input_audio_buffer.append`, `session.update`, `conversation.item.create`, `response.create`, and `response.cancel` inbound; speech start/stop, streaming transcription, audio deltas, tool calls, and `response.done` outbound. The full event reference, architecture, and design details live in the [Realtime Engine README](./src/speech_to_speech/api/openai_realtime/README.md).
+The server implements the core Realtime event set: `input_audio_buffer.append`, `session.update`, `conversation.item.create`, `response.create`, and `response.cancel` inbound; speech start/stop, streaming transcription, audio deltas, tool calls, and `response.done` outbound. The full event reference, architecture, and design details live in the [Realtime Engine README](./src/chatbot/api/openai_realtime/README.md).
 
 ### LLM Proxy
 
@@ -347,7 +354,7 @@ For OpenAI, see the
 and [audio-input guide](https://developers.openai.com/api/docs/guides/audio#add-audio-to-your-existing-application).
 
 ```bash
-speech-to-speech serve \
+chatbot serve \
     --stt none \
     --llm_backend chat-completions \
     --model_name "YOUR_AUDIO_CAPABLE_MODEL" \
@@ -376,7 +383,7 @@ Works with any provider or server that implements the OpenAI Responses API. Poin
 
 ```bash
 # OpenAI
-speech-to-speech local \
+chatbot local \
     --stt parakeet-tdt \
     --llm_backend responses-api \
     --tts qwen3 \
@@ -389,7 +396,7 @@ speech-to-speech local \
 
 ```bash
 # HF Inference Providers: Qwen3.5-9B via Together
-speech-to-speech local \
+chatbot local \
     --stt parakeet-tdt \
     --llm_backend responses-api \
     --tts qwen3 \
@@ -403,7 +410,7 @@ speech-to-speech local \
 
 ```bash
 # HF Inference Providers: GPT-oss-20B via Groq
-speech-to-speech serve \
+chatbot serve \
     --stt parakeet-tdt \
     --llm_backend responses-api \
     --tts qwen3 \
@@ -420,13 +427,13 @@ speech-to-speech serve \
 Identical configuration to `responses-api`, reusing the same `--responses_api_*` connection flags, but talks to `/v1/chat/completions` instead of `/v1/responses`. Prefer it when:
 
 - the provider ignores `chat_template_kwargs.enable_thinking` on the Responses path and needs a `reasoning_effort` knob to suppress reasoning, or
-- the server's Responses streaming tool-call path is unreliable, while its Chat Completions tool-call streaming is solid. This is useful for some vLLM builds; see [#312](https://github.com/huggingface/speech-to-speech/issues/312).
+- the server's Responses streaming tool-call path is unreliable, while its Chat Completions tool-call streaming is solid. This is useful for some vLLM builds; see [#312](https://github.com/huggingface/chatbot/issues/312).
 
 Add `--responses_api_reasoning_effort none` to disable reasoning on providers where the chat-template flag has no effect:
 
 ```bash
 # vLLM serving a Qwen model with tool calling
-speech-to-speech serve \
+chatbot serve \
     --stt parakeet-tdt \
     --llm_backend chat-completions \
     --tts qwen3 \
@@ -437,7 +444,7 @@ speech-to-speech serve \
 
 ```bash
 # Gemma 4 31B via the HF router on Cerebras, with reasoning disabled for low voice latency
-speech-to-speech serve \
+chatbot serve \
     --stt parakeet-tdt \
     --llm_backend chat-completions \
     --tts qwen3 \
@@ -452,7 +459,7 @@ speech-to-speech serve \
 
 Run the LLM in a separate llama.cpp process for the lowest-friction fully local setup, as shown in the [Reachy Mini local conversation guide](https://huggingface.co/blog/local-reachy-mini-conversation):
 
-For a fully local native-audio setup with the browser demo, Realtime turn revisions, and barge-in, see the tested [Gemma 4 12B speech-to-speech example for Apple Silicon](./examples/gemma4-12b-macos/README.md).
+For a fully local native-audio setup with the browser demo, Realtime turn revisions, and barge-in, see the tested [Gemma 4 12B chatbot example for Apple Silicon](./examples/gemma4-12b-macos/README.md).
 
 ```bash
 # Terminal 1: llama.cpp serving Gemma 4
@@ -460,8 +467,8 @@ llama-server -hf ggml-org/gemma-4-E4B-it-GGUF -np 2 -c 65536 -fa on --swa-full
 ```
 
 ```bash
-# Terminal 2: speech-to-speech using that local LLM server
-speech-to-speech serve \
+# Terminal 2: chatbot using that local LLM server
+chatbot serve \
     --stt parakeet-tdt \
     --llm_backend responses-api \
     --tts qwen3 \
@@ -472,7 +479,7 @@ speech-to-speech serve \
     --enable_live_transcription
 ```
 
-Use `speech-to-speech local` when you want to run the same server and talk through the machine hosting it. In-process local backends are available with `--llm_backend mlx-lm` on Apple Silicon or `--llm_backend transformers` on CUDA / CPU.
+Use `chatbot local` when you want to run the same server and talk through the machine hosting it. In-process local backends are available with `--llm_backend mlx-lm` on Apple Silicon or `--llm_backend transformers` on CUDA / CPU.
 
 ## Offline Operation
 
@@ -482,10 +489,10 @@ STT, LLM, TTS, Silero VAD, NLTK, and Smart Turn resources it needs.
 
 For the lowest-friction fully local LLM setup, run llama.cpp on the same machine as described in
 [Fully Local](#fully-local). Once llama.cpp and the pipeline assets are available locally, set
-`HF_HUB_OFFLINE=1` when starting speech-to-speech to prevent Hugging Face Hub requests:
+`HF_HUB_OFFLINE=1` when starting chatbot to prevent Hugging Face Hub requests:
 
 ```bash
-HF_HUB_OFFLINE=1 speech-to-speech serve \
+HF_HUB_OFFLINE=1 chatbot serve \
     --model_name "ggml-org/gemma-4-E4B-it-GGUF" \
     --responses_api_base_url "http://127.0.0.1:8080/v1" \
     --responses_api_api_key ""
@@ -520,7 +527,7 @@ Make sure the STT, LLM, and TTS you pair all cover your target language(s). Two 
 Automatic language detection:
 
 ```bash
-speech-to-speech serve \
+chatbot serve \
     --stt parakeet-tdt \
     --language auto \
     --llm_backend mlx-lm \
@@ -530,7 +537,7 @@ speech-to-speech serve \
 A single non-English language, Chinese in this example:
 
 ```bash
-speech-to-speech serve \
+chatbot serve \
     --stt whisper-mlx \
     --stt_model_name large-v3 \
     --language zh \
@@ -543,11 +550,11 @@ Both commands also work with `--mac-optimal-settings`; explicit `--stt` flags ov
 
 ## CLI Reference
 
-References for pipeline CLI arguments live in the [arguments classes](./src/speech_to_speech/arguments_classes) and in `speech-to-speech serve -h`. Client arguments are listed by `speech-to-speech talk -h`.
+References for pipeline CLI arguments live in the [arguments classes](./src/chatbot/arguments_classes) and in `chatbot serve -h`. Client arguments are listed by `chatbot talk -h`.
 
 ### Module-Level Parameters
 
-See [ModuleArguments](./src/speech_to_speech/arguments_classes/module_arguments.py). It allows setting:
+See [ModuleArguments](./src/chatbot/arguments_classes/module_arguments.py). It allows setting:
 
 - a common `--device`, if every part should run on the same device
 - macOS model/device defaults (`--mac-optimal-settings`)
@@ -559,7 +566,7 @@ See [ModuleArguments](./src/speech_to_speech/arguments_classes/module_arguments.
 
 ### VAD Parameters
 
-See [VADHandlerArguments](./src/speech_to_speech/arguments_classes/vad_arguments.py). Notable options:
+See [VADHandlerArguments](./src/chatbot/arguments_classes/vad_arguments.py). Notable options:
 
 - `--thresh`: threshold value to trigger voice activity detection.
 - `--min_speech_ms`: minimum duration of detected voice activity to be considered speech.
@@ -583,8 +590,8 @@ discarded before it reaches the user.
 The base package includes the quantized CPU runtime and enables Smart Turn by default:
 
 ```bash
-pip install speech-to-speech
-speech-to-speech serve
+uv sync   # from a clone of this repo
+chatbot serve
 ```
 
 The latest supported v3.2 CPU checkpoint downloads from the Hugging Face Hub on first use. Pass
@@ -614,7 +621,7 @@ Other generation parameters can be set using the handler prefix plus `_gen_`, fo
 
 ## Contributing
 
-Issues and PRs are welcome. Good starting points are the [open issues](https://github.com/huggingface/speech-to-speech/issues). For larger changes, open an issue first to discuss the approach.
+Issues and PRs are welcome. Good starting points are the [open issues](https://github.com/huggingface/chatbot/issues). For larger changes, open an issue first to discuss the approach.
 
 For local development:
 
@@ -626,7 +633,7 @@ ruff check
 
 ## Star History
 
-[![Star History Chart](assets/star-history.svg)](https://github.com/huggingface/speech-to-speech/stargazers)
+[![Star History Chart](assets/star-history.svg)](https://github.com/huggingface/chatbot/stargazers)
 
 ## Citations
 
@@ -668,4 +675,4 @@ If you use this pipeline, please also cite the component models you run. The def
 }
 ```
 
-Citations for optional backends such as ChatTTS, Whisper variants, Paraformer, and MMS live in the respective [component READMEs](./src/speech_to_speech).
+Citations for optional backends such as ChatTTS, Whisper variants, Paraformer, and MMS live in the respective [component READMEs](./src/chatbot).

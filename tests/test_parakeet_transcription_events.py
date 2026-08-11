@@ -6,10 +6,10 @@ from types import SimpleNamespace
 import numpy as np
 from rich.text import Text
 
-from speech_to_speech.pipeline.messages import PartialTranscription, Transcription, VADAudio
-from speech_to_speech.STT import parakeet_tdt_handler
-from speech_to_speech.STT.parakeet_tdt_handler import ParakeetTDTSTTHandler
-from speech_to_speech.STT.smart_progressive_streaming import SmartProgressiveStreamingHandler
+from chatbot.pipeline.messages import PartialTranscription, Transcription, VADAudio
+from chatbot.STT import parakeet_tdt_handler
+from chatbot.STT.parakeet_tdt_handler import ParakeetTDTSTTHandler
+from chatbot.STT.smart_progressive_streaming import SmartProgressiveStreamingHandler
 
 
 def test_show_progressive_transcription_returns_combined_text(monkeypatch):

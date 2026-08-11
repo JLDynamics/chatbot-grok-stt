@@ -1,6 +1,6 @@
 import torch
 
-from speech_to_speech.VAD.vad_iterator import VADIterator
+from chatbot.VAD.vad_iterator import VADIterator
 
 
 class _FakeVADModel:

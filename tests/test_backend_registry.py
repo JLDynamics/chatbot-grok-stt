@@ -6,10 +6,10 @@ from threading import Event
 
 import pytest
 
-import speech_to_speech.s2s_pipeline as s2s_pipeline
-from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
-from speech_to_speech.arguments_classes.vad_arguments import VADHandlerArguments
-from speech_to_speech.backend_registry import (
+import chatbot.s2s_pipeline as s2s_pipeline
+from chatbot.arguments_classes.module_arguments import ModuleArguments
+from chatbot.arguments_classes.vad_arguments import VADHandlerArguments
+from chatbot.backend_registry import (
     LLM_BACKENDS,
     STT_BACKENDS,
     TTS_BACKENDS,
@@ -21,9 +21,9 @@ from speech_to_speech.backend_registry import (
     create_backend_handler,
     select_backend,
 )
-from speech_to_speech.pipeline.cancel_scope import CancelScope
-from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
-from speech_to_speech.s2s_pipeline import (
+from chatbot.pipeline.cancel_scope import CancelScope
+from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.s2s_pipeline import (
     build_llm_proxy_config,
     parse_arguments,
     prepare_all_args,
@@ -167,7 +167,7 @@ def test_new_stt_backend_gets_transcription_notifier_by_default(monkeypatch):
 
     monkeypatch.setattr(s2s_pipeline, "VADHandler", DummyHandler)
     monkeypatch.setattr(s2s_pipeline, "TranscriptionNotifier", DummyNotifier)
-    monkeypatch.setattr("speech_to_speech.LLM.lm_output_processor.LMOutputProcessor", DummyHandler)
+    monkeypatch.setattr("chatbot.LLM.lm_output_processor.LMOutputProcessor", DummyHandler)
 
     handlers = s2s_pipeline._build_handlers(
         stop_event=Event(),
@@ -229,7 +229,7 @@ def test_parser_carries_only_selected_normalized_configs():
 
 
 def test_facebook_mms_options_are_normalized_for_handler_setup(monkeypatch):
-    from speech_to_speech.TTS.facebookmms_handler import FacebookMMSTTSHandler
+    from chatbot.TTS.facebookmms_handler import FacebookMMSTTSHandler
 
     captured = {}
 
@@ -256,7 +256,7 @@ def test_facebook_mms_options_are_normalized_for_handler_setup(monkeypatch):
 
 
 def test_facebook_mms_handler_honors_model_override(monkeypatch):
-    from speech_to_speech.TTS.facebookmms_handler import FacebookMMSTTSHandler
+    from chatbot.TTS.facebookmms_handler import FacebookMMSTTSHandler
 
     load_calls = []
     monkeypatch.setattr(
@@ -274,8 +274,8 @@ def test_facebook_mms_handler_honors_model_override(monkeypatch):
 
 
 def test_facebook_mms_restores_custom_model_when_returning_to_initial_language(monkeypatch):
-    from speech_to_speech.pipeline.messages import TTSInput
-    from speech_to_speech.TTS.facebookmms_handler import FacebookMMSTTSHandler
+    from chatbot.pipeline.messages import TTSInput
+    from chatbot.TTS.facebookmms_handler import FacebookMMSTTSHandler
 
     load_calls = []
 
@@ -300,7 +300,7 @@ def test_facebook_mms_restores_custom_model_when_returning_to_initial_language(m
 
 
 def test_facebook_mms_session_reset_restores_custom_model_for_same_language(monkeypatch):
-    from speech_to_speech.TTS.facebookmms_handler import FacebookMMSTTSHandler
+    from chatbot.TTS.facebookmms_handler import FacebookMMSTTSHandler
 
     load_calls = []
     monkeypatch.setattr(
@@ -356,7 +356,7 @@ def test_parser_reports_invalid_backend_selectors_with_argparse(selector, capsys
         parse_arguments([selector, "not-a-backend"])
 
     stderr = capsys.readouterr().err
-    assert "usage: speech-to-speech serve" in stderr
+    assert "usage: chatbot serve" in stderr
     assert "invalid choice: 'not-a-backend'" in stderr
 
 
@@ -395,7 +395,7 @@ def test_global_device_only_updates_device_aware_builtin_configs(kind, backend_n
 
 
 def test_global_device_does_not_reach_mlx_audio_whisper_setup(monkeypatch):
-    from speech_to_speech.STT.mlx_audio_whisper_handler import MLXAudioWhisperSTTHandler
+    from chatbot.STT.mlx_audio_whisper_handler import MLXAudioWhisperSTTHandler
 
     captured = {}
 
@@ -426,9 +426,9 @@ def test_global_device_does_not_reach_mlx_audio_whisper_setup(monkeypatch):
 
 def test_factories_keep_backend_modules_lazy():
     module_names = [
-        "speech_to_speech.STT.whisper_stt_handler",
-        "speech_to_speech.LLM.language_model",
-        "speech_to_speech.TTS.chatTTS_handler",
+        "chatbot.STT.whisper_stt_handler",
+        "chatbot.LLM.language_model",
+        "chatbot.TTS.chatTTS_handler",
     ]
     for module_name in module_names:
         sys.modules.pop(module_name, None)
@@ -452,5 +452,5 @@ def test_dependency_error_names_backend_and_required_extra():
     )
     selection = BackendSelection(spec, spec.normalize(FakeArguments()))
 
-    with pytest.raises(ImportError, match=r"optional.*tts.*speech-to-speech\[optional-extra\]"):
+    with pytest.raises(ImportError, match=r"optional.*tts.*chatbot\[optional-extra\]"):
         create_backend_handler(selection, _context())

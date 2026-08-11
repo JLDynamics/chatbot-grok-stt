@@ -25,16 +25,16 @@ from openai.types.realtime.realtime_response_create_params import RealtimeRespon
 from openai.types.realtime.realtime_session_create_request import RealtimeSessionCreateRequest
 from openai.types.responses import ResponseFunctionToolCall
 
-import speech_to_speech.LLM.base_openai_compatible_language_model as base_mod
-import speech_to_speech.LLM.chat_completions_language_model as ccm
-from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
-from speech_to_speech.LLM.chat import Chat, make_user_audio_message, make_user_message
-from speech_to_speech.LLM.chat_completions_language_model import (
+import chatbot.LLM.base_openai_compatible_language_model as base_mod
+import chatbot.LLM.chat_completions_language_model as ccm
+from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
+from chatbot.LLM.chat import Chat, make_user_audio_message, make_user_message
+from chatbot.LLM.chat_completions_language_model import (
     ChatCompletionsApiModelHandler,
     _to_chat_tool_choice,
     _to_chat_tools,
 )
-from speech_to_speech.pipeline.messages import (
+from chatbot.pipeline.messages import (
     EndOfResponse,
     GenerateResponseRequest,
     LLMResponseChunk,

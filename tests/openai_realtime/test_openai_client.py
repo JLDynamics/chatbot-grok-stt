@@ -30,16 +30,16 @@ import pytest
 import uvicorn
 from openai import AsyncOpenAI
 
-import speech_to_speech.api.openai_realtime.audio_client as audio_client_module
-from speech_to_speech.api.openai_realtime.audio_client import (
+import chatbot.api.openai_realtime.audio_client as audio_client_module
+from chatbot.api.openai_realtime.audio_client import (
     RealtimeAudioClientConfig,
     listen_and_play_realtime,
 )
-from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit
-from speech_to_speech.api.openai_realtime.service import RealtimeService
-from speech_to_speech.api.openai_realtime.websocket_router import create_app
-from speech_to_speech.pipeline.cancel_scope import CancelScope
-from speech_to_speech.pipeline.events import (
+from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
+from chatbot.api.openai_realtime.service import RealtimeService
+from chatbot.api.openai_realtime.websocket_router import create_app
+from chatbot.pipeline.cancel_scope import CancelScope
+from chatbot.pipeline.events import (
     AssistantTextEvent,
     AudioInputCompletedEvent,
     PartialTranscriptionEvent,
@@ -47,8 +47,8 @@ from speech_to_speech.pipeline.events import (
     SpeechStoppedEvent,
     TranscriptionCompletedEvent,
 )
-from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, GenerateResponseRequest
-from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, GenerateResponseRequest
+from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run speech-to-speech with OpenRouter as the LLM.
+# Run chatbot with OpenRouter as the LLM.
 #
 #   Ears  (STT):  Parakeet TDT   — local, MLX/MPS
 #   Brain (LLM):  GPT-5.6 Luna   — remote, via OpenRouter
@@ -107,12 +107,12 @@ if [[ "$COMMAND" != "local" && "$COMMAND" != "serve" ]]; then
 fi
 
 # Prefer the project's virtualenv if one exists, else whatever is on PATH.
-if [[ -x ".venv/bin/speech-to-speech" ]]; then
-  S2S=".venv/bin/speech-to-speech"
-elif command -v speech-to-speech >/dev/null 2>&1; then
-  S2S="speech-to-speech"
+if [[ -x ".venv/bin/chatbot" ]]; then
+  S2S=".venv/bin/chatbot"
+elif command -v chatbot >/dev/null 2>&1; then
+  S2S="chatbot"
 else
-  echo "Error: speech-to-speech not found. Install it with:  uv sync  (or  pip install -e .)" >&2
+  echo "Error: chatbot not found. Install it with:  uv sync  (or  pip install -e .)" >&2
   exit 1
 fi
 

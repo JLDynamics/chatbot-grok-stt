@@ -1,4 +1,4 @@
-"""Extensive tests for speech_to_speech.LLM.chat.
+"""Extensive tests for chatbot.LLM.chat.
 
 Covers Chat class (init, add_item validation/eviction,
 serialization to both Response API and transformers formats,
@@ -29,7 +29,7 @@ from openai.types.realtime.realtime_conversation_item_user_message import (
 )
 from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 
-from speech_to_speech.LLM.chat import (
+from chatbot.LLM.chat import (
     AUDIO_INPUT_HISTORY_PLACEHOLDER,
     Chat,
     ChatItemError,

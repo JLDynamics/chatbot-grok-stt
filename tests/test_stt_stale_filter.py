@@ -7,9 +7,9 @@ from typing import Iterator, Literal
 
 import numpy as np
 
-from speech_to_speech.pipeline.messages import PIPELINE_END, PartialTranscription, Transcription, VADAudio
-from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
-from speech_to_speech.STT.base_stt_handler import BaseSTTHandler
+from chatbot.pipeline.messages import PIPELINE_END, PartialTranscription, Transcription, VADAudio
+from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.STT.base_stt_handler import BaseSTTHandler
 
 
 class RecordingSTTHandler(BaseSTTHandler):

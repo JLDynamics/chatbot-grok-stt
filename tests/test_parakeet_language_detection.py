@@ -1,7 +1,7 @@
 import pytest
 
-from speech_to_speech.STT import parakeet_tdt_handler
-from speech_to_speech.STT.parakeet_tdt_handler import ParakeetTDTSTTHandler
+from chatbot.STT import parakeet_tdt_handler
+from chatbot.STT.parakeet_tdt_handler import ParakeetTDTSTTHandler
 
 
 def test_build_lingua_detector_preloads_language_models(monkeypatch):

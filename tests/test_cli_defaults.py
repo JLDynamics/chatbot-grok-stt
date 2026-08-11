@@ -3,21 +3,21 @@ from dataclasses import fields
 
 import pytest
 
-from speech_to_speech.arguments_classes.chat_completions_language_model_arguments import (
+from chatbot.arguments_classes.chat_completions_language_model_arguments import (
     ChatCompletionsLanguageModelHandlerArguments,
 )
-from speech_to_speech.arguments_classes.language_model_arguments import LanguageModelHandlerArguments
-from speech_to_speech.arguments_classes.local_audio_arguments import LocalAudioArguments
-from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
-from speech_to_speech.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandlerArguments
-from speech_to_speech.arguments_classes.realtime_server_arguments import RealtimeServerArguments
-from speech_to_speech.arguments_classes.responses_api_language_model_arguments import (
+from chatbot.arguments_classes.language_model_arguments import LanguageModelHandlerArguments
+from chatbot.arguments_classes.local_audio_arguments import LocalAudioArguments
+from chatbot.arguments_classes.module_arguments import ModuleArguments
+from chatbot.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandlerArguments
+from chatbot.arguments_classes.realtime_server_arguments import RealtimeServerArguments
+from chatbot.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
-from speech_to_speech.arguments_classes.vad_arguments import VADHandlerArguments
-from speech_to_speech.backend_registry import BackendSelection
-from speech_to_speech.cli import main, parse_command, parse_talk_arguments
-from speech_to_speech.s2s_pipeline import ParsedArguments, parse_arguments, prepare_all_args, prepare_module_args
+from chatbot.arguments_classes.vad_arguments import VADHandlerArguments
+from chatbot.backend_registry import BackendSelection
+from chatbot.cli import main, parse_command, parse_talk_arguments
+from chatbot.s2s_pipeline import ParsedArguments, parse_arguments, prepare_all_args, prepare_module_args
 
 
 def test_release_defaults_match_responses_api_parakeet_qwen3_profile():
@@ -155,7 +155,7 @@ def test_parsed_arguments_field_types_match():
 def test_parse_arguments_default_backend_returns_openai_api():
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech"]
+        sys.argv = ["chatbot"]
         args = parse_arguments()
     finally:
         sys.argv = original_argv
@@ -178,7 +178,7 @@ def test_parse_arguments_accepts_smart_turn_options():
     original_argv = sys.argv[:]
     try:
         sys.argv = [
-            "speech-to-speech",
+            "chatbot",
             "--smart_turn",
             "--smart_turn_model_path",
             "/models/smart-turn.onnx",
@@ -207,7 +207,7 @@ def test_parse_arguments_accepts_smart_turn_options():
 def test_parse_arguments_can_disable_smart_turn():
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech", "--no_smart_turn"]
+        sys.argv = ["chatbot", "--no_smart_turn"]
         args = parse_arguments()
     finally:
         sys.argv = original_argv
@@ -218,7 +218,7 @@ def test_parse_arguments_can_disable_smart_turn():
 def test_parse_arguments_rejects_removed_smart_turn_device_option():
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech", "--smart_turn_device", "cuda"]
+        sys.argv = ["chatbot", "--smart_turn_device", "cuda"]
         with pytest.raises(ValueError, match="--smart_turn_device"):
             parse_arguments()
     finally:
@@ -228,7 +228,7 @@ def test_parse_arguments_rejects_removed_smart_turn_device_option():
 def test_parse_arguments_accepts_qwen3_tts_backend_override():
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech", "--qwen3_tts_backend", "torch"]
+        sys.argv = ["chatbot", "--qwen3_tts_backend", "torch"]
         args = parse_arguments()
     finally:
         sys.argv = original_argv
@@ -240,7 +240,7 @@ def test_parse_arguments_accepts_qwen3_tts_ggml_options():
     original_argv = sys.argv[:]
     try:
         sys.argv = [
-            "speech-to-speech",
+            "chatbot",
             "--qwen3_tts_ggml_quantization",
             "Q4_K_M",
             "--qwen3_tts_gguf_talker_path",
@@ -289,28 +289,28 @@ def test_cli_maps_legacy_modes_to_commands_with_warning(mode, command, command_f
 
     assert (
         capsys.readouterr().err == f"Warning: '--mode {mode}' is deprecated and will stop working soon; "
-        f"use 'speech-to-speech {command}' instead.\n"
+        f"use 'chatbot {command}' instead.\n"
     )
 
 
 def test_cli_accepts_equals_syntax_for_legacy_mode(capsys):
     assert parse_command(["--mode=realtime", "--port", "9876"]) == ("serve", ["--port", "9876"])
-    assert "use 'speech-to-speech serve' instead" in capsys.readouterr().err
+    assert "use 'chatbot serve' instead" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(("mode", "command"), [("realtime", "serve"), ("local", "local")])
 def test_main_dispatches_legacy_modes_to_pipeline_commands(mode, command, monkeypatch, capsys):
     calls = []
-    monkeypatch.setattr(sys, "argv", ["speech-to-speech", "--mode", mode, "--port", "9876"])
+    monkeypatch.setattr(sys, "argv", ["chatbot", "--mode", mode, "--port", "9876"])
     monkeypatch.setattr(
-        "speech_to_speech.s2s_pipeline.run_pipeline_command",
+        "chatbot.s2s_pipeline.run_pipeline_command",
         lambda selected_command, command_args: calls.append((selected_command, command_args)),
     )
 
     main()
 
     assert calls == [(command, ["--port", "9876"])]
-    assert f"use 'speech-to-speech {command}' instead" in capsys.readouterr().err
+    assert f"use 'chatbot {command}' instead" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("mode", ["socket", "raw-websocket", "websocket"])
@@ -320,8 +320,8 @@ def test_cli_rejects_other_legacy_modes_with_migration_guidance(mode, capsys):
 
     error = capsys.readouterr().err
     assert "only 'realtime' and 'local' remain temporarily" in error
-    assert "speech-to-speech serve" in error
-    assert "speech-to-speech local" in error
+    assert "chatbot serve" in error
+    assert "chatbot local" in error
 
 
 def test_talk_accepts_one_full_url_connection_option():
@@ -366,7 +366,7 @@ def test_local_accepts_audio_flags_but_rejects_host():
 def test_parse_arguments_transformers_backend():
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech", "--llm_backend", "transformers"]
+        sys.argv = ["chatbot", "--llm_backend", "transformers"]
         args = parse_arguments()
     finally:
         sys.argv = original_argv
@@ -382,7 +382,7 @@ def test_prepare_module_args_rejects_responses_api_for_stt_none():
     original_argv = sys.argv[:]
     try:
         sys.argv = [
-            "speech-to-speech",
+            "chatbot",
             "--stt",
             "none",
             "--responses_api_base_url",
@@ -405,7 +405,7 @@ def test_parse_arguments_stt_none_supports_chat_completions_audio_path():
     original_argv = sys.argv[:]
     try:
         sys.argv = [
-            "speech-to-speech",
+            "chatbot",
             "--stt",
             "none",
             "--llm_backend",
@@ -434,7 +434,7 @@ def test_parse_arguments_stt_none_supports_chat_completions_audio_path():
 def test_parse_arguments_all_fields_populated():
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech"]
+        sys.argv = ["chatbot"]
         args = parse_arguments()
     finally:
         sys.argv = original_argv

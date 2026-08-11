@@ -22,11 +22,11 @@ import uvicorn
 from pydantic import BaseModel
 from starlette.testclient import TestClient
 
-from speech_to_speech.api.openai_realtime.llm_proxy import LLMProxyConfig
-from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit
-from speech_to_speech.api.openai_realtime.service import RealtimeService
-from speech_to_speech.api.openai_realtime.websocket_router import create_app
-from speech_to_speech.pipeline.cancel_scope import CancelScope
+from chatbot.api.openai_realtime.llm_proxy import LLMProxyConfig
+from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
+from chatbot.api.openai_realtime.service import RealtimeService
+from chatbot.api.openai_realtime.websocket_router import create_app
+from chatbot.pipeline.cancel_scope import CancelScope
 
 # ---------------------------------------------------------------------------
 # Fake upstream provider
@@ -555,12 +555,12 @@ class TestProxyConfigFollowsBackendSettings:
     def test_config_reads_the_normalized_selected_backend(self):
         # Regression: the proxy and pipeline must consume the same normalized
         # selected config, including non-default provider connection settings.
-        from speech_to_speech.arguments_classes.chat_completions_language_model_arguments import (
+        from chatbot.arguments_classes.chat_completions_language_model_arguments import (
             ChatCompletionsLanguageModelHandlerArguments,
         )
-        from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
-        from speech_to_speech.backend_registry import LLM_BACKENDS, select_backend
-        from speech_to_speech.s2s_pipeline import build_llm_proxy_config
+        from chatbot.arguments_classes.module_arguments import ModuleArguments
+        from chatbot.backend_registry import LLM_BACKENDS, select_backend
+        from chatbot.s2s_pipeline import build_llm_proxy_config
 
         module_kwargs = ModuleArguments(enable_llm_proxy=True, llm_backend="chat-completions")
         lm_kwargs = ChatCompletionsLanguageModelHandlerArguments(

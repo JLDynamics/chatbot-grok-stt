@@ -2,13 +2,13 @@ import json
 
 import pytest
 
-from speech_to_speech.LLM.tool_call import function_call as function_call_module
-from speech_to_speech.LLM.tool_call.function_call import (
+from chatbot.LLM.tool_call import function_call as function_call_module
+from chatbot.LLM.tool_call.function_call import (
     FunctionToolCall,
     extract_function_calls_from_text,
     parse_function_call,
 )
-from speech_to_speech.LLM.tool_call.function_tool import FunctionTool
+from chatbot.LLM.tool_call.function_tool import FunctionTool
 
 # ---------------------------------------------------------------------------
 # parse_function_call – single calls

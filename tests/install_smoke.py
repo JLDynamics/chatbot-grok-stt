@@ -23,7 +23,7 @@ def _help_exposes_flag(help_text: str, flag: str) -> bool:
 def _run_installed_cli_help() -> None:
     env = {**os.environ, "OPENAI_API_KEY": ""}
     root_help = subprocess.run(
-        ["speech-to-speech", "--help"],
+        ["chatbot", "--help"],
         check=True,
         env=env,
         stdout=subprocess.PIPE,
@@ -36,7 +36,7 @@ def _run_installed_cli_help() -> None:
         raise RuntimeError(f"Installed CLI help is missing expected commands: {', '.join(missing_commands)}")
 
     serve_help = subprocess.run(
-        ["speech-to-speech", "serve", "--help"],
+        ["chatbot", "serve", "--help"],
         check=True,
         env=env,
         stdout=subprocess.PIPE,
@@ -49,7 +49,7 @@ def _run_installed_cli_help() -> None:
         raise RuntimeError(f"Installed serve help is missing expected flags: {', '.join(missing_flags)}")
 
     talk_help = subprocess.run(
-        ["speech-to-speech", "talk", "--help"],
+        ["chatbot", "talk", "--help"],
         check=True,
         env=env,
         stdout=subprocess.PIPE,
@@ -73,7 +73,7 @@ def _run_installed_cli_help() -> None:
         ("local", "local", "--local_audio_input_device"),
     ):
         legacy_help = subprocess.run(
-            ["speech-to-speech", "--mode", legacy_mode, "--help"],
+            ["chatbot", "--mode", legacy_mode, "--help"],
             check=True,
             env=env,
             stdout=subprocess.PIPE,
@@ -84,7 +84,7 @@ def _run_installed_cli_help() -> None:
             raise RuntimeError(f"Installed CLI does not map deprecated '--mode {legacy_mode}' to '{command}'")
 
     removed_mode = subprocess.run(
-        ["speech-to-speech", "--mode", "socket"],
+        ["chatbot", "--mode", "socket"],
         check=False,
         env=env,
         stdout=subprocess.PIPE,
@@ -102,13 +102,13 @@ def _run_installed_cli_help() -> None:
 
 
 def _validate_package_defaults() -> None:
-    import speech_to_speech
-    from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
-    from speech_to_speech.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandlerArguments
-    from speech_to_speech.arguments_classes.responses_api_language_model_arguments import (
+    import chatbot
+    from chatbot.arguments_classes.module_arguments import ModuleArguments
+    from chatbot.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandlerArguments
+    from chatbot.arguments_classes.responses_api_language_model_arguments import (
         ResponsesApiLanguageModelHandlerArguments,
     )
-    from speech_to_speech.arguments_classes.vad_arguments import VADHandlerArguments
+    from chatbot.arguments_classes.vad_arguments import VADHandlerArguments
 
     module_args = ModuleArguments()
     responses_api_args = ResponsesApiLanguageModelHandlerArguments()
@@ -143,18 +143,18 @@ def _validate_package_defaults() -> None:
     assert vad_args.realtime_processing_pause == 0.5
     assert vad_args.smart_turn is True
 
-    package_root = Path(speech_to_speech.__file__).resolve().parent
+    package_root = Path(chatbot.__file__).resolve().parent
     ref_audio = package_root / "TTS" / "ref_audio.wav"
     if not ref_audio.exists():
         raise RuntimeError(f"Packaged Qwen3-TTS reference audio is missing: {ref_audio}")
 
 
 def _validate_empty_qwen_ref_audio_arg() -> None:
-    from speech_to_speech.s2s_pipeline import parse_arguments
+    from chatbot.s2s_pipeline import parse_arguments
 
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech", "--qwen3_tts_ref_audio="]
+        sys.argv = ["chatbot", "--qwen3_tts_ref_audio="]
         qwen3_config = parse_arguments().tts_backend.config
     finally:
         sys.argv = original_argv
@@ -165,8 +165,8 @@ def _validate_empty_qwen_ref_audio_arg() -> None:
 
 
 def _validate_realtime_engine_imports() -> None:
-    from speech_to_speech.api.openai_realtime.audio_client import RealtimeAudioClient
-    from speech_to_speech.api.openai_realtime.server import RealtimeServer
+    from chatbot.api.openai_realtime.audio_client import RealtimeAudioClient
+    from chatbot.api.openai_realtime.server import RealtimeServer
 
     assert RealtimeAudioClient is not None
     assert RealtimeServer is not None
@@ -174,10 +174,10 @@ def _validate_realtime_engine_imports() -> None:
 
 def _validate_default_handler_imports() -> None:
     default_handler_modules = [
-        "speech_to_speech.LLM.responses_api_language_model",
-        "speech_to_speech.STT.parakeet_tdt_handler",
-        "speech_to_speech.TTS.qwen3_tts_handler",
-        "speech_to_speech.VAD.vad_handler",
+        "chatbot.LLM.responses_api_language_model",
+        "chatbot.STT.parakeet_tdt_handler",
+        "chatbot.TTS.qwen3_tts_handler",
+        "chatbot.VAD.vad_handler",
     ]
     for module_name in default_handler_modules:
         importlib.import_module(module_name)
@@ -242,7 +242,7 @@ def main() -> None:
     _validate_realtime_engine_imports()
     _validate_default_handler_imports()
     _validate_realtime_websocket_support()
-    print("speech-to-speech installed package smoke test passed")
+    print("chatbot installed package smoke test passed")
 
 
 if __name__ == "__main__":

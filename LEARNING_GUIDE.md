@@ -1,4 +1,4 @@
-# Learning Guide: `speech-to-speech`
+# Learning Guide: `chatbot`
 
 A map of this codebase for someone who knows Python but is new to voice-agent /
 audio-ML systems. Read this alongside the source — every claim below points at a
@@ -11,7 +11,7 @@ real file you can open.
 ## 1. What this project actually is
 
 A **voice agent**: you talk, it thinks, it talks back. Built by Hugging Face,
-Apache-2.0, published on PyPI as `speech-to-speech`, currently v0.2.12
+Apache-2.0, published on PyPI as `chatbot`, currently v0.2.12
 (`pyproject.toml`).
 
 Two things make it interesting as a codebase to learn from:
@@ -38,15 +38,15 @@ your voice  →  VAD  →  STT  →  LLM  →  TTS  →  its voice
 | LLM | Language Model | Generate the reply text | any OpenAI-compatible endpoint |
 | TTS | Text To Speech | Synthesize reply audio | Qwen3-TTS |
 
-Defaults live in `src/speech_to_speech/arguments_classes/module_arguments.py`.
+Defaults live in `src/chatbot/arguments_classes/module_arguments.py`.
 
 ---
 
 ## 2. Repo map
 
 ```
-speech-to-speech/
-├── src/speech_to_speech/        ← THE LIBRARY. 99% of your reading happens here.
+chatbot/
+├── src/chatbot/        ← THE LIBRARY. 99% of your reading happens here.
 │   ├── cli.py                   ← command-line entry point
 │   ├── s2s_pipeline.py          ← assembles everything (the "main")
 │   ├── baseHandler.py           ← the one abstraction to understand first
@@ -76,7 +76,7 @@ Mermaid architecture diagram. Read that one early.
 
 ## 3. The one abstraction to understand first
 
-**`src/speech_to_speech/baseHandler.py`** (161 lines — read the whole thing).
+**`src/chatbot/baseHandler.py`** (161 lines — read the whole thing).
 
 Every pipeline stage is a `BaseHandler`. The design is deliberately plain:
 
@@ -119,10 +119,10 @@ Two special values flow on the queues:
 
 ```toml
 [project.scripts]
-speech-to-speech = "speech_to_speech.cli:main"
+chatbot = "chatbot.cli:main"
 ```
 
-So `speech-to-speech <cmd>` → `cli.py:main()` (line 156). Three commands:
+So `chatbot <cmd>` → `cli.py:main()` (line 156). Three commands:
 
 | Command | What runs | Entry function |
 |---|---|---|
@@ -240,7 +240,7 @@ Three details worth noticing, because they're reusable patterns:
 - **Lazy imports** (`_load_handler`, line 194). Selecting `kokoro` shouldn't
   force you to have `chattts` installed. The import happens at construction time,
   and a missing optional dep is translated into a friendly "run `pip install
-  speech-to-speech[kokoro]`" error (`_optional_dependency_error`, line 171).
+  chatbot[extra]`" error (`_optional_dependency_error`, line 171).
 - **`BackendCapabilities`** (line 50). Instead of `if backend_name == "...":`
   scattered around, backends declare flags like `supports_audio_input` and
   `bypasses_transcription_notifier`, and the wiring code branches on those.
@@ -271,7 +271,7 @@ Three details worth noticing, because they're reusable patterns:
 
 Ordered easiest → hardest.
 
-1. **Run it.** `speech-to-speech local` after `export OPENAI_API_KEY=...`. Then
+1. **Run it.** `chatbot local` after `export OPENAI_API_KEY=...`. Then
    `--log_level debug` and watch the handlers announce themselves. The timing
    logs in `baseHandler.run()` show you exactly which stage is slow.
 2. **Change the personality.** `--init_chat_prompt "You are a pirate."` The

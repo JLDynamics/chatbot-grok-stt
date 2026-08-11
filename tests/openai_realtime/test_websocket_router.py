@@ -17,20 +17,20 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketState
 
-import speech_to_speech.api.openai_realtime.websocket_router as router_module
-from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit
-from speech_to_speech.api.openai_realtime.service import CHUNK_SIZE_BYTES, RealtimeService
-from speech_to_speech.api.openai_realtime.transports import WebSocketTransport
-from speech_to_speech.api.openai_realtime.websocket_router import create_app
-from speech_to_speech.pipeline.cancel_scope import CancelScope
-from speech_to_speech.pipeline.control import SESSION_END, PipelineControlMessage, is_control_message
-from speech_to_speech.pipeline.events import (
+import chatbot.api.openai_realtime.websocket_router as router_module
+from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
+from chatbot.api.openai_realtime.service import CHUNK_SIZE_BYTES, RealtimeService
+from chatbot.api.openai_realtime.transports import WebSocketTransport
+from chatbot.api.openai_realtime.websocket_router import create_app
+from chatbot.pipeline.cancel_scope import CancelScope
+from chatbot.pipeline.control import SESSION_END, PipelineControlMessage, is_control_message
+from chatbot.pipeline.events import (
     AssistantTextEvent,
     AudioInputCompletedEvent,
     SpeechStartedEvent,
     TokenUsageEvent,
 )
-from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, AudioOutput
+from chatbot.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, AudioOutput
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -41,11 +41,11 @@ from openai.types.realtime.conversation_item import (
     RealtimeConversationItemFunctionCall,
 )
 
-from speech_to_speech.api.openai_realtime.service import (
+from chatbot.api.openai_realtime.service import (
     CHUNK_SIZE_BYTES,
     RealtimeService,
 )
-from speech_to_speech.pipeline.events import (
+from chatbot.pipeline.events import (
     AssistantTextEvent,
     AudioInputCompletedEvent,
     PartialTranscriptionEvent,
@@ -55,8 +55,8 @@ from speech_to_speech.pipeline.events import (
     TokenUsageEvent,
     TranscriptionCompletedEvent,
 )
-from speech_to_speech.pipeline.messages import GenerateResponseRequest
-from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.pipeline.messages import GenerateResponseRequest
+from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2074,7 +2074,7 @@ class TestDispatchPipelineEvent:
     # -- unknown --
 
     def test_unknown_type_returns_empty(self, service, conn_id):
-        from speech_to_speech.pipeline.events import PipelineEvent
+        from chatbot.pipeline.events import PipelineEvent
 
         events = service.dispatch_pipeline_event(conn_id, PipelineEvent(type="something_else"))
         assert events == []
@@ -2494,7 +2494,7 @@ class TestChatImageLifecycle:
     """Tests for Chat.strip_images()."""
 
     def _make_chat(self):
-        from speech_to_speech.LLM.chat import Chat
+        from chatbot.LLM.chat import Chat
 
         return Chat(size=10)
 
@@ -2515,7 +2515,7 @@ class TestChatImageLifecycle:
         return RealtimeConversationItemUserMessage(type="message", role="user", content=content)
 
     def test_strip_images_removes_image_parts(self):
-        from speech_to_speech.LLM.chat import make_assistant_message
+        from chatbot.LLM.chat import make_assistant_message
 
         chat = self._make_chat()
         chat.add_item(self._user_msg(("text", "What is this?"), ("image", "data:image/png;base64,abc")))
@@ -2527,7 +2527,7 @@ class TestChatImageLifecycle:
         assert user_msg.content[0].text == "What is this?"
 
     def test_strip_images_noop_on_text_only(self):
-        from speech_to_speech.LLM.chat import make_assistant_message, make_user_message
+        from chatbot.LLM.chat import make_assistant_message, make_user_message
 
         chat = self._make_chat()
         chat.add_item(make_user_message("hello"))
@@ -2537,7 +2537,7 @@ class TestChatImageLifecycle:
         assert chat.buffer[1].content[0].text == "hi"
 
     def test_strip_then_new_image_cycle(self):
-        from speech_to_speech.LLM.chat import make_assistant_message
+        from chatbot.LLM.chat import make_assistant_message
 
         chat = self._make_chat()
         chat.add_item(self._user_msg(("text", "look"), ("image", "old_url")))
@@ -2560,7 +2560,7 @@ class TestChatToolCallTracking:
     """Tests for Chat._pending_tool_calls and append_tool_output."""
 
     def _make_chat(self, size=10):
-        from speech_to_speech.LLM.chat import Chat
+        from chatbot.LLM.chat import Chat
 
         return Chat(size=size)
 
@@ -2585,12 +2585,12 @@ class TestChatToolCallTracking:
         )
 
     def _user(self, text):
-        from speech_to_speech.LLM.chat import make_user_message
+        from chatbot.LLM.chat import make_user_message
 
         return make_user_message(text)
 
     def _assistant(self, text):
-        from speech_to_speech.LLM.chat import make_assistant_message
+        from chatbot.LLM.chat import make_assistant_message
 
         return make_assistant_message(text)
 
@@ -2629,7 +2629,7 @@ class TestChatToolCallTracking:
         assert fc_idx < fco_idx
 
     def test_append_tool_output_rejects_unknown_call_id(self):
-        from speech_to_speech.LLM.chat import ChatItemError
+        from chatbot.LLM.chat import ChatItemError
 
         chat = self._make_chat()
         with pytest.raises(ChatItemError, match="call_nope"):

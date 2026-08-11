@@ -3,9 +3,9 @@ from threading import Event, Thread
 
 from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 
-from speech_to_speech.LLM.lm_output_processor import LMOutputProcessor
-from speech_to_speech.pipeline.messages import EndOfResponse, LLMResponseChunk, TTSInput
-from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.LLM.lm_output_processor import LMOutputProcessor
+from chatbot.pipeline.messages import EndOfResponse, LLMResponseChunk, TTSInput
+from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 
 
 def _processor(tracker: SpeculativeTurnTracker) -> LMOutputProcessor:

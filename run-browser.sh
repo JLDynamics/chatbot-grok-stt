@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run speech-to-speech with the BROWSER client instead of the terminal one.
+# Run chatbot with the BROWSER client instead of the terminal one.
 #
 # Why: the browser gives you real acoustic echo cancellation for free --
 # demo/main.js asks for getUserMedia({echoCancellation, noiseSuppression,
@@ -30,7 +30,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
-PORT="${PORT:-8766}"                 # speech-to-speech server
+PORT="${PORT:-8766}"                 # chatbot server
 WEB_PORT="${WEB_PORT:-7860}"         # browser UI
 SERVER_LOG="${SERVER_LOG:-/tmp/s2s-server.log}"
 WEB_LOG="${WEB_LOG:-/tmp/s2s-web.log}"
@@ -54,7 +54,7 @@ for p in "$PORT" "$WEB_PORT"; do
   if [[ -n "$OCC" ]]; then
     OCC_CMD="$(ps -p "$OCC" -o command= 2>/dev/null || true)"
     echo "Error: port $p is already in use (pid $OCC)." >&2
-    if [[ "$OCC_CMD" == *speech-to-speech* || "$OCC_CMD" == *"server:app"* ]]; then
+    if [[ "$OCC_CMD" == *chatbot* || "$OCC_CMD" == *"server:app"* ]]; then
       echo >&2
       echo "That is a leftover from an earlier run of this script. Stop it with:" >&2
       echo >&2
@@ -88,7 +88,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Starting the speech-to-speech server (models load first, ~10s)..."
+echo "Starting the chatbot server (models load first, ~10s)..."
 echo "  log: $SERVER_LOG"
 PORT="$PORT" ./run-openrouter.sh serve >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!

@@ -2,15 +2,15 @@ import sys
 from threading import Event
 from types import SimpleNamespace
 
-from speech_to_speech.api.openai_realtime.audio_client import RealtimeAudioClient
-from speech_to_speech.api.openai_realtime.server import RealtimeServer
-from speech_to_speech.s2s_pipeline import build_local_pipeline, build_pipeline, parse_arguments
+from chatbot.api.openai_realtime.audio_client import RealtimeAudioClient
+from chatbot.api.openai_realtime.server import RealtimeServer
+from chatbot.s2s_pipeline import build_local_pipeline, build_pipeline, parse_arguments
 
 
 def _default_args():
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech"]
+        sys.argv = ["chatbot"]
         return parse_arguments()
     finally:
         sys.argv = original_argv
@@ -27,7 +27,7 @@ def test_serve_builds_pipeline_unit_pool(monkeypatch):
         calls.append(kwargs)
         return units[kwargs["index"]]
 
-    monkeypatch.setattr("speech_to_speech.s2s_pipeline._build_pipeline_unit", fake_build_pipeline_unit)
+    monkeypatch.setattr("chatbot.s2s_pipeline._build_pipeline_unit", fake_build_pipeline_unit)
     stop_event = Event()
     manager = build_pipeline(args, stop_event)
 
@@ -45,7 +45,7 @@ def test_local_composes_loopback_client_with_same_server_builder(monkeypatch):
     args.realtime_server_kwargs.port = 9876
     pipeline_handler = object()
     unit = SimpleNamespace(handlers=[pipeline_handler])
-    monkeypatch.setattr("speech_to_speech.s2s_pipeline._build_pipeline_unit", lambda **_kwargs: unit)
+    monkeypatch.setattr("chatbot.s2s_pipeline._build_pipeline_unit", lambda **_kwargs: unit)
 
     manager = build_local_pipeline(args, Event())
 

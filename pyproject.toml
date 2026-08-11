@@ -3,7 +3,7 @@ requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "speech-to-speech"
+name = "chatbot"
 version = "0.2.12"
 description = "Personal local voice chatbot with long-term memory"
 readme = "README.md"
@@ -13,9 +13,9 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Jack" },
 ]
-# Built on huggingface/speech-to-speech (Apache-2.0). The original copyright
+# Built on huggingface/chatbot (Apache-2.0). The original copyright
 # notice lives in LICENSE; this field records who maintains *this* fork.
-keywords = ["speech-to-speech", "voice-agents", "speech-recognition", "text-to-speech", "openai"]
+keywords = ["voice-agents", "speech-recognition", "text-to-speech", "openai"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -94,7 +94,7 @@ Repository = "https://github.com/JLDynamics/chatbot"
 Issues = "https://github.com/JLDynamics/chatbot/issues"
 
 [project.scripts]
-speech-to-speech = "speech_to_speech.cli:main"
+chatbot = "chatbot.cli:main"
 
 [dependency-groups]
 dev = [
@@ -114,11 +114,11 @@ prerelease = "allow"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["speech_to_speech*"]
+include = ["chatbot*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-speech_to_speech = ["TTS/*.wav"]
+chatbot = ["TTS/*.wav"]
 
 [tool.ruff]
 src = ["src"]

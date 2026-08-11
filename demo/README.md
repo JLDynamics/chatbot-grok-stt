@@ -22,7 +22,7 @@ backend, speaking the OpenAI Realtime **GA** protocol over **WebSocket**
 ## Quick start (local)
 
 1. **Start the speech-to-speech backend** (from the repo root;
-   see the [backend README](https://github.com/huggingface/speech-to-speech/blob/main/src/speech_to_speech/api/openai_realtime/README.md)
+   see the [backend README](https://github.com/huggingface/speech-to-speech/blob/main/src/chatbot/api/openai_realtime/README.md)
    for more model combinations):
 
    ```bash

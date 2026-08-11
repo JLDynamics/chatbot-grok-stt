@@ -21,17 +21,17 @@ from openai.types.responses import (
 )
 from openai.types.responses.response_output_text import ResponseOutputText
 
-import speech_to_speech.LLM.base_openai_compatible_language_model as base_openai_compatible_language_model
-from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
-from speech_to_speech.LLM.base_openai_compatible_language_model import WARMUP_MAX_RETRIES
-from speech_to_speech.LLM.chat import (
+import chatbot.LLM.base_openai_compatible_language_model as base_openai_compatible_language_model
+from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
+from chatbot.LLM.base_openai_compatible_language_model import WARMUP_MAX_RETRIES
+from chatbot.LLM.chat import (
     AUDIO_INPUT_HISTORY_PLACEHOLDER,
     Chat,
     make_user_message,
 )
-from speech_to_speech.LLM.responses_api_language_model import ResponsesApiModelHandler
-from speech_to_speech.pipeline.cancel_scope import CancelScope
-from speech_to_speech.pipeline.messages import EndOfResponse, GenerateResponseRequest, LLMResponseChunk, TokenUsage
+from chatbot.LLM.responses_api_language_model import ResponsesApiModelHandler
+from chatbot.pipeline.cancel_scope import CancelScope
+from chatbot.pipeline.messages import EndOfResponse, GenerateResponseRequest, LLMResponseChunk, TokenUsage
 
 
 def _make_text_delta_event(text):

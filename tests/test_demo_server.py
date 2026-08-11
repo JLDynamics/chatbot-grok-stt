@@ -63,7 +63,7 @@ def test_load_balancer_headers_forward_signed_in_user_token(monkeypatch):
 
     assert demo_server._load_balancer_headers(object()) == {
         "Content-Type": "application/json",
-        "User-Agent": "speech-to-speech-demo",
+        "User-Agent": "chatbot-demo",
         "X-Reachy-Mini-Authorization": "Bearer hf_user_token",
     }
 
@@ -75,7 +75,7 @@ def test_load_balancer_headers_keep_anonymous_requests_credential_free(monkeypat
 
     assert headers == {
         "Content-Type": "application/json",
-        "User-Agent": "speech-to-speech-demo",
+        "User-Agent": "chatbot-demo",
     }
 
 

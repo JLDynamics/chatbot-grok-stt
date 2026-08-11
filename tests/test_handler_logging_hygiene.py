@@ -21,14 +21,14 @@ import pytest
 _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 
 _HANDLERS_WITH_FORMER_BASIC_CONFIG = [
-    "speech_to_speech/STT/paraformer_handler.py",
-    "speech_to_speech/TTS/facebookmms_handler.py",
-    "speech_to_speech/TTS/chatTTS_handler.py",
+    "chatbot/STT/paraformer_handler.py",
+    "chatbot/TTS/facebookmms_handler.py",
+    "chatbot/TTS/chatTTS_handler.py",
 ]
 
 _HANDLERS_WITH_FORMER_PRINT = [
-    "speech_to_speech/STT/paraformer_handler.py",
-    "speech_to_speech/STT/faster_whisper_handler.py",
+    "chatbot/STT/paraformer_handler.py",
+    "chatbot/STT/faster_whisper_handler.py",
 ]
 
 
@@ -85,7 +85,7 @@ def test_paraformer_import_does_not_call_basic_config(monkeypatch: pytest.Monkey
     sentinel = MagicMock()
     monkeypatch.setattr(logging, "basicConfig", sentinel)
 
-    module_name = "speech_to_speech.STT.paraformer_handler"
+    module_name = "chatbot.STT.paraformer_handler"
     sys.modules.pop(module_name, None)
     importlib.import_module(module_name)
 
@@ -96,7 +96,7 @@ def test_facebookmms_import_does_not_call_basic_config(monkeypatch: pytest.Monke
     sentinel = MagicMock()
     monkeypatch.setattr(logging, "basicConfig", sentinel)
 
-    module_name = "speech_to_speech.TTS.facebookmms_handler"
+    module_name = "chatbot.TTS.facebookmms_handler"
     sys.modules.pop(module_name, None)
     importlib.import_module(module_name)
 
@@ -108,7 +108,7 @@ def test_chattts_import_does_not_call_basic_config(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(logging, "basicConfig", sentinel)
     monkeypatch.setitem(sys.modules, "ChatTTS", MagicMock())
 
-    module_name = "speech_to_speech.TTS.chatTTS_handler"
+    module_name = "chatbot.TTS.chatTTS_handler"
     sys.modules.pop(module_name, None)
     importlib.import_module(module_name)
 
@@ -118,7 +118,7 @@ def test_chattts_import_does_not_call_basic_config(monkeypatch: pytest.MonkeyPat
 def test_paraformer_setup_logs_model_name_instead_of_printing(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from speech_to_speech.STT.paraformer_handler import ParaformerSTTHandler
+    from chatbot.STT.paraformer_handler import ParaformerSTTHandler
 
     fake_model = MagicMock()
     fake_model.generate.return_value = [{"text": "warmup"}]
@@ -128,7 +128,7 @@ def test_paraformer_setup_logs_model_name_instead_of_printing(
     monkeypatch.setitem(sys.modules, "funasr", fake_funasr)
 
     handler = object.__new__(ParaformerSTTHandler)
-    with caplog.at_level(logging.INFO, logger="speech_to_speech.STT.paraformer_handler"):
+    with caplog.at_level(logging.INFO, logger="chatbot.STT.paraformer_handler"):
         handler.setup(model_name="paraformer-zh", device="cpu")
 
     assert "Loading Paraformer STT model: paraformer-zh" in caplog.text
@@ -139,13 +139,13 @@ def test_faster_whisper_cleanup_logs_instead_of_printing(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setitem(sys.modules, "faster_whisper", MagicMock())
-    sys.modules.pop("speech_to_speech.STT.faster_whisper_handler", None)
-    from speech_to_speech.STT.faster_whisper_handler import FasterWhisperSTTHandler
+    sys.modules.pop("chatbot.STT.faster_whisper_handler", None)
+    from chatbot.STT.faster_whisper_handler import FasterWhisperSTTHandler
 
     handler = object.__new__(FasterWhisperSTTHandler)
     handler.model = object()
 
-    with caplog.at_level(logging.INFO, logger="speech_to_speech.STT.faster_whisper_handler"):
+    with caplog.at_level(logging.INFO, logger="chatbot.STT.faster_whisper_handler"):
         handler.cleanup()
 
     assert "Stopping FasterWhisperSTTHandler" in caplog.text

@@ -7,11 +7,11 @@ import numpy as np
 import pytest
 import torch
 
-from speech_to_speech.pipeline.events import SpeechStartedEvent, SpeechStoppedEvent
-from speech_to_speech.pipeline.messages import VADAudio
-from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
-from speech_to_speech.VAD.smart_turn import SmartTurnResult
-from speech_to_speech.VAD.vad_handler import VADHandler
+from chatbot.pipeline.events import SpeechStartedEvent, SpeechStoppedEvent
+from chatbot.pipeline.messages import VADAudio
+from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.VAD.smart_turn import SmartTurnResult
+from chatbot.VAD.vad_handler import VADHandler
 
 
 def test_pending_reopen_defers_commit_until_cancelled():

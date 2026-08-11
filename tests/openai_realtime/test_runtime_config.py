@@ -8,7 +8,7 @@ explicit None clears a previously-set value.
 from openai.types.realtime import RealtimeSessionCreateRequest
 from openai.types.realtime.session_update_event import SessionUpdateEvent
 
-from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
+from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
 
 
 def _parse_session(**session_fields) -> RealtimeSessionCreateRequest:

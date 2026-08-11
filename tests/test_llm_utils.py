@@ -2,7 +2,7 @@ import importlib
 
 import pytest
 
-from speech_to_speech.LLM.utils import (
+from chatbot.LLM.utils import (
     WHISPER_LANGUAGE_TO_LLM_LANGUAGE,
     remove_unspeechable,
     resolve_auto_language,
@@ -35,18 +35,18 @@ def test_remove_unspeechable_keeps_chinese_punctuation() -> None:
 
 # Modules that declare a SUPPORTED_LANGUAGES list of codes they can report.
 _STT_HANDLER_MODULES = [
-    "speech_to_speech.STT.parakeet_tdt_handler",
-    "speech_to_speech.STT.whisper_stt_handler",
-    "speech_to_speech.STT.mlx_audio_whisper_handler",
-    "speech_to_speech.STT.lightning_whisper_mlx_handler",
+    "chatbot.STT.parakeet_tdt_handler",
+    "chatbot.STT.whisper_stt_handler",
+    "chatbot.STT.mlx_audio_whisper_handler",
+    "chatbot.STT.lightning_whisper_mlx_handler",
 ]
 
 # These have no optional top-level dependency, so a skip here means something is wrong
 # rather than merely uninstalled.
 _ALWAYS_IMPORTABLE = {
-    "speech_to_speech.STT.parakeet_tdt_handler",
-    "speech_to_speech.STT.whisper_stt_handler",
-    "speech_to_speech.STT.mlx_audio_whisper_handler",
+    "chatbot.STT.parakeet_tdt_handler",
+    "chatbot.STT.whisper_stt_handler",
+    "chatbot.STT.mlx_audio_whisper_handler",
 }
 
 
@@ -77,7 +77,7 @@ def test_every_stt_language_has_an_llm_language_name(module_name):
 
 def test_parakeet_default_stt_is_fully_covered():
     """Explicit guard for the default backend, independent of the parametrized sweep."""
-    parakeet = importlib.import_module("speech_to_speech.STT.parakeet_tdt_handler")
+    parakeet = importlib.import_module("chatbot.STT.parakeet_tdt_handler")
 
     assert len(parakeet.SUPPORTED_LANGUAGES) == 25
     assert set(parakeet.SUPPORTED_LANGUAGES) <= set(WHISPER_LANGUAGE_TO_LLM_LANGUAGE)

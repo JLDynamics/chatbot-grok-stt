@@ -1,7 +1,7 @@
-from speech_to_speech.LLM.language_model import LanguageModelHandler, StreamContext
-from speech_to_speech.LLM.tool_call.function_tool import FunctionTool
-from speech_to_speech.LLM.tool_call.tool_prompt import END_CODE, ENTER_CODE, build_block_regex, build_tool_system_prompt
-from speech_to_speech.LLM.voice_prompt import VOICE_SYSTEM_PROMPT, build_voice_system_prompt
+from chatbot.LLM.language_model import LanguageModelHandler, StreamContext
+from chatbot.LLM.tool_call.function_tool import FunctionTool
+from chatbot.LLM.tool_call.tool_prompt import END_CODE, ENTER_CODE, build_block_regex, build_tool_system_prompt
+from chatbot.LLM.voice_prompt import VOICE_SYSTEM_PROMPT, build_voice_system_prompt
 
 
 def test_voice_prompt_is_short_and_keeps_persona_in_session_prompt():

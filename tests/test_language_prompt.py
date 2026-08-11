@@ -23,12 +23,12 @@ from types import SimpleNamespace
 import pytest
 from openai.types.realtime.realtime_session_create_request import RealtimeSessionCreateRequest
 
-import speech_to_speech.LLM.base_openai_compatible_language_model as base_mod
-from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
-from speech_to_speech.LLM.chat import Chat, make_user_message
-from speech_to_speech.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
-from speech_to_speech.pipeline.messages import GenerateResponseRequest
-from speech_to_speech.STT.parakeet_tdt_handler import SUPPORTED_LANGUAGES as PARAKEET_LANGUAGES
+import chatbot.LLM.base_openai_compatible_language_model as base_mod
+from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
+from chatbot.LLM.chat import Chat, make_user_message
+from chatbot.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
+from chatbot.pipeline.messages import GenerateResponseRequest
+from chatbot.STT.parakeet_tdt_handler import SUPPORTED_LANGUAGES as PARAKEET_LANGUAGES
 
 
 class _FakeCompletions:

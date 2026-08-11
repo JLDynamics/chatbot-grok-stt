@@ -8,11 +8,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import speech_to_speech.TTS.qwen3_tts_handler as qwen3_tts_module
-from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
-from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, EndOfResponse, TTSInput
-from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
-from speech_to_speech.TTS.qwen3_tts_handler import Qwen3TTSHandler
+import chatbot.TTS.qwen3_tts_handler as qwen3_tts_module
+from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
+from chatbot.pipeline.messages import AUDIO_RESPONSE_DONE, EndOfResponse, TTSInput
+from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.TTS.qwen3_tts_handler import Qwen3TTSHandler
 
 
 def _audible_stream_chunk():
@@ -666,7 +666,7 @@ def test_process_commits_turn_before_generating_audio(monkeypatch, caplog):
 
     monkeypatch.setattr(qwen3_tts_module.console, "print", lambda *args, **kwargs: None)
 
-    with caplog.at_level(logging.INFO, logger="speech_to_speech.TTS.qwen3_tts_handler"):
+    with caplog.at_level(logging.INFO, logger="chatbot.TTS.qwen3_tts_handler"):
         outputs = list(
             handler.process(
                 TTSInput(

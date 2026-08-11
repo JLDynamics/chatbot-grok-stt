@@ -2,9 +2,9 @@ import logging
 from queue import Queue
 from threading import Event
 
-from speech_to_speech.pipeline.events import PartialTranscriptionEvent, TranscriptionCompletedEvent
-from speech_to_speech.pipeline.messages import PartialTranscription, Transcription
-from speech_to_speech.STT.transcription_notifier import TranscriptionNotifier
+from chatbot.pipeline.events import PartialTranscriptionEvent, TranscriptionCompletedEvent
+from chatbot.pipeline.messages import PartialTranscription, Transcription
+from chatbot.STT.transcription_notifier import TranscriptionNotifier
 
 
 def _notifier(
@@ -39,7 +39,7 @@ def test_non_empty_final_transcription_logs_full_text_at_info(caplog):
     notifier = _notifier()
     transcript = "hello " * 30
 
-    with caplog.at_level(logging.INFO, logger="speech_to_speech.STT.transcription_notifier"):
+    with caplog.at_level(logging.INFO, logger="chatbot.STT.transcription_notifier"):
         assert list(notifier.process(Transcription(text=transcript, language_code="en"))) == []
 
     assert "Transcription completed (language=en): " + transcript in caplog.text

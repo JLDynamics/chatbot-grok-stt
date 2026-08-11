@@ -1,8 +1,8 @@
 import numpy as np
 
-from speech_to_speech.pipeline.messages import PartialTranscription, Transcription, VADAudio
-from speech_to_speech.STT import paraformer_handler
-from speech_to_speech.STT.paraformer_handler import ParaformerSTTHandler
+from chatbot.pipeline.messages import PartialTranscription, Transcription, VADAudio
+from chatbot.STT import paraformer_handler
+from chatbot.STT.paraformer_handler import ParaformerSTTHandler
 
 
 class _FakeParaformerModel:

@@ -8,8 +8,8 @@ from openai.types.realtime.realtime_audio_config_input import RealtimeAudioConfi
 from openai.types.realtime.realtime_audio_config_output import RealtimeAudioConfigOutput
 from openai.types.realtime.realtime_audio_formats import AudioPCM
 
-from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
-from speech_to_speech.api.openai_realtime.service import RealtimeService
+from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
+from chatbot.api.openai_realtime.service import RealtimeService
 
 
 def _session_16k() -> RealtimeSessionCreateRequest:
