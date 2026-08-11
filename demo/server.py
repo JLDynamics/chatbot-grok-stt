@@ -42,6 +42,8 @@ the moment a slot is actually claimed (a grant), never while queued.
 """
 
 import asyncio
+import base64
+import io
 import ipaddress
 import json
 import logging
@@ -748,6 +750,158 @@ async def desktop_act(req: DesktopActRequest):
         raise HTTPException(status_code=502, detail=detail)
 
     return JSONResponse({"ok": True, "action": action, "output": out[-500:]})
+
+
+# ── Read a whole article ────────────────────────────────────────────────────
+#
+# One call that cannot give up. The model kept flailing between web_fetch,
+# read_screen, screen_snapshot and web_search -- and because every tool call
+# gets a spoken answer, that flailing was audible as narration. Worse, when a
+# site blocked fetching it simply stopped instead of trying the screen.
+#
+# So the strategy lives here instead of in the model:
+#   1. sweep the window's accessibility text, page by page
+#   2. if that yields too little (X and friends render into a canvas-ish tree,
+#      or block us outright), sweep AGAIN taking a screenshot per page
+#   3. stitch those shots into one tall image and hand it back
+#
+# Either way the caller gets one response, after the whole article is in hand.
+
+ARTICLE_MIN_CHARS = 600         # below this, the text sweep is treated as failed
+ARTICLE_MAX_SHOTS = 12          # tall enough for a long thread, small enough to send
+ARTICLE_SHOT_WIDTH = 1100       # downscale each page; text stays legible
+
+_ARTICLE_SHOT_SCRIPT = """
+import json
+from desktop_harness.helpers import screen_info, scroll, wait
+from desktop_harness.capture import screenshot
+
+app = {app!r}
+info = screen_info(app)
+
+height = 800.0
+for w in (info.get("windows") or []):
+    if not app or app.lower() in (w.get("app") or "").lower():
+        height = float(w.get("height") or height)
+        break
+page_lines = max(12, int(height / 16.0 * 0.85))
+
+shots = []
+for i in range({max_shots}):
+    shots.append(screenshot(app))
+    scroll(dy=-page_lines)
+    wait(0.5)
+
+print(json.dumps({{"info": info, "shots": shots}}))
+"""
+
+
+def _stitch(paths: list[str]) -> Optional[str]:
+    """Join page screenshots top-to-bottom into one JPEG data URL.
+
+    One tall image rather than N attachments: the Realtime turn carries a
+    single input_image, and a stitched strip also keeps the reading order
+    unambiguous for the model.
+    """
+    from PIL import Image
+
+    imgs = []
+    for p in paths:
+        try:
+            im = Image.open(p).convert("RGB")
+        except Exception:
+            continue
+        if im.width > ARTICLE_SHOT_WIDTH:
+            h = round(im.height * ARTICLE_SHOT_WIDTH / im.width)
+            im = im.resize((ARTICLE_SHOT_WIDTH, h), Image.LANCZOS)
+        imgs.append(im)
+    if not imgs:
+        return None
+
+    total_h = sum(i.height for i in imgs)
+    canvas = Image.new("RGB", (imgs[0].width, total_h), "white")
+    y = 0
+    for im in imgs:
+        canvas.paste(im, (0, y))
+        y += im.height
+
+    buf = io.BytesIO()
+    canvas.save(buf, format="JPEG", quality=70, optimize=True)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+class ArticleRequest(BaseModel):
+    app: Optional[str] = None
+
+
+@app.post("/api/desktop/article")
+async def read_article(req: ArticleRequest):
+    if not DESKTOP_READ_ENABLED:
+        raise HTTPException(status_code=503, detail="Desktop reading is turned off.")
+    if not os.path.exists(DESKTOP_HARNESS_BIN):
+        raise HTTPException(status_code=503, detail="desktop-harness is not installed.")
+
+    target = (req.app or "").strip() or None
+
+    # 1. Text sweep.
+    code, out = await _run_harness(
+        _READ_FULL_SCRIPT.format(app=target, max_rounds=40), 180.0
+    )
+    text_payload, text = {}, ""
+    if code == 0 and out:
+        try:
+            text_payload = json.loads(out.splitlines()[-1])
+            text = "\n".join(text_payload.get("labels") or [])
+        except (json.JSONDecodeError, IndexError):
+            pass
+
+    hit = _looks_like_credential_window(text_payload) if text_payload else None
+    if hit:
+        raise HTTPException(
+            status_code=451,
+            detail="That window looks like a sign-in or payment screen, so it was not read.",
+        )
+
+    if len(text) >= ARTICLE_MIN_CHARS:
+        logger.warning("read_article: text sweep ok (%d chars, %s rounds)",
+                       len(text), text_payload.get("rounds"))
+        return JSONResponse({
+            "method": "text",
+            "info": text_payload.get("info"),
+            "text": text,
+            "rounds": text_payload.get("rounds"),
+        })
+
+    # 2. Text was thin or blocked -- screenshot sweep instead.
+    logger.warning("read_article: text sweep thin (%d chars), falling back to screenshots", len(text))
+    code, out = await _run_harness(
+        _ARTICLE_SHOT_SCRIPT.format(app=target, max_shots=ARTICLE_MAX_SHOTS), 240.0
+    )
+    if code != 0:
+        raise HTTPException(status_code=502, detail=(out[-300:] or "Could not capture the screen."))
+    try:
+        shot_payload = json.loads(out.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        raise HTTPException(status_code=502, detail="Could not capture the screen.")
+
+    paths = shot_payload.get("shots") or []
+    image = await asyncio.to_thread(_stitch, paths)
+    for p in paths:                      # captures are transient, not a gallery
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+    if not image:
+        raise HTTPException(status_code=502, detail="Could not build the page image.")
+
+    logger.warning("read_article: stitched %d screenshots (%d KB)", len(paths), len(image) // 1024)
+    return JSONResponse({
+        "method": "screenshots",
+        "info": shot_payload.get("info"),
+        "text": text,
+        "pages": len(paths),
+        "image": image,
+    })
 
 
 # ── Web fetch ───────────────────────────────────────────────────────────────

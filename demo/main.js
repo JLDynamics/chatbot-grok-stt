@@ -151,6 +151,28 @@ const TOOL_DEFS = {
       required: ["task"],
     },
   },
+  read_article: {
+    type: "function",
+    name: "read_article",
+    description:
+      "Read an ENTIRE article, post, thread or long page that is open on the user's " +
+      "screen. Use this for any request like 'read the article on my screen', 'get the " +
+      "whole post', 'summarise this page'. " +
+      "It scrolls from top to bottom itself and returns everything in one go — by text " +
+      "if it can, and by capturing the pages as an image if the site blocks text (X, " +
+      "Twitter, Instagram and similar). You do not need to scroll, screenshot, fetch or " +
+      "retry: this already does all of that. " +
+      "Say one short line such as 'Reading it now' BEFORE calling, then say nothing until " +
+      "it returns. When it returns you will have the whole article — only then answer, " +
+      "once. Never describe the page section by section.",
+    parameters: {
+      type: "object",
+      properties: {
+        app: { type: "string", description: "Optional app, e.g. 'Google Chrome'. Omit for frontmost." },
+      },
+      required: [],
+    },
+  },
   read_screen: {
     type: "function",
     name: "read_screen",
@@ -160,14 +182,9 @@ const TOOL_DEFS = {
       "an error message, a menu, a document, what a button says. It is faster and far " +
       "more accurate than an image. Use screen_snapshot only for genuinely visual " +
       "questions like layout, colour or images. " +
-      "IMPORTANT: to read a whole article, thread, page or document, set full to true. " +
-      "That scrolls to the end and returns everything in ONE call. Without it you only " +
-      "get the part currently visible, which for an article is the first few paragraphs. " +
-      "Never scroll manually to read — this does it for you. Say one short line like " +
-      "'Reading it now' BEFORE the call, then stay quiet until it returns, then give the " +
-      "answer once. Do not describe the page section by section. " +
-      "Use this whenever web_fetch is blocked or refused by a site: the page is already " +
-      "rendered on screen, so reading it here works when fetching does not.",
+      "This reads only what is CURRENTLY VISIBLE — a dialog, an error, a menu, a toolbar. " +
+      "For a whole article, post, thread or long page, use read_article instead: it " +
+      "sweeps the entire page and falls back to images when a site blocks text.",
     parameters: {
       type: "object",
       properties: {
@@ -566,6 +583,7 @@ function activeToolDefs() {
   // No key required, so always available.
   defs.push(TOOL_DEFS.web_fetch);
   if (toolsEnabled.code_agent) defs.push(TOOL_DEFS.code_agent);
+  if (toolsEnabled.read_screen) defs.push(TOOL_DEFS.read_article);
   if (toolsEnabled.read_screen) defs.push(TOOL_DEFS.read_screen);
   // Riding on the same toggle as reading: a harness that can look but never
   // move is half a tool, and separating them just means two switches to find.
@@ -1335,6 +1353,34 @@ async function runTool(name, argsJson, callId) {
         result.output = `Could not do that: ${detail}`;
       }
       client.sendToolOutput(callId, result.output);
+    } else if (name === "read_article") {
+      const appName = typeof args.app === "string" ? args.app.trim() : "";
+      const res = await fetch("api/desktop/article", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app: appName || null }),
+      });
+      if (res.ok) {
+        const j = await res.json();
+        const where = j.info?.frontmost?.title || j.info?.frontmost?.app || appName || "the window";
+        if (j.method === "screenshots") {
+          // Text was blocked or too thin; the whole article is in the image.
+          result = {
+            output:
+              `The site blocked text extraction, so the full article was captured as an ` +
+              `image instead (${j.pages} screens, top to bottom). Read it from the image ` +
+              `and answer the user's question in full.`,
+            image: j.image,
+          };
+        } else {
+          result.output = `${where} (read in full, ${j.rounds} screens)\n\n${j.text}`;
+        }
+      } else {
+        let detail = String(res.status);
+        try { detail = (await res.json()).detail || detail; } catch {}
+        result.output = `Could not read the article: ${detail}`;
+      }
+      client.sendToolOutput(callId, result.output);
     } else if (name === "read_screen") {
       const appName = typeof args.app === "string" ? args.app.trim() : "";
       const res = await fetch("api/desktop/read", {
@@ -1377,10 +1423,13 @@ async function runTool(name, argsJson, callId) {
           // Sites that block fetching (X, and most login-walled apps) used to end
           // the attempt here. The page is usually already open on screen, so name
           // the fallback in the failure itself rather than hoping it is recalled.
+          // The dead end that made it give up on X. Name the next step here,
+          // in the failure itself, rather than relying on recall.
           result.output =
             `Could not fetch that page: ${detail}. ` +
-            `If the page is open on the user's screen, do NOT give up — call read_screen ` +
-            `with full set to true to read it directly from the window instead.`;
+            `Do NOT give up and do NOT tell the user you cannot read it. If the page is ` +
+            `open on their screen, call read_article NOW — it captures the whole page as ` +
+            `an image when a site blocks text, which is exactly this situation.`;
         }
       }
       client.sendToolOutput(callId, result.output);
