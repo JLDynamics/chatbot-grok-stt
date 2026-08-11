@@ -825,9 +825,7 @@ class VisionLanguageModelHandler(BaseLanguageModelHandler):
 
         if self.backend == "mlx":
             if not HAS_MLX_VLM:
-                raise ImportError(
-                    'mlx-vlm is required for MLX VLM models. Install with: pip install "chatbot[mlx-lm]"'
-                )
+                raise ImportError('mlx-vlm is required for MLX VLM models. Install with: pip install "chatbot[mlx-lm]"')
             self.model, self.processor = mlx_vlm_load(model_name)  # type: ignore[assignment]
             self.tokenizer = self.processor.tokenizer  # type: ignore[assignment]
             self.gen_kwargs = gen_kwargs
