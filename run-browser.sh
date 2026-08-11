@@ -30,6 +30,20 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
+# Load keys saved by ./set-keys.sh, so no export is needed in your shell.
+# Values already in the environment win, so a one-off `KEY=... ./run-...` still
+# overrides the stored file.
+CHATBOT_ENV="$HOME/.config/chatbot/env"
+if [[ -f "$CHATBOT_ENV" ]]; then
+  _saved_openrouter="${OPENROUTER_API_KEY:-}"
+  _saved_tavily="${TAVILY_API_KEY:-}"
+  # shellcheck disable=SC1090
+  source "$CHATBOT_ENV"
+  [[ -n "$_saved_openrouter" ]] && OPENROUTER_API_KEY="$_saved_openrouter"
+  [[ -n "$_saved_tavily" ]] && TAVILY_API_KEY="$_saved_tavily"
+  export OPENROUTER_API_KEY TAVILY_API_KEY
+fi
+
 PORT="${PORT:-8766}"                 # chatbot server
 WEB_PORT="${WEB_PORT:-7860}"         # browser UI
 SERVER_LOG="${SERVER_LOG:-/tmp/s2s-server.log}"
