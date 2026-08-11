@@ -161,8 +161,13 @@ const TOOL_DEFS = {
       "more accurate than an image. Use screen_snapshot only for genuinely visual " +
       "questions like layout, colour or images. " +
       "IMPORTANT: to read a whole article, thread, page or document, set full to true. " +
-      "That scrolls to the end and returns everything. Without it you only get the part " +
-      "currently visible, which for an article is usually the first few paragraphs.",
+      "That scrolls to the end and returns everything in ONE call. Without it you only " +
+      "get the part currently visible, which for an article is the first few paragraphs. " +
+      "Never scroll manually to read — this does it for you. Say one short line like " +
+      "'Reading it now' BEFORE the call, then stay quiet until it returns, then give the " +
+      "answer once. Do not describe the page section by section. " +
+      "Use this whenever web_fetch is blocked or refused by a site: the page is already " +
+      "rendered on screen, so reading it here works when fetching does not.",
     parameters: {
       type: "object",
       properties: {
@@ -185,9 +190,12 @@ const TOOL_DEFS = {
     name: "control_screen",
     description:
       "Act on the user's Mac: click a button or link by its visible text, type text, " +
-      "press a key, use a keyboard shortcut, or scroll. Use scroll to reach content " +
-      "further down a window before reading it again. Prefer clicking by text over " +
-      "dragging. Say what you are about to do before doing it.",
+      "press a key, use a keyboard shortcut, or scroll. Prefer clicking by text over " +
+      "dragging. " +
+      "NEVER use scroll to read an article, thread or long page — call read_screen with " +
+      "full set to true instead, which sweeps the whole page in one go. Scrolling " +
+      "manually and describing each screen is slow and annoying. Only scroll when the " +
+      "user explicitly asks you to move the view.",
     parameters: {
       type: "object",
       properties: {
@@ -1366,7 +1374,13 @@ async function runTool(name, argsJson, callId) {
         } else {
           let detail = String(res.status);
           try { detail = (await res.json()).detail || detail; } catch {}
-          result.output = `Could not read that page: ${detail}`;
+          // Sites that block fetching (X, and most login-walled apps) used to end
+          // the attempt here. The page is usually already open on screen, so name
+          // the fallback in the failure itself rather than hoping it is recalled.
+          result.output =
+            `Could not fetch that page: ${detail}. ` +
+            `If the page is open on the user's screen, do NOT give up — call read_screen ` +
+            `with full set to true to read it directly from the window instead.`;
         }
       }
       client.sendToolOutput(callId, result.output);

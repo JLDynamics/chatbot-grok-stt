@@ -464,10 +464,19 @@ class DesktopReadRequest(BaseModel):
     full: bool = False
 
 
-# Read-scroll-read until the window stops producing new text. This runs as one
-# harness script rather than a tool call per scroll: asking the model to keep
-# scrolling does not work -- it reads one screenful, sees plenty of text, and
-# concludes it has the article. A loop in code cannot lose interest.
+# Sweep a window top to bottom in one shot: read, jump a full screen, read
+# again, until it stops yielding new text.
+#
+# Two things this fixes, both of which come from the loop having lived in the
+# model rather than in code:
+#   - the model narrated between scrolls, because each scroll was its own tool
+#     call and it answered after every one. One call means one answer.
+#   - it stopped early, because a screenful of text looks like a whole article
+#     from the inside. Code does not form that opinion.
+#
+# The jump is sized from the window height rather than a fixed line count: a
+# wheel "line" is ~16px, so a 900px window is ~56 lines. 85% of a screen keeps
+# a sliver of overlap so nothing falls between pages; duplicates are dropped.
 _READ_FULL_SCRIPT = """
 import json
 from desktop_harness.helpers import labels, screen_info, scroll, wait
@@ -475,25 +484,37 @@ from desktop_harness.helpers import labels, screen_info, scroll, wait
 app = {app!r}
 info = screen_info(app)
 
-seen, ordered, dry = set(), [], 0
-MAX_ROUNDS, LINES_PER_SCROLL = {max_rounds}, {lines}
+# Height of the window being read, falling back to a conservative screenful.
+height = 800.0
+for w in (info.get("windows") or []):
+    if not app or app.lower() in (w.get("app") or "").lower():
+        height = float(w.get("height") or height)
+        break
+page_lines = max(12, int(height / 16.0 * 0.85))
 
-for _ in range(MAX_ROUNDS):
+seen, ordered, dry, rounds = set(), [], 0, 0
+for i in range({max_rounds}):
+    rounds = i + 1
     fresh = 0
-    for line in labels(app, limit=200):
+    for line in labels(app, limit=250):
         key = line.strip()
         if key and key not in seen:
             seen.add(key)
             ordered.append(key)
             fresh += 1
-    # Two barren rounds means the bottom: one can just be a slow render.
+    # Two barren rounds means the bottom; one can just be a slow render.
     dry = dry + 1 if fresh == 0 else 0
     if dry >= 2:
         break
-    scroll(dy=-LINES_PER_SCROLL)
-    wait(0.45)
+    scroll(dy=-page_lines)
+    wait(0.35)
 
-print(json.dumps({{"info": info, "labels": ordered, "rounds": _ + 1}}))
+print(json.dumps({{
+    "info": info,
+    "labels": ordered,
+    "rounds": rounds,
+    "page_lines": page_lines,
+}}))
 """
 
 
@@ -510,8 +531,10 @@ async def desktop_read(req: DesktopReadRequest):
     target = (req.app or "").strip() or None
 
     if req.full:
-        script = _READ_FULL_SCRIPT.format(app=target, max_rounds=25, lines=12)
-        timeout = 120.0
+        # 40 full-screen jumps covers a very long thread; each round is a read
+        # plus a 0.35s settle, so the ceiling is well inside the timeout.
+        script = _READ_FULL_SCRIPT.format(app=target, max_rounds=40)
+        timeout = 180.0
     else:
         script = (
             "import json\n"
