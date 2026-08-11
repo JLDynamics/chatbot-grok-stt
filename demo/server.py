@@ -453,10 +453,35 @@ DESKTOP_READ_TIMEOUT_S = 30.0
 # Windows whose UI text should never be dumped. desktop-harness blocks password
 # managers itself, but its blocklist is per-app: a login form in a browser tab
 # is just Safari, and its fields come back in the tree as plain text.
+# Matched against the window TITLE and app name only -- never the page body.
+# Scanning the body was wrong: "Forgot password?" appears somewhere on most of
+# the web, so every read of a normal page was refused. What matters is whether
+# the window *is* a credential screen, not whether it mentions one.
 _LOGIN_HINTS = (
-    "sign in", "log in", "login", "password", "passcode", "verify your",
-    "two-factor", "2fa", "authenticator", "one-time code", "credit card",
+    "sign in", "sign-in", "log in", "log-in", "login",
+    "password", "passcode", "two-factor", "2fa", "authenticator",
+    "verify your identity", "one-time code", "checkout", "payment",
 )
+
+
+def _looks_like_credential_window(payload: dict) -> Optional[str]:
+    """Is this window itself a sign-in/payment screen?
+
+    Deliberately narrow. A false positive here silently breaks ordinary reading
+    (it did); a false negative is covered by desktop-harness' own per-app block
+    on password managers.
+    """
+    info = payload.get("info") or {}
+    scope_parts = []
+    front = info.get("frontmost")
+    if isinstance(front, dict):
+        scope_parts += [str(front.get("app", "")), str(front.get("title", ""))]
+    elif front:
+        scope_parts.append(str(front))
+    for w in (info.get("windows") or [])[:12]:
+        scope_parts.append(str(w.get("title", "")))
+    scope = " ".join(scope_parts).lower()
+    return next((h for h in _LOGIN_HINTS if h in scope), None)
 
 
 class DesktopReadRequest(BaseModel):
@@ -573,8 +598,7 @@ async def desktop_read(req: DesktopReadRequest):
     except (json.JSONDecodeError, IndexError):
         raise HTTPException(status_code=502, detail="Could not read that window.")
 
-    blob = json.dumps(payload).lower()
-    hit = next((h for h in _LOGIN_HINTS if h in blob), None)
+    hit = _looks_like_credential_window(payload)
     if hit:
         logger.warning("desktop_read: refused, window looks like a login (%r)", hit)
         raise HTTPException(
@@ -647,8 +671,12 @@ async def _frontmost_looks_like_login() -> Optional[str]:
         return None          # if the probe itself fails, don't block on it
     if code != 0 or not text:
         return None
-    blob = text.lower()
-    return next((h for h in _LOGIN_HINTS if h in blob), None)
+    # Same narrowing as the read path: judge the window, not the page body.
+    try:
+        payload = json.loads(text.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        return None
+    return _looks_like_credential_window(payload)
 
 
 @app.post("/api/desktop/act")
