@@ -162,6 +162,9 @@ const TOOL_DEFS = {
       "if it can, and by capturing the pages as an image if the site blocks text (X, " +
       "Twitter, Instagram and similar). You do not need to scroll, screenshot, fetch or " +
       "retry: this already does all of that. " +
+      "On X, the replies/comments are NOT part of the article. Stop at the article's " +
+      "end or at the reply composer (for example, 'Post your reply') and never include " +
+      "replies in the explanation. " +
       "Say one short line such as 'Reading it now' BEFORE calling, then say nothing until " +
       "it returns. When it returns you will have the whole article — only then answer, " +
       "once. Never describe the page section by section.",
@@ -1374,12 +1377,16 @@ async function runTool(name, argsJson, callId) {
         const j = await res.json();
         const where = j.info?.frontmost?.title || j.info?.frontmost?.app || appName || "the window";
         if (j.method === "screenshots") {
-          // Text was blocked or too thin; the whole article is in the image.
+          const completeness = j.complete
+            ? "The capture reached the bottom of the page."
+            : "The page continued beyond the capture limit, so do not claim this is the whole article.";
           result = {
             output:
-              `The site blocked text extraction, so the full article was captured as an ` +
-              `image instead (${j.pages} screens, top to bottom). Read it from the image ` +
-              `and answer the user's question in full.`,
+              `The site blocked text extraction, so the article was captured as an ` +
+              `image instead (${j.pages} screens, top to bottom). ${completeness} Read it ` +
+              `from the image and answer only when the capture is complete. On X, stop ` +
+              `at the article's end or the 'Post your reply' composer; replies below it ` +
+              `are not part of the article.`,
             image: j.image,
           };
         } else {

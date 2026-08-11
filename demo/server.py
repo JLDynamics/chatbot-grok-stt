@@ -810,12 +810,40 @@ async def desktop_act(req: DesktopActRequest):
 #
 # Either way the caller gets one response, after the whole article is in hand.
 
-ARTICLE_MIN_CHARS = 600         # below this, the text sweep is treated as failed
-ARTICLE_MAX_SHOTS = 12          # tall enough for a long thread, small enough to send
-ARTICLE_SHOT_WIDTH = 1100       # downscale each page; text stays legible
+ARTICLE_MIN_CHARS = 600
+# Long X threads commonly need 10–30 viewports.  The old ceiling of 12 silently
+# truncated them, which is worse than returning an honest incomplete result.
+ARTICLE_MAX_SHOTS = 40
+ARTICLE_SHOT_WIDTH = 900
+
+
+def _x_article_text_before_replies(labels: list[str]) -> Optional[str]:
+    """Return a complete X Article from its accessibility tree when available.
+
+    X Articles expose an explicit ``Article`` heading followed by the article
+    body and then the reply composer. That composer is a better boundary than
+    the physical bottom of the scrolling page, where replies can load forever.
+    Keep this narrow so an ordinary X post still uses the visual sweep.
+    """
+    reply_at = next(
+        (i for i, line in enumerate(labels) if "post your reply" in line.lower()),
+        None,
+    )
+    if reply_at is None:
+        return None
+    before_replies = labels[:reply_at]
+    has_article_heading = any(
+        "heading" in line.lower() and "article" in line.lower()
+        for line in before_replies
+    )
+    if not has_article_heading:
+        return None
+    return "\n".join(before_replies).strip()
 
 _ARTICLE_SHOT_SCRIPT = """
+import hashlib
 import json
+import os
 from desktop_harness.helpers import screen_info, scroll, wait
 from desktop_harness.capture import screenshot
 
@@ -829,13 +857,39 @@ for w in (info.get("windows") or []):
         break
 page_lines = max(12, int(height / 16.0 * 0.85))
 
-shots = []
+# The text pass leaves the page somewhere below its beginning.  Screenshot
+# capture must always restart at the top or it misses the opening sections.
+scroll(dy=10000)
+wait(0.8)
+
+shots, last_digest, dry, reached_bottom = [], None, 0, False
 for i in range({max_shots}):
-    shots.append(screenshot(app))
+    path = screenshot(app)
+    with open(path, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+
+    if digest == last_digest:
+        # A page that cannot move produces the same frame after a scroll.  Wait
+        # for two identical captures so a short rendering pause is not mistaken
+        # for the bottom.  Do not stitch duplicate bottom frames.
+        dry += 1
+        os.unlink(path)
+        if dry >= 2:
+            reached_bottom = True
+            break
+    else:
+        shots.append(path)
+        last_digest = digest
+        dry = 0
     scroll(dy=-page_lines)
     wait(0.5)
 
-print(json.dumps({{"info": info, "shots": shots}}))
+print(json.dumps({{
+    "info": info,
+    "shots": shots,
+    "reached_bottom": reached_bottom,
+    "rounds": i + 1,
+}}))
 """
 
 
@@ -905,7 +959,29 @@ async def read_article(req: ArticleRequest):
             detail="That window looks like a sign-in or payment screen, so it was not read.",
         )
 
-    if len(text) >= ARTICLE_MIN_CHARS:
+    # An X Article has a reliable semantic end marker: its reply composer.
+    # Returning only the content above it prevents comments from being read or
+    # summarised, without mistaking the endlessly-loading reply feed for part
+    # of the article.
+    x_article_text = _x_article_text_before_replies(text_payload.get("labels") or [])
+    if x_article_text and len(x_article_text) >= ARTICLE_MIN_CHARS:
+        logger.warning(
+            "read_article: X Article complete before reply composer (%d chars)",
+            len(x_article_text),
+        )
+        return JSONResponse({
+            "method": "text",
+            "info": text_payload.get("info"),
+            "text": x_article_text,
+            "rounds": text_payload.get("rounds"),
+            "boundary": "x_reply_composer",
+        })
+
+    # A blocked or virtualised page can repeat its first few AX labels and look
+    # healthy by character count.  A short sweep that stalled is never evidence
+    # that the whole page was read: use the visual path instead.
+    stalled = text_payload.get("rounds", 0) < 40
+    if len(text) >= ARTICLE_MIN_CHARS and not stalled:
         logger.warning("read_article: text sweep ok (%d chars, %s rounds)",
                        len(text), text_payload.get("rounds"))
         return JSONResponse({
@@ -916,7 +992,10 @@ async def read_article(req: ArticleRequest):
         })
 
     # 2. Text was thin or blocked -- screenshot sweep instead.
-    logger.warning("read_article: text sweep thin (%d chars), falling back to screenshots", len(text))
+    logger.warning(
+        "read_article: text sweep incomplete (%d chars, %s rounds), falling back to screenshots",
+        len(text), text_payload.get("rounds"),
+    )
     code, out = await _run_harness(
         _ARTICLE_SHOT_SCRIPT.format(app=target, max_shots=ARTICLE_MAX_SHOTS), 240.0
     )
@@ -937,12 +1016,17 @@ async def read_article(req: ArticleRequest):
     if not image:
         raise HTTPException(status_code=502, detail="Could not build the page image.")
 
-    logger.warning("read_article: stitched %d screenshots (%d KB)", len(paths), len(image) // 1024)
+    complete = bool(shot_payload.get("reached_bottom"))
+    logger.warning(
+        "read_article: stitched %d screenshots (%d KB, complete=%s)",
+        len(paths), len(image) // 1024, complete,
+    )
     return JSONResponse({
         "method": "screenshots",
         "info": shot_payload.get("info"),
         "text": text,
         "pages": len(paths),
+        "complete": complete,
         "image": image,
     })
 
