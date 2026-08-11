@@ -363,6 +363,170 @@ async def search(req: SearchRequest):
     return JSONResponse({"query": query, "answer": answer, "results": results})
 
 
+# ── Coding agent ────────────────────────────────────────────────────────────
+#
+# Hands a task to the pi coding agent (read/bash/edit/write) running on this
+# machine. Jack chose the unrestricted scope deliberately, so there is no path
+# allowlist here -- the trade is that everything pi is asked to do is logged to
+# /tmp/s2s-web.log, and a single env var turns the whole tool off.
+#
+#   CODE_AGENT=off        disable entirely
+#   CODE_AGENT_CWD=<dir>  where pi starts (default: $HOME)
+
+PI_BIN = os.path.join(os.path.dirname(HERE), "node_modules", ".bin", "pi")
+CODE_AGENT_ENABLED = os.environ.get("CODE_AGENT", "on").lower() not in ("off", "0", "false")
+CODE_AGENT_CWD = os.path.expanduser(os.environ.get("CODE_AGENT_CWD", "~"))
+CODE_AGENT_TIMEOUT_S = float(os.environ.get("CODE_AGENT_TIMEOUT", "300"))
+
+
+class CodeRequest(BaseModel):
+    task: str
+
+
+@app.post("/api/code")
+async def code_agent(req: CodeRequest):
+    if not CODE_AGENT_ENABLED:
+        raise HTTPException(status_code=503, detail="The coding agent is turned off.")
+    task = (req.task or "").strip()
+    if not task:
+        raise HTTPException(status_code=400, detail="No task given.")
+    if not os.path.exists(PI_BIN):
+        raise HTTPException(
+            status_code=503,
+            detail="The pi coding agent is not installed. Run npm install in the project root.",
+        )
+
+    # Logged in full, deliberately: this is the one tool that changes the machine,
+    # and a voice pipeline can mishear. The log is the audit trail.
+    logger.warning("code_agent: cwd=%s task=%r", CODE_AGENT_CWD, task[:300])
+
+    env = dict(os.environ)
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if key:
+        env["OPENROUTER_API_KEY"] = key
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            PI_BIN, "-p", task, "--provider", "openrouter",
+            cwd=CODE_AGENT_CWD,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except OSError as exc:
+        logger.warning("code_agent: could not start pi: %r", exc)
+        raise HTTPException(status_code=502, detail="Could not start the coding agent.")
+
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=CODE_AGENT_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.warning("code_agent: timed out after %ss", CODE_AGENT_TIMEOUT_S)
+        raise HTTPException(status_code=504, detail="The coding agent took too long and was stopped.")
+
+    text = (out or b"").decode("utf-8", errors="replace").strip()
+    logger.warning("code_agent: exit=%s output=%d chars", proc.returncode, len(text))
+    # Spoken aloud, so a wall of build output helps nobody.
+    if len(text) > 4000:
+        text = text[:4000] + "\n[output truncated]"
+    return JSONResponse({"ok": proc.returncode == 0, "exit_code": proc.returncode, "output": text})
+
+
+# ── Desktop reading ─────────────────────────────────────────────────────────
+#
+# Reads the on-screen UI as structured text via desktop-harness, which uses the
+# macOS accessibility tree. Far cheaper and more accurate than a screenshot for
+# anything text-shaped: real labels and values instead of a JPEG to squint at.
+#
+# READ ONLY on purpose. desktop-harness can also click, type and drag; none of
+# that is exposed here. A voice pipeline mishears ("DeepSeek" for OpenRouter,
+# in this project's own history), and a misheard click is not undoable. Reading
+# is safe to get wrong. If you want the acting half, the coding agent already
+# has a shell and can call the CLI directly.
+#
+#   DESKTOP_READ=off   disable entirely
+DESKTOP_HARNESS_BIN = os.path.expanduser("~/.local/bin/desktop-harness")
+DESKTOP_READ_ENABLED = os.environ.get("DESKTOP_READ", "on").lower() not in ("off", "0", "false")
+DESKTOP_READ_TIMEOUT_S = 30.0
+
+# Windows whose UI text should never be dumped. desktop-harness blocks password
+# managers itself, but its blocklist is per-app: a login form in a browser tab
+# is just Safari, and its fields come back in the tree as plain text.
+_LOGIN_HINTS = (
+    "sign in", "log in", "login", "password", "passcode", "verify your",
+    "two-factor", "2fa", "authenticator", "one-time code", "credit card",
+)
+
+
+class DesktopReadRequest(BaseModel):
+    app: Optional[str] = None
+
+
+@app.post("/api/desktop/read")
+async def desktop_read(req: DesktopReadRequest):
+    if not DESKTOP_READ_ENABLED:
+        raise HTTPException(status_code=503, detail="Desktop reading is turned off.")
+    if not os.path.exists(DESKTOP_HARNESS_BIN):
+        raise HTTPException(
+            status_code=503,
+            detail="desktop-harness is not installed. Run ./install.sh in ~/Documents/desktop-harness.",
+        )
+
+    target = (req.app or "").strip()
+    # A tiny script rather than a subprocess-per-call: one warm CLI invocation
+    # returns both what the window is and what it says.
+    script = (
+        "import json\n"
+        "from desktop_harness.helpers import labels, screen_info\n"
+        f"app = {target!r} or None\n"
+        "info = screen_info(app)\n"
+        "print(json.dumps({'info': info, 'labels': labels(app, limit=120)}))\n"
+    )
+
+    logger.warning("desktop_read: app=%r", target or "(frontmost)")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            DESKTOP_HARNESS_BIN, "-c", script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=DESKTOP_READ_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill(); await proc.wait()
+        raise HTTPException(status_code=504, detail="Reading the screen took too long.")
+    except OSError as exc:
+        logger.warning("desktop_read: could not start: %r", exc)
+        raise HTTPException(status_code=502, detail="Could not run desktop-harness.")
+
+    text = (out or b"").decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        # Most often: Accessibility permission not granted yet.
+        detail = text[-300:] or "desktop-harness failed."
+        if "accessibilit" in detail.lower() or "not trusted" in detail.lower():
+            detail = "macOS Accessibility permission is not granted for the terminal running this."
+        raise HTTPException(status_code=502, detail=detail)
+
+    try:
+        payload = json.loads(text.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        raise HTTPException(status_code=502, detail="Could not read that window.")
+
+    blob = json.dumps(payload).lower()
+    hit = next((h for h in _LOGIN_HINTS if h in blob), None)
+    if hit:
+        logger.warning("desktop_read: refused, window looks like a login (%r)", hit)
+        raise HTTPException(
+            status_code=451,
+            detail=(
+                "That window looks like a sign-in or payment screen, so it was not read. "
+                "Close it or switch windows and ask again."
+            ),
+        )
+
+    return JSONResponse(payload)
+
+
 # ── Web fetch ───────────────────────────────────────────────────────────────
 #
 # web_search returns titles and snippets, never page content, so the model can

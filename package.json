@@ -1,0 +1,8 @@
+{
+  "name": "chatbot-tools",
+  "private": true,
+  "description": "Node-side tools for the voice agent. Currently: the pi coding agent, invoked by the code_agent tool.",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.1"
+  }
+}

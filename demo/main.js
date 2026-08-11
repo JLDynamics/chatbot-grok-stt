@@ -134,6 +134,43 @@ const TOOL_DEFS = {
       "asks you to look.",
     parameters: { type: "object", properties: {}, required: [] },
   },
+  code_agent: {
+    type: "function",
+    name: "code_agent",
+    description:
+      "Hand a coding or file task to a coding agent running on this machine. It can " +
+      "read files, run shell commands, edit and write code. Use it when the user asks " +
+      "you to look at, change, run, test or fix something on their computer. " +
+      "Describe the whole task in one clear instruction — the agent works on its own " +
+      "and reports back. State the folder or file if the user named one.",
+    parameters: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "The full task, as one self-contained instruction." },
+      },
+      required: ["task"],
+    },
+  },
+  read_screen: {
+    type: "function",
+    name: "read_screen",
+    description:
+      "Read the text and controls of a window on the user's Mac as structured text. " +
+      "Prefer this over screen_snapshot whenever the question is about words on screen — " +
+      "an error message, a menu, a document, what a button says. It is faster and far " +
+      "more accurate than an image. Use screen_snapshot only for genuinely visual " +
+      "questions like layout, colour or images.",
+    parameters: {
+      type: "object",
+      properties: {
+        app: {
+          type: "string",
+          description: "App name to read, e.g. 'Safari'. Omit for the frontmost window.",
+        },
+      },
+      required: [],
+    },
+  },
   web_fetch: {
     type: "function",
     name: "web_fetch",
@@ -273,9 +310,13 @@ function loadTools() {
     return {
       web_search: raw.web_search ?? true,
       camera_snapshot: raw.camera_snapshot ?? false,
+      // Off by default: this is the only tool that can modify the machine.
+      code_agent: raw.code_agent ?? false,
+      // Off by default: reads whatever window is in front of you.
+      read_screen: raw.read_screen ?? false,
     };
   } catch {
-    return { web_search: true, camera_snapshot: false };
+    return { web_search: true, camera_snapshot: false, code_agent: false, read_screen: false };
   }
 }
 
@@ -476,6 +517,8 @@ function activeToolDefs() {
   if (screenStream) defs.push(TOOL_DEFS.screen_snapshot);
   // No key required, so always available.
   defs.push(TOOL_DEFS.web_fetch);
+  if (toolsEnabled.code_agent) defs.push(TOOL_DEFS.code_agent);
+  if (toolsEnabled.read_screen) defs.push(TOOL_DEFS.read_screen);
   // Memory needs no key and no toggle: an agent that silently forgets is the
   // failure mode, not the feature.
   defs.push(TOOL_DEFS.remember, TOOL_DEFS.forget);
@@ -923,6 +966,47 @@ searchKeyInput.addEventListener("input", () => {
 
 const screenVideo = /** @type {HTMLVideoElement} */ (document.querySelector("#screen-video"));
 const screenSwitch = /** @type {HTMLInputElement} */ (document.querySelector("#tool-screen"));
+
+// Coding agent toggle. Off by default and persisted, because this is the only
+// tool that can change the machine — it should never come back on by itself.
+const codeSwitch = /** @type {HTMLInputElement} */ (document.querySelector("#tool-code"));
+const codeHint = document.querySelector("#tool-code-hint");
+function setCodeHint(on) {
+  if (codeHint) {
+    codeHint.textContent = (on ? "On." : "Off.") + " Every task it runs is logged to /tmp/s2s-web.log.";
+  }
+}
+if (codeSwitch) {
+  codeSwitch.checked = !!toolsEnabled.code_agent;
+  setCodeHint(codeSwitch.checked);
+  codeSwitch.addEventListener("change", () => {
+    toolsEnabled.code_agent = codeSwitch.checked;
+    saveTools();
+    pushToolsToSession();
+    setCodeHint(codeSwitch.checked);
+  });
+}
+
+// Read-screen toggle. Also off by default and persisted: it reads whatever
+// window happens to be in front, so it should only ever be on deliberately.
+const readSwitch = /** @type {HTMLInputElement} */ (document.querySelector("#tool-read"));
+const readHint = document.querySelector("#tool-read-hint");
+if (readSwitch) {
+  readSwitch.checked = !!toolsEnabled.read_screen;
+  if (readHint && readSwitch.checked) {
+    readHint.textContent = "On. Sign-in and payment windows are refused.";
+  }
+  readSwitch.addEventListener("change", () => {
+    toolsEnabled.read_screen = readSwitch.checked;
+    saveTools();
+    pushToolsToSession();
+    if (readHint) {
+      readHint.textContent = readSwitch.checked
+        ? "On. Sign-in and payment windows are refused."
+        : "Off. Needs desktop-harness installed and macOS Accessibility permission.";
+    }
+  });
+}
 const screenHint = document.querySelector("#tool-screen-hint");
 
 function setScreenHint(text) {
@@ -1159,6 +1243,45 @@ async function runTool(name, argsJson, callId) {
         result.output = "The camera is not available right now.";
         client.sendToolOutput(callId, result.output);
       }
+    } else if (name === "code_agent") {
+      const task = typeof args.task === "string" ? args.task.trim() : "";
+      if (!task) {
+        result.output = "No task provided.";
+      } else {
+        const res = await fetch("api/code", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task }),
+        });
+        if (res.ok) {
+          const j = await res.json();
+          result.output = j.output || (j.ok ? "Done, with no output." : "Failed, with no output.");
+        } else {
+          let detail = String(res.status);
+          try { detail = (await res.json()).detail || detail; } catch {}
+          result.output = `The coding agent could not run: ${detail}`;
+        }
+      }
+      client.sendToolOutput(callId, result.output);
+    } else if (name === "read_screen") {
+      const appName = typeof args.app === "string" ? args.app.trim() : "";
+      const res = await fetch("api/desktop/read", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app: appName || null }),
+      });
+      if (res.ok) {
+        const j = await res.json();
+        const where = j.info?.app || appName || "the frontmost window";
+        const title = j.info?.title ? ` — ${j.info.title}` : "";
+        const items = (j.labels || []).join("\n");
+        result.output = `${where}${title}\n\n${items || "(no readable text found)"}`;
+      } else {
+        let detail = String(res.status);
+        try { detail = (await res.json()).detail || detail; } catch {}
+        result.output = `Could not read the screen: ${detail}`;
+      }
+      client.sendToolOutput(callId, result.output);
     } else if (name === "web_fetch") {
       const url = typeof args.url === "string" ? args.url.trim() : "";
       if (!url) {

@@ -1,3 +1,6 @@
+# Node dependencies (the pi coding agent lives here; restore with npm install)
+node_modules/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

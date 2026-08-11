@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="style.css?v=11" />
+    <link rel="stylesheet" href="style.css?v=13" />
   </head>
   <!--
     `booting` disables transitions/animations until the first paint commits.
@@ -318,6 +318,30 @@
           </div>
           <small id="tool-screen-hint" class="tool-hint">Off. Turn on and pick a window or screen to share.</small>
 
+          <div class="tool-row tool-row-sep" id="tool-code-row">
+            <div class="tool-info">
+              <span class="tool-name">Coding agent</span>
+              <span class="tool-desc">Let the assistant read, run and edit files on this Mac. Unrestricted — it can change anything.</span>
+            </div>
+            <label class="switch">
+              <input id="tool-code" type="checkbox" />
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <small id="tool-code-hint" class="tool-hint">Off. Every task it runs is logged to /tmp/s2s-web.log.</small>
+
+          <div class="tool-row tool-row-sep" id="tool-read-row">
+            <div class="tool-info">
+              <span class="tool-name">Read screen</span>
+              <span class="tool-desc">Read on-screen text directly instead of taking a picture. Faster and more accurate. Read-only.</span>
+            </div>
+            <label class="switch">
+              <input id="tool-read" type="checkbox" />
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <small id="tool-read-hint" class="tool-hint">Off. Needs desktop-harness installed and macOS Accessibility permission.</small>
+
           <div class="tool-row tool-row-sep" id="memories-row">
             <div class="tool-info">
               <span class="tool-name">Memory</span>
@@ -347,6 +371,6 @@
       </div>
     </dialog>
 
-    <script type="module" src="main.js?v=11"></script>
+    <script type="module" src="main.js?v=13"></script>
   </body>
 </html>
