@@ -159,7 +159,10 @@ const TOOL_DEFS = {
       "Prefer this over screen_snapshot whenever the question is about words on screen — " +
       "an error message, a menu, a document, what a button says. It is faster and far " +
       "more accurate than an image. Use screen_snapshot only for genuinely visual " +
-      "questions like layout, colour or images.",
+      "questions like layout, colour or images. " +
+      "IMPORTANT: to read a whole article, thread, page or document, set full to true. " +
+      "That scrolls to the end and returns everything. Without it you only get the part " +
+      "currently visible, which for an article is usually the first few paragraphs.",
     parameters: {
       type: "object",
       properties: {
@@ -167,8 +170,45 @@ const TOOL_DEFS = {
           type: "string",
           description: "App name to read, e.g. 'Safari'. Omit for the frontmost window.",
         },
+        full: {
+          type: "boolean",
+          description:
+            "True to scroll through the whole window and return all of it. Use for any " +
+            "article, thread, long page or document. Takes longer; say you are reading it.",
+        },
       },
       required: [],
+    },
+  },
+  control_screen: {
+    type: "function",
+    name: "control_screen",
+    description:
+      "Act on the user's Mac: click a button or link by its visible text, type text, " +
+      "press a key, use a keyboard shortcut, or scroll. Use scroll to reach content " +
+      "further down a window before reading it again. Prefer clicking by text over " +
+      "dragging. Say what you are about to do before doing it.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["click", "type", "key", "hotkey", "scroll", "drag"],
+          description: "click = press something by its label; key = one key like return or escape; hotkey = a chord like 'cmd s'.",
+        },
+        text: {
+          type: "string",
+          description: "For click: the visible label. For type: the text. For key/hotkey: the key name(s).",
+        },
+        app: { type: "string", description: "Optional app to target, e.g. 'Safari'." },
+        amount: { type: "number", description: "For scroll: how far, default 5. Positive scrolls down." },
+        coords: {
+          type: "array",
+          items: { type: "number" },
+          description: "For drag only: [x1, y1, x2, y2] screen coordinates.",
+        },
+      },
+      required: ["action"],
     },
   },
   web_fetch: {
@@ -519,6 +559,9 @@ function activeToolDefs() {
   defs.push(TOOL_DEFS.web_fetch);
   if (toolsEnabled.code_agent) defs.push(TOOL_DEFS.code_agent);
   if (toolsEnabled.read_screen) defs.push(TOOL_DEFS.read_screen);
+  // Riding on the same toggle as reading: a harness that can look but never
+  // move is half a tool, and separating them just means two switches to find.
+  if (toolsEnabled.read_screen) defs.push(TOOL_DEFS.control_screen);
   // Memory needs no key and no toggle: an agent that silently forgets is the
   // failure mode, not the feature.
   defs.push(TOOL_DEFS.remember, TOOL_DEFS.forget);
@@ -1263,19 +1306,43 @@ async function runTool(name, argsJson, callId) {
         }
       }
       client.sendToolOutput(callId, result.output);
+    } else if (name === "control_screen") {
+      const res = await fetch("api/desktop/act", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: typeof args.action === "string" ? args.action : "",
+          text: typeof args.text === "string" ? args.text : null,
+          app: typeof args.app === "string" && args.app.trim() ? args.app.trim() : null,
+          amount: typeof args.amount === "number" ? Math.round(args.amount) : null,
+          coords: Array.isArray(args.coords) ? args.coords : null,
+        }),
+      });
+      if (res.ok) {
+        const j = await res.json();
+        result.output = `Done: ${j.action}.` + (j.output ? ` ${j.output}` : "");
+      } else {
+        let detail = String(res.status);
+        try { detail = (await res.json()).detail || detail; } catch {}
+        result.output = `Could not do that: ${detail}`;
+      }
+      client.sendToolOutput(callId, result.output);
     } else if (name === "read_screen") {
       const appName = typeof args.app === "string" ? args.app.trim() : "";
       const res = await fetch("api/desktop/read", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app: appName || null }),
+        body: JSON.stringify({ app: appName || null, full: args.full === true }),
       });
       if (res.ok) {
         const j = await res.json();
         const where = j.info?.app || appName || "the frontmost window";
         const title = j.info?.title ? ` — ${j.info.title}` : "";
         const items = (j.labels || []).join("\n");
-        result.output = `${where}${title}\n\n${items || "(no readable text found)"}`;
+        // Reporting the scroll count lets the model tell a short page from a
+        // truncated read, instead of assuming the first screenful was all of it.
+        const swept = j.rounds ? ` (scrolled ${j.rounds} times to the end)` : "";
+        result.output = `${where}${title}${swept}\n\n${items || "(no readable text found)"}`;
       } else {
         let detail = String(res.status);
         try { detail = (await res.json()).detail || detail; } catch {}

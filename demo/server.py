@@ -461,6 +461,40 @@ _LOGIN_HINTS = (
 
 class DesktopReadRequest(BaseModel):
     app: Optional[str] = None
+    full: bool = False
+
+
+# Read-scroll-read until the window stops producing new text. This runs as one
+# harness script rather than a tool call per scroll: asking the model to keep
+# scrolling does not work -- it reads one screenful, sees plenty of text, and
+# concludes it has the article. A loop in code cannot lose interest.
+_READ_FULL_SCRIPT = """
+import json
+from desktop_harness.helpers import labels, screen_info, scroll, wait
+
+app = {app!r}
+info = screen_info(app)
+
+seen, ordered, dry = set(), [], 0
+MAX_ROUNDS, LINES_PER_SCROLL = {max_rounds}, {lines}
+
+for _ in range(MAX_ROUNDS):
+    fresh = 0
+    for line in labels(app, limit=200):
+        key = line.strip()
+        if key and key not in seen:
+            seen.add(key)
+            ordered.append(key)
+            fresh += 1
+    # Two barren rounds means the bottom: one can just be a slow render.
+    dry = dry + 1 if fresh == 0 else 0
+    if dry >= 2:
+        break
+    scroll(dy=-LINES_PER_SCROLL)
+    wait(0.45)
+
+print(json.dumps({{"info": info, "labels": ordered, "rounds": _ + 1}}))
+"""
 
 
 @app.post("/api/desktop/read")
@@ -473,25 +507,29 @@ async def desktop_read(req: DesktopReadRequest):
             detail="desktop-harness is not installed. Run ./install.sh in ~/Documents/desktop-harness.",
         )
 
-    target = (req.app or "").strip()
-    # A tiny script rather than a subprocess-per-call: one warm CLI invocation
-    # returns both what the window is and what it says.
-    script = (
-        "import json\n"
-        "from desktop_harness.helpers import labels, screen_info\n"
-        f"app = {target!r} or None\n"
-        "info = screen_info(app)\n"
-        "print(json.dumps({'info': info, 'labels': labels(app, limit=120)}))\n"
-    )
+    target = (req.app or "").strip() or None
 
-    logger.warning("desktop_read: app=%r", target or "(frontmost)")
+    if req.full:
+        script = _READ_FULL_SCRIPT.format(app=target, max_rounds=25, lines=12)
+        timeout = 120.0
+    else:
+        script = (
+            "import json\n"
+            "from desktop_harness.helpers import labels, screen_info\n"
+            f"app = {target!r}\n"
+            "info = screen_info(app)\n"
+            "print(json.dumps({'info': info, 'labels': labels(app, limit=200)}))\n"
+        )
+        timeout = DESKTOP_READ_TIMEOUT_S
+
+    logger.warning("desktop_read: app=%r full=%s", target or "(frontmost)", req.full)
     try:
         proc = await asyncio.create_subprocess_exec(
             DESKTOP_HARNESS_BIN, "-c", script,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=DESKTOP_READ_TIMEOUT_S)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill(); await proc.wait()
         raise HTTPException(status_code=504, detail="Reading the screen took too long.")
@@ -525,6 +563,140 @@ async def desktop_read(req: DesktopReadRequest):
         )
 
     return JSONResponse(payload)
+
+
+# ── Desktop control ─────────────────────────────────────────────────────────
+#
+# The acting half: click, type, key, scroll, drag. Jack asked for the complete
+# harness after being told the risk, so this is the full set.
+#
+# Two things are kept from the read-only version because they cost nothing:
+# the login-screen guard still applies (a click into a sign-in form is worse
+# than reading one), and every action is logged before it runs.
+#
+#   DESKTOP_CONTROL=off   disable the acting half, keep reading
+
+DESKTOP_CONTROL_ENABLED = os.environ.get("DESKTOP_CONTROL", "on").lower() not in ("off", "0", "false")
+
+# action -> (python expression template, needs a frontmost-window safety read)
+_ACTIONS = {
+    "click":  "click_text({text!r}, app)",
+    "type":   "type_text({text!r})",
+    "key":    "key({text!r})",
+    "hotkey": "hotkey(*{keys!r})",
+    "scroll": "scroll(dy={dy!r})",
+    "drag":   "drag({x1!r}, {y1!r}, {x2!r}, {y2!r})",
+}
+
+
+class DesktopActRequest(BaseModel):
+    action: str
+    text: Optional[str] = None
+    app: Optional[str] = None
+    amount: Optional[int] = None
+    coords: Optional[list[float]] = None
+
+
+async def _run_harness(script: str, timeout: float) -> tuple[int, str]:
+    proc = await asyncio.create_subprocess_exec(
+        DESKTOP_HARNESS_BIN, "-c", script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill(); await proc.wait()
+        raise HTTPException(status_code=504, detail="That action took too long.")
+    return proc.returncode, (out or b"").decode("utf-8", errors="replace").strip()
+
+
+async def _frontmost_looks_like_login() -> Optional[str]:
+    """Reuse the read path's guard before acting on a window."""
+    script = (
+        "import json\n"
+        "from desktop_harness.helpers import labels, screen_info\n"
+        "print(json.dumps({'info': screen_info(None), 'labels': labels(None, limit=60)}))\n"
+    )
+    try:
+        code, text = await _run_harness(script, 20.0)
+    except HTTPException:
+        return None          # if the probe itself fails, don't block on it
+    if code != 0 or not text:
+        return None
+    blob = text.lower()
+    return next((h for h in _LOGIN_HINTS if h in blob), None)
+
+
+@app.post("/api/desktop/act")
+async def desktop_act(req: DesktopActRequest):
+    if not DESKTOP_CONTROL_ENABLED:
+        raise HTTPException(status_code=503, detail="Desktop control is turned off.")
+    if not os.path.exists(DESKTOP_HARNESS_BIN):
+        raise HTTPException(status_code=503, detail="desktop-harness is not installed.")
+
+    action = (req.action or "").strip().lower()
+    if action not in _ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown action {action!r}. Use one of: {', '.join(_ACTIONS)}.",
+        )
+
+    text = req.text or ""
+    app_name = (req.app or "").strip() or None
+
+    # Typing and clicking into a credential form is the failure that actually
+    # costs something, so the guard runs before those.
+    if action in ("click", "type", "key", "hotkey"):
+        hit = await _frontmost_looks_like_login()
+        if hit:
+            logger.warning("desktop_act: refused %s, frontmost looks like a login (%r)", action, hit)
+            raise HTTPException(
+                status_code=451,
+                detail=(
+                    "The window in front looks like a sign-in or payment screen, so nothing "
+                    "was clicked or typed. Switch windows and ask again."
+                ),
+            )
+
+    if action == "scroll":
+        # dy is in wheel *lines*, so the old default of 5 moved about two
+        # paragraphs -- which is why scrolling an article appeared to do nothing.
+        # Negative dy scrolls down in desktop-harness' convention.
+        amount = req.amount if isinstance(req.amount, int) and req.amount else 15
+        expr = _ACTIONS["scroll"].format(dy=-abs(amount) if amount >= 0 else abs(amount))
+    elif action == "drag":
+        c = req.coords or []
+        if len(c) != 4:
+            raise HTTPException(status_code=400, detail="Drag needs coords [x1, y1, x2, y2].")
+        expr = _ACTIONS["drag"].format(x1=c[0], y1=c[1], x2=c[2], y2=c[3])
+    elif action == "hotkey":
+        keys = [k.strip().lower() for k in text.replace("+", " ").split() if k.strip()]
+        if not keys:
+            raise HTTPException(status_code=400, detail="Hotkey needs keys, e.g. 'cmd s'.")
+        expr = _ACTIONS["hotkey"].format(keys=keys)
+    else:
+        if not text:
+            raise HTTPException(status_code=400, detail=f"{action} needs text.")
+        expr = _ACTIONS[action].format(text=text)
+
+    logger.warning("desktop_act: %s app=%r arg=%r", action, app_name, text[:120])
+
+    script = (
+        "import json\n"
+        "from desktop_harness.helpers import click_text, type_text, key, hotkey, scroll, drag\n"
+        f"app = {app_name!r}\n"
+        f"res = {expr}\n"
+        "print(json.dumps({'ok': True, 'result': res if isinstance(res, (dict, list, str, int, float, bool, type(None))) else str(res)}))\n"
+    )
+    code, out = await _run_harness(script, 45.0)
+    if code != 0:
+        detail = out[-300:] or "The action failed."
+        if "accessibilit" in detail.lower() or "not trusted" in detail.lower():
+            detail = "macOS Accessibility permission is not granted."
+        raise HTTPException(status_code=502, detail=detail)
+
+    return JSONResponse({"ok": True, "action": action, "output": out[-500:]})
 
 
 # ── Web fetch ───────────────────────────────────────────────────────────────
