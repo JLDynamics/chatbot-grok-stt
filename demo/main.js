@@ -1346,7 +1346,17 @@ async function runTool(name, argsJson, callId) {
       });
       if (res.ok) {
         const j = await res.json();
-        result.output = `Done: ${j.action}.` + (j.output ? ` ${j.output}` : "");
+        if (j.verified && Array.isArray(j.changed)) {
+          // Report the delta, not just that the call returned. A click that
+          // silently misses looks identical to one that worked, otherwise.
+          result.output = j.changed.length
+            ? `Did ${j.action}. The screen changed — now showing: ${j.changed.join(", ")}`
+            : `Did ${j.action}, but NOTHING on screen changed. The click or key probably ` +
+              `missed. Do not tell the user it worked. Read the screen to see what is ` +
+              `actually there, then try a different label or approach.`;
+        } else {
+          result.output = `Did ${j.action}.` + (j.output ? ` ${j.output}` : "");
+        }
       } else {
         let detail = String(res.status);
         try { detail = (await res.json()).detail || detail; } catch {}

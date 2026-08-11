@@ -735,12 +735,37 @@ async def desktop_act(req: DesktopActRequest):
 
     logger.warning("desktop_act: %s app=%r arg=%r", action, app_name, text[:120])
 
+    # Check the screen afterwards instead of trusting the call.
+    #
+    # desktop-harness' own SKILL.md is blunt about this: click_text returning
+    # without an exception means the accessibility call succeeded, NOT that the
+    # screen changed. Reporting "Done: click" on a silent miss is the failure
+    # mode, and it is invisible until something downstream goes wrong.
+    #
+    # So: snapshot the visible labels before and after, and report the delta.
+    # Cheap (one extra read), and it turns "I clicked it" into "I clicked it and
+    # this appeared". Pure-movement actions skip it -- scrolling is *meant* to
+    # change everything, so a diff there is noise.
+    verify_after = action in ("click", "type", "key", "hotkey")
     script = (
         "import json\n"
-        "from desktop_harness.helpers import click_text, type_text, key, hotkey, scroll, drag\n"
+        "from desktop_harness.helpers import (click_text, type_text, key, hotkey,\n"
+        "                                     scroll, drag, labels, wait_stable)\n"
         f"app = {app_name!r}\n"
+        f"verify = {verify_after!r}\n"
+        "before = set(labels(app, limit=60)) if verify else set()\n"
         f"res = {expr}\n"
-        "print(json.dumps({'ok': True, 'result': res if isinstance(res, (dict, list, str, int, float, bool, type(None))) else str(res)}))\n"
+        "changed = []\n"
+        "if verify:\n"
+        "    wait_stable(0.35)\n"
+        "    after = labels(app, limit=60)\n"
+        "    changed = [x for x in after if x and x not in before][:12]\n"
+        "print(json.dumps({\n"
+        "    'ok': True,\n"
+        "    'result': res if isinstance(res, (dict, list, str, int, float, bool, type(None))) else str(res),\n"
+        "    'changed': changed,\n"
+        "    'verified': verify,\n"
+        "}))\n"
     )
     code, out = await _run_harness(script, 45.0)
     if code != 0:
@@ -749,7 +774,25 @@ async def desktop_act(req: DesktopActRequest):
             detail = "macOS Accessibility permission is not granted."
         raise HTTPException(status_code=502, detail=detail)
 
-    return JSONResponse({"ok": True, "action": action, "output": out[-500:]})
+    try:
+        payload = json.loads(out.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        # The action ran; only the report is unreadable. Say so honestly rather
+        # than claiming success we cannot see.
+        logger.warning("desktop_act: %s ran but returned no readable state", action)
+        return JSONResponse({"ok": True, "action": action, "verified": False,
+                             "output": out[-500:]})
+
+    changed = payload.get("changed") or []
+    verified = bool(payload.get("verified"))
+    logger.warning("desktop_act: %s verified=%s changed=%d", action, verified, len(changed))
+    return JSONResponse({
+        "ok": True,
+        "action": action,
+        "verified": verified,
+        "changed": changed,
+        "output": str(payload.get("result"))[:300],
+    })
 
 
 # ── Read a whole article ────────────────────────────────────────────────────
