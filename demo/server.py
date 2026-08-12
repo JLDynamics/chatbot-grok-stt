@@ -50,6 +50,7 @@ import logging
 import os
 import re
 import socket
+import time
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Optional
@@ -929,16 +930,194 @@ def _stitch(paths: list[str]) -> Optional[str]:
 
 class ArticleRequest(BaseModel):
     app: Optional[str] = None
+    allow_desktop_fallback: bool = False
+
+
+class BrowserArticle(BaseModel):
+    url: str
+    article_id: str = ""
+    title: str = ""
+    text: str
+    source: str = "x_dom"
+    content_type: str = "article"
+    complete: bool = False
+    truncated: bool = False
+    clutter_filtered: bool = False
+    comments_excluded: bool = False
+    replies_detected: bool = False
+    boundary: str = ""
+
+
+# The user has to leave the source tab to speak to the browser chatbot. Keep the
+# last visibly selected page long enough for that handoff, while the extension's
+# visibility guard prevents background tabs from refreshing it. The old names
+# remain for compatibility with the first X-only bridge and its focused tests.
+BROWSER_ARTICLE_TTL_S = 300.0
+BROWSER_PAGE_MIN_CHARS = 200
+BROWSER_PAGE_MAX_CHARS = 60000
+_browser_articles: dict[str, tuple[float, BrowserArticle]] = {}
+
+
+def _fresh_browser_article(now: Optional[float] = None) -> Optional[BrowserArticle]:
+    """Return the most recent validated page from the visible Chrome tab."""
+    now = time.monotonic() if now is None else now
+    expired = [
+        key for key, (seen_at, _) in _browser_articles.items()
+        if now - seen_at > BROWSER_ARTICLE_TTL_S
+    ]
+    for key in expired:
+        _browser_articles.pop(key, None)
+
+    def valid(article: BrowserArticle) -> bool:
+        if len(article.text) < BROWSER_PAGE_MIN_CHARS:
+            return False
+        if article.source == "x_dom":
+            return (
+                article.complete
+                and article.comments_excluded
+                and article.boundary in {"x_article_body_end", "x_focus_article_end"}
+            )
+        return (
+            article.source == "browser_dom"
+            and article.boundary in {
+                "semantic_article_end", "main_content_end", "document_body_end",
+            }
+        )
+
+    candidates = [
+        (seen_at, article)
+        for seen_at, article in _browser_articles.values()
+        if valid(article)
+    ]
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def _validate_browser_page_url(url: str):
+    """Accept ordinary web pages but never cache the chatbot receiver itself."""
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise HTTPException(status_code=400, detail="Only HTTP(S) pages are accepted.")
+    if host in {"127.0.0.1", "localhost"} and parsed.port == 7860:
+        raise HTTPException(status_code=400, detail="The chatbot page cannot bridge itself.")
+    return parsed
+
+
+def _store_browser_page(page: BrowserArticle):
+    """Validate and cache one bounded main-content payload from the page bridge."""
+    _validate_browser_page_url(page.url)
+    validated_text = page.text.strip()
+    if len(validated_text) < BROWSER_PAGE_MIN_CHARS:
+        raise HTTPException(status_code=400, detail="The page does not contain enough main text.")
+    if len(validated_text) > BROWSER_PAGE_MAX_CHARS:
+        raise HTTPException(status_code=413, detail="The page text is too large.")
+    if page.source not in {"x_dom", "browser_dom"}:
+        raise HTTPException(status_code=400, detail="Unsupported browser page source.")
+    if page.source == "x_dom":
+        if not page.comments_excluded or page.boundary not in {
+            "x_article_body_end", "x_focus_article_end",
+        }:
+            raise HTTPException(status_code=400, detail="The X Article boundary is incomplete.")
+    elif page.boundary not in {
+        "semantic_article_end", "main_content_end", "document_body_end",
+    }:
+        raise HTTPException(status_code=400, detail="The page boundary is incomplete.")
+
+    key = page.article_id.strip() or page.url
+    _browser_articles[key] = (time.monotonic(), page)
+    return {
+        "ok": True,
+        "chars": len(page.text),
+        "complete": page.complete,
+        "truncated": page.truncated,
+        "content_type": page.content_type,
+        "boundary": page.boundary,
+    }
+
+
+def _store_browser_article(article: BrowserArticle):
+    """Compatibility path for the original X-only extension."""
+    parsed = urlsplit(article.url)
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() not in {"x.com", "www.x.com"}:
+        raise HTTPException(status_code=400, detail="Only X Article pages are accepted.")
+    return _store_browser_page(article)
+
+
+@app.post("/api/browser/article")
+async def browser_article(request: Request):
+    """Receive payloads from the original X-only bridge."""
+    try:
+        article = BrowserArticle.model_validate(await request.json())
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid article payload.") from exc
+    return _store_browser_article(article)
+
+
+@app.post("/api/browser/page")
+async def browser_page(request: Request):
+    """Receive a bounded page from the extension worker, not arbitrary websites."""
+    if request.headers.get("x-chatbot-bridge") != "page-v1":
+        raise HTTPException(status_code=403, detail="Missing browser bridge header.")
+    try:
+        content_length = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        content_length = 0
+    if content_length > 100000:
+        raise HTTPException(status_code=413, detail="The browser payload is too large.")
+    try:
+        page = BrowserArticle.model_validate(await request.json())
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid page payload.") from exc
+    return _store_browser_page(page)
 
 
 @app.post("/api/desktop/article")
 async def read_article(req: ArticleRequest):
-    if not DESKTOP_READ_ENABLED:
-        raise HTTPException(status_code=503, detail="Desktop reading is turned off.")
+    target = (req.app or "").strip() or None
+
+    # The Chrome bridge is cheaper, faster and has much less authority than a
+    # screen sweep: it can read the visible page DOM but cannot click, type or
+    # inspect another desktop application.
+    # Its heartbeat only runs for the visible tab, and the short TTL prevents a
+    # previously viewed/background article from being returned by mistake.
+    bridged = _fresh_browser_article()
+    chrome_target = target is None or any(
+        name in target.lower() for name in ("chrome", "chromium")
+    )
+    if bridged and chrome_target:
+        logger.warning(
+            "read_article: Chrome bridge page ready (%d chars, %s, %s)",
+            len(bridged.text), bridged.content_type, bridged.boundary,
+        )
+        return JSONResponse({
+            "method": "text",
+            "source": "chrome_bridge",
+            "info": {
+                "frontmost": {
+                    "app": "Google Chrome",
+                    "title": bridged.title,
+                },
+            },
+            "title": bridged.title,
+            "url": bridged.url,
+            "text": bridged.text,
+            "content_type": bridged.content_type,
+            "complete": bridged.complete,
+            "truncated": bridged.truncated,
+            "clutter_filtered": bridged.clutter_filtered,
+            "comments_excluded": bridged.comments_excluded,
+            "replies_detected": bridged.replies_detected,
+            "boundary": bridged.boundary,
+        })
+
+    if not req.allow_desktop_fallback or not DESKTOP_READ_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="No fresh browser page was received. Open or reload the page and try again.",
+        )
+
     if not os.path.exists(DESKTOP_HARNESS_BIN):
         raise HTTPException(status_code=503, detail="desktop-harness is not installed.")
-
-    target = (req.app or "").strip() or None
 
     # 1. Text sweep.
     code, out = await _run_harness(

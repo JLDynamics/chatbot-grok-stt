@@ -155,13 +155,12 @@ const TOOL_DEFS = {
     type: "function",
     name: "read_article",
     description:
-      "Read an ENTIRE article, post, thread or long page that is open on the user's " +
-      "screen. Use this for any request like 'read the article on my screen', 'get the " +
-      "whole post', 'summarise this page'. " +
-      "It scrolls from top to bottom itself and returns everything in one go — by text " +
-      "if it can, and by capturing the pages as an image if the site blocks text (X, " +
-      "Twitter, Instagram and similar). You do not need to scroll, screenshot, fetch or " +
-      "retry: this already does all of that. " +
+      "Read the main text from an article, post or webpage open in Chrome. Use this for " +
+      "requests like 'read the article on my screen', 'get the whole post', or 'summarise " +
+      "this page'. The read-only browser bridge is the first choice: it extracts the " +
+      "visible tab's page structure without clicking, typing, scrolling, or controlling " +
+      "another desktop app. A desktop sweep is allowed only when the user explicitly " +
+      "enabled screen reading. " +
       "On X, the replies/comments are NOT part of the article. Stop at the article's " +
       "end or at the reply composer (for example, 'Post your reply') and never include " +
       "replies in the explanation. " +
@@ -586,7 +585,9 @@ function activeToolDefs() {
   // No key required, so always available.
   defs.push(TOOL_DEFS.web_fetch);
   if (toolsEnabled.code_agent) defs.push(TOOL_DEFS.code_agent);
-  if (toolsEnabled.read_screen) defs.push(TOOL_DEFS.read_article);
+  // Browser page extraction is read-only and does not depend on the much more
+  // powerful desktop harness, so keep it available when screen control is off.
+  defs.push(TOOL_DEFS.read_article);
   if (toolsEnabled.read_screen) defs.push(TOOL_DEFS.read_screen);
   // Riding on the same toggle as reading: a harness that can look but never
   // move is half a tool, and separating them just means two switches to find.
@@ -1371,7 +1372,10 @@ async function runTool(name, argsJson, callId) {
       const res = await fetch("api/desktop/article", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app: appName || null }),
+        body: JSON.stringify({
+          app: appName || null,
+          allow_desktop_fallback: toolsEnabled.read_screen,
+        }),
       });
       if (res.ok) {
         const j = await res.json();
@@ -1390,7 +1394,34 @@ async function runTool(name, argsJson, callId) {
             image: j.image,
           };
         } else {
-          result.output = `${where} (read in full, ${j.rounds} screens)\n\n${j.text}`;
+          if (j.source === "chrome_bridge") {
+            if (j.content_type === "x_article") {
+              const replies = j.replies_detected
+                ? " The reply section was detected and excluded."
+                : " The article body boundary was used, so no replies are included.";
+              result.output =
+                `${where} (complete X Article from the page structure; stopped before ` +
+                `comments).${replies}\n\n${j.text}\n\n` +
+                `[Complete article. Do not scroll, screenshot, or call another reading tool.]`;
+            } else {
+              const completeness = j.truncated
+                ? "main page text, capped at the safe size limit"
+                : j.complete
+                  ? "complete bounded main page text"
+                  : "best available main page text";
+              const filtering = j.clutter_filtered
+                ? " Navigation, forms, advertising, and other common clutter were filtered where identifiable."
+                : "";
+              const comments = j.comments_excluded
+                ? " A recognizable comment section was excluded."
+                : "";
+              result.output =
+                `${where} (${completeness}).${filtering}${comments}\n\n${j.text}\n\n` +
+                `[Browser page text received. Do not use desktop control or call another reading tool.]`;
+            }
+          } else {
+            result.output = `${where} (read in full, ${j.rounds} screens)\n\n${j.text}`;
+          }
         }
       } else {
         let detail = String(res.status);

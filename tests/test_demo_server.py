@@ -3,6 +3,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,165 @@ DEMO_DIR = Path(__file__).resolve().parents[1] / "demo"
 sys.path.insert(0, str(DEMO_DIR))
 demo_auth = importlib.import_module("auth")
 demo_server = importlib.import_module("server")
+
+
+@pytest.fixture(autouse=True)
+def clear_browser_article_bridge():
+    demo_server._browser_articles.clear()
+    yield
+    demo_server._browser_articles.clear()
+
+
+async def test_read_article_prefers_fresh_x_dom_body_and_excludes_replies(monkeypatch):
+    body = "Everyone is racing to be successful right now.\n" + ("Strategy compounds. " * 50)
+    article = demo_server.BrowserArticle(
+        url="https://x.com/thedankoe/status/2086197754452377955",
+        article_id="2086197754452377955",
+        title="The Art Of Strategic Thinking",
+        text=body,
+        content_type="x_article",
+        complete=True,
+        comments_excluded=True,
+        replies_detected=True,
+        boundary="x_article_body_end",
+    )
+    demo_server._store_browser_article(article)
+    monkeypatch.setattr(
+        demo_server,
+        "_run_harness",
+        lambda *args, **kwargs: pytest.fail("fresh DOM article must bypass screenshots"),
+    )
+
+    response = await demo_server.read_article(demo_server.ArticleRequest(app="Google Chrome"))
+    payload = json.loads(response.body)
+
+    assert payload["source"] == "chrome_bridge"
+    assert payload["text"] == body
+    assert payload["complete"] is True
+    assert payload["comments_excluded"] is True
+    assert payload["replies_detected"] is True
+    assert payload["boundary"] == "x_article_body_end"
+    assert "Amazing article, Dan" not in payload["text"]
+
+
+async def test_read_article_prefers_generic_browser_page_without_harness(monkeypatch):
+    body = "A universal bridge can extract a semantic article body.\n" + ("Useful context. " * 40)
+    page = demo_server.BrowserArticle(
+        url="https://example.com/news/browser-bridge",
+        title="A safer browser bridge",
+        text=body,
+        source="browser_dom",
+        content_type="article",
+        complete=True,
+        clutter_filtered=True,
+        comments_excluded=True,
+        boundary="semantic_article_end",
+    )
+    demo_server._store_browser_page(page)
+    monkeypatch.setattr(
+        demo_server,
+        "_run_harness",
+        lambda *args, **kwargs: pytest.fail("browser DOM text must bypass desktop control"),
+    )
+
+    response = await demo_server.read_article(demo_server.ArticleRequest())
+    payload = json.loads(response.body)
+
+    assert payload["source"] == "chrome_bridge"
+    assert payload["content_type"] == "article"
+    assert payload["text"] == body
+    assert payload["clutter_filtered"] is True
+    assert payload["boundary"] == "semantic_article_end"
+
+
+def test_browser_article_bridge_rejects_non_x_pages():
+    article = demo_server.BrowserArticle(
+        url="https://example.com/private",
+        text="x" * 700,
+        complete=True,
+        comments_excluded=True,
+        boundary="x_article_body_end",
+    )
+
+    with pytest.raises(demo_server.HTTPException) as error:
+        demo_server._store_browser_article(article)
+
+    assert error.value.status_code == 400
+
+
+@pytest.mark.parametrize("url", [
+    "file:///Users/jack/private.txt",
+    "chrome://settings/",
+    "http://127.0.0.1:7860/",
+])
+def test_browser_page_bridge_rejects_unsafe_or_self_referential_pages(url):
+    page = demo_server.BrowserArticle(
+        url=url,
+        text="x" * 700,
+        source="browser_dom",
+        complete=True,
+        boundary="main_content_end",
+    )
+
+    with pytest.raises(demo_server.HTTPException) as error:
+        demo_server._store_browser_page(page)
+
+    assert error.value.status_code == 400
+
+
+async def test_read_article_does_not_use_harness_without_explicit_fallback(monkeypatch):
+    monkeypatch.setattr(demo_server, "DESKTOP_READ_ENABLED", True)
+    monkeypatch.setattr(
+        demo_server,
+        "_run_harness",
+        lambda *args, **kwargs: pytest.fail("desktop fallback was not authorized"),
+    )
+
+    with pytest.raises(demo_server.HTTPException) as error:
+        await demo_server.read_article(demo_server.ArticleRequest())
+
+    assert error.value.status_code == 503
+
+
+async def test_browser_page_endpoint_requires_extension_worker_header():
+    payload = {
+        "url": "https://example.com/news/safe-page",
+        "title": "Safe page",
+        "text": "Main article text. " * 40,
+        "source": "browser_dom",
+        "content_type": "article",
+        "complete": True,
+        "boundary": "semantic_article_end",
+    }
+    transport = httpx.ASGITransport(app=demo_server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        rejected = await client.post("/api/browser/page", json=payload)
+        accepted = await client.post(
+            "/api/browser/page",
+            json=payload,
+            headers={"X-Chatbot-Bridge": "page-v1"},
+        )
+
+    assert rejected.status_code == 403
+    assert accepted.status_code == 200
+    assert accepted.json()["chars"] == len(payload["text"])
+
+
+def test_browser_article_bridge_expires_background_tab_data():
+    article = demo_server.BrowserArticle(
+        url="https://x.com/user/article/123",
+        article_id="123",
+        text="x" * 700,
+        complete=True,
+        comments_excluded=True,
+        boundary="x_focus_article_end",
+    )
+    demo_server._browser_articles["123"] = (time.monotonic() - 600, article)
+
+    assert demo_server._fresh_browser_article() is None
+    assert demo_server._browser_articles == {}
+
+
 
 
 def test_current_access_token_normalizes_oauth_token(monkeypatch):
