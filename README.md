@@ -119,6 +119,10 @@ node --check web_app/main.js
 
 CI runs on macOS, checks the retained browser path, builds the Python package, and performs an installation smoke test. Publishing is handled by `.github/workflows/publish.yml` for `v*` tags.
 
+### Contributing via pull requests
+
+Work on a feature branch off `main`, open a pull request, and wait for review before merging. Keep each PR focused on one change so reviewers can follow the diff easily. After approval, merge into `main` and delete the branch.
+
 ## License
 
 Apache-2.0. This project is derived from Hugging Face's original `chatbot` project; copyright notices are retained in [LICENSE](LICENSE).

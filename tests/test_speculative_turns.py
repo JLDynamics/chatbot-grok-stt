@@ -165,30 +165,58 @@ def test_is_latest_after_stability_window_catches_reopen_started_during_wait():
     thread.join(timeout=1.0)
 
 
-def test_is_latest_after_stability_window_survives_cancelled_reopen_candidate():
+def test_is_latest_after_stability_window_survives_cancelled_reopen_candidate(monkeypatch):
+    """Cancelled reopen during settle must resume the window, not return early.
+
+    The previous version raced short wall-clock sleeps (0.02/0.03) against a
+    0.2s settle deadline. Under CI load those sleeps overshoot, the original
+    deadline expires before ``assert thread.is_alive()``, and the test flakes
+    even though ``SpeculativeTurnTracker`` behaved correctly.
+
+    Synchronize on the waiter actually parking on the pending reopen instead,
+    then cancel immediately so plenty of settle time remains.
+    """
     tracker = SpeculativeTurnTracker()
     tracker.observe("turn_1", 0)
-    started = Event()
+    pending_wait_started = Event()
     result: list[bool] = []
+    settle_s = 0.5
+    original_wait_for_pending = tracker._wait_for_pending_reopen_locked
+
+    def wait_for_pending_and_signal(turn_id: str, revision: int, timeout_s: float) -> None:
+        pending_wait_started.set()
+        original_wait_for_pending(turn_id, revision, timeout_s)
+
+    monkeypatch.setattr(tracker, "_wait_for_pending_reopen_locked", wait_for_pending_and_signal)
 
     def wait_for_stability():
-        started.set()
-        result.append(tracker.is_latest_after_stability_window("turn_1", 0, settle_s=0.2))
+        result.append(tracker.is_latest_after_stability_window("turn_1", 0, settle_s=settle_s))
 
     thread = Thread(target=wait_for_stability)
     thread.start()
-    assert started.wait(timeout=1.0)
 
-    time.sleep(0.02)
-    candidate_revision = tracker.begin_reopen_candidate("turn_1", 0)
-    time.sleep(0.02)
+    # Keep a reopen candidate outstanding until the stability waiter observes it.
+    # begin_reopen_candidate is idempotent for the same base revision.
+    candidate_revision = None
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if candidate_revision is None:
+            candidate_revision = tracker.begin_reopen_candidate("turn_1", 0)
+            assert candidate_revision is not None
+        if pending_wait_started.wait(timeout=0.05):
+            break
+    else:
+        pytest.fail("stability waiter never observed the reopen candidate")
+
     tracker.cancel_reopen_candidate("turn_1", candidate_revision)
 
-    time.sleep(0.03)
+    # Give a buggy early-return after cancel a chance to finish, then confirm
+    # the settle window is still in progress.
+    time.sleep(0.05)
     assert thread.is_alive()
     assert result == []
 
-    thread.join(timeout=1.0)
+    thread.join(timeout=settle_s + 1.0)
     assert not thread.is_alive()
     assert result == [True]
 
