@@ -1,0 +1,860 @@
+"""Local browser UI and the retained search, memory, code, and desktop tools."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import ipaddress
+import json
+import logging
+import os
+import re
+import socket
+import tempfile
+import time
+from datetime import datetime, timezone
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+app = FastAPI()
+logger = logging.getLogger("chatbot.browser")
+logger.setLevel(logging.INFO)
+
+S2S_URL = os.environ.get("SPEECH_TO_SPEECH_URL", "ws://localhost:8766/v1/realtime").strip()
+STARTUP_GREETING = os.environ.get("STARTUP_GREETING", "").strip()
+SERPER_KEY = os.environ.get("SERPER_API_KEY", "").strip()
+TAVILY_KEY = os.environ.get("TAVILY_API_KEY", "").strip()
+SERPER_URL = "https://google.serper.dev/search"
+TAVILY_URL = "https://api.tavily.com/search"
+MAX_RESULTS = 5
+FETCH_MAX_BYTES = 2_000_000
+FETCH_MAX_CHARS = 20_000
+FETCH_TIMEOUT_S = 15.0
+
+
+class BrowserPage(BaseModel):
+    bridge_version: str = ""
+    tab_id: str = ""
+    url: str
+    article_id: str = ""
+    title: str = ""
+    text: str
+    source: str = "browser_dom"
+    content_type: str = "article"
+    complete: bool = False
+    truncated: bool = False
+    clutter_filtered: bool = False
+    comments_excluded: bool = False
+    replies_detected: bool = False
+    boundary: str = ""
+
+
+BROWSER_PAGE_TTL_S = 300.0
+BROWSER_PAGE_MIN_CHARS = 200
+BROWSER_PAGE_MAX_CHARS = 60_000
+browser_pages: dict[str, tuple[float, BrowserPage]] = {}
+
+
+class BrowserPageHide(BaseModel):
+    tab_id: str
+
+
+def _validate_browser_page(page: BrowserPage) -> None:
+    if page.tab_id and not re.fullmatch(r"[1-9][0-9]{0,19}", page.tab_id):
+        raise HTTPException(status_code=400, detail="The browser tab identifier is invalid.")
+    parsed = urlsplit(page.url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise HTTPException(status_code=400, detail="Only HTTP(S) pages are accepted.")
+    if host in {"127.0.0.1", "localhost"} and parsed.port == 7860:
+        raise HTTPException(status_code=400, detail="The chatbot page cannot bridge itself.")
+    public, reason = _is_public_url(page.url)
+    if not public:
+        raise HTTPException(status_code=400, detail=reason)
+    text = page.text.strip()
+    minimum_chars = 1 if page.source == "x_post_dom" else BROWSER_PAGE_MIN_CHARS
+    if len(text) < minimum_chars:
+        raise HTTPException(status_code=400, detail="The page does not contain enough main text.")
+    if len(text) > BROWSER_PAGE_MAX_CHARS:
+        raise HTTPException(status_code=413, detail="The page text is too large.")
+    if page.source == "x_dom":
+        if host not in {"x.com", "www.x.com"}:
+            raise HTTPException(status_code=400, detail="The X Article host is invalid.")
+        if (
+            not page.complete
+            or not page.comments_excluded
+            or page.boundary
+            not in {
+                "x_article_body_end",
+                "x_focus_article_end",
+            }
+        ):
+            raise HTTPException(status_code=400, detail="The X Article boundary is incomplete.")
+    elif page.source == "x_post_dom":
+        if (
+            host not in {"x.com", "www.x.com"}
+            or page.content_type != "x_post"
+            or not page.complete
+            or not page.comments_excluded
+            or page.boundary != "x_primary_post_end"
+            or not re.search(r"/[^/]+/status/[0-9]+(?:/|$)", parsed.path)
+        ):
+            raise HTTPException(status_code=400, detail="The X post boundary is incomplete.")
+    elif (
+        page.source != "browser_dom"
+        or page.content_type not in {"article", "main", "page"}
+        or page.boundary not in {"semantic_article_end", "main_content_end", "document_body_end"}
+    ):
+        raise HTTPException(status_code=400, detail="The page boundary is incomplete.")
+
+
+def _store_browser_page(page: BrowserPage) -> dict:
+    _validate_browser_page(page)
+    if page.tab_id:
+        # An already-running server can briefly contain entries posted by the
+        # pre-0.2.1 extension, which had no tab identity and cannot be hidden.
+        # Once the upgraded extension checks in, discard those legacy entries
+        # so they cannot resurface after the visible tab is hidden.
+        for key, (_, cached) in list(browser_pages.items()):
+            if not cached.tab_id:
+                browser_pages.pop(key, None)
+    browser_pages[page.tab_id or page.article_id.strip() or page.url] = (time.monotonic(), page)
+    return {
+        "ok": True,
+        "chars": len(page.text),
+        "complete": page.complete,
+        "truncated": page.truncated,
+        "content_type": page.content_type,
+        "boundary": page.boundary,
+        "bridge_version": page.bridge_version,
+    }
+
+
+def _fresh_browser_page(now: float | None = None) -> BrowserPage | None:
+    entry = _fresh_browser_page_entry(now)
+    return entry[0] if entry else None
+
+
+def _fresh_browser_page_entry(now: float | None = None) -> tuple[BrowserPage, float] | None:
+    now = time.monotonic() if now is None else now
+    for key, (seen_at, _) in list(browser_pages.items()):
+        if now - seen_at > BROWSER_PAGE_TTL_S:
+            browser_pages.pop(key, None)
+    if not browser_pages:
+        return None
+    seen_at, page = max(browser_pages.values(), key=lambda item: item[0])
+    return page, max(0.0, now - seen_at)
+
+
+@app.post("/api/browser/page")
+async def browser_page(request: Request) -> dict:
+    if request.headers.get("x-chatbot-bridge") != "page-v1":
+        raise HTTPException(status_code=403, detail="Missing browser bridge header.")
+    content_length = int(request.headers.get("content-length") or 0)
+    if content_length > 100_000:
+        raise HTTPException(status_code=413, detail="The browser payload is too large.")
+    page = BrowserPage.model_validate(await request.json())
+    return _store_browser_page(page)
+
+
+@app.post("/api/browser/hide")
+async def hide_browser_page(request: Request) -> dict:
+    """Discard a tab as soon as Chrome reports that it is no longer visible."""
+    if request.headers.get("x-chatbot-bridge") != "page-v1":
+        raise HTTPException(status_code=403, detail="Missing browser bridge header.")
+    hidden = BrowserPageHide.model_validate(await request.json())
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", hidden.tab_id):
+        raise HTTPException(status_code=400, detail="The browser tab identifier is invalid.")
+    removed = browser_pages.pop(hidden.tab_id, None) is not None
+    return {"ok": True, "removed": removed}
+
+
+@app.post("/api/browser/clear")
+async def clear_browser_pages(request: Request) -> dict:
+    """Discard all bridged text when the session is disabled or page is unsafe."""
+    if request.headers.get("x-chatbot-bridge") != "page-v1":
+        raise HTTPException(status_code=403, detail="Missing browser bridge header.")
+    removed = len(browser_pages)
+    browser_pages.clear()
+    return {"ok": True, "removed": removed}
+
+
+@app.post("/api/browser/read")
+async def read_browser_page() -> JSONResponse:
+    """Return the fresh, read-only page supplied by the Chrome extension."""
+    page = _fresh_browser_page()
+    if page is None:
+        raise HTTPException(status_code=503, detail="Open or reload the Chrome page and try again.")
+    return JSONResponse(
+        {
+            "method": "text",
+            "source": "chrome_bridge",
+            "info": {"frontmost": {"app": "Google Chrome", "title": page.title}},
+            **page.model_dump(),
+        }
+    )
+
+
+@app.get("/api/browser/status")
+async def browser_bridge_status() -> JSONResponse:
+    """Return bridge freshness/version metadata without exposing page text."""
+    entry = _fresh_browser_page_entry()
+    if not entry:
+        return JSONResponse({"connected": False, "expected_version": "0.4.1"})
+    page, age_s = entry
+    return JSONResponse(
+        {
+            "connected": True,
+            "expected_version": "0.4.1",
+            "bridge_version": page.bridge_version or "legacy",
+            "age_ms": round(age_s * 1000),
+            "content_type": page.content_type,
+            "host": (urlsplit(page.url).hostname or "").lower(),
+        }
+    )
+
+
+@app.get("/api/config")
+def config() -> dict:
+    return {
+        "search": bool(SERPER_KEY or TAVILY_KEY),
+        "allowDirect": False,
+        "s2sUrl": S2S_URL,
+        "startupGreeting": STARTUP_GREETING,
+        "codeAgent": CODE_AGENT_ENABLED,
+        "desktopControl": _desktop_control_available(),
+    }
+
+
+class SearchRequest(BaseModel):
+    query: str
+    key: str | None = None
+
+
+def _clean_key(value: str | None) -> str:
+    key = (value or "").strip().strip("'\"")
+    if "=" in key and key.split("=", 1)[0].strip().endswith("API_KEY"):
+        key = key.split("=", 1)[1].strip().strip("'\"")
+    return key.split()[0] if key.split() else ""
+
+
+@app.post("/api/search")
+async def search(req: SearchRequest) -> JSONResponse:
+    query = req.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Empty query.")
+    user_key = _clean_key(req.key)
+    key = user_key or SERPER_KEY or TAVILY_KEY
+    if not key:
+        raise HTTPException(status_code=503, detail="Search is not configured.")
+    tavily = key.startswith("tvly-")
+    if tavily:
+        url = TAVILY_URL
+        headers = {"Authorization": f"Bearer {key}"}
+        body = {"query": query, "max_results": MAX_RESULTS, "include_answer": True}
+    else:
+        url = SERPER_URL
+        headers = {"X-API-KEY": key}
+        body = {"q": query, "num": MAX_RESULTS}
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+    except httpx.RequestError as exc:
+        logger.warning("Search provider unavailable: %r", exc)
+        raise HTTPException(status_code=502, detail="Search provider unreachable.") from exc
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Search provider error ({response.status_code}).")
+    data = response.json()
+    if tavily:
+        results = [
+            {"title": item.get("title", ""), "snippet": (item.get("content") or "")[:300], "url": item.get("url", "")}
+            for item in (data.get("results") or [])[:MAX_RESULTS]
+        ]
+        answer = data.get("answer") or None
+    else:
+        results = [
+            {"title": item.get("title", ""), "snippet": item.get("snippet", ""), "url": item.get("link", "")}
+            for item in (data.get("organic") or [])[:MAX_RESULTS]
+        ]
+        answer_box = data.get("answerBox") or {}
+        answer = answer_box.get("answer") or answer_box.get("snippet")
+        if not answer:
+            answer = (data.get("knowledgeGraph") or {}).get("description")
+    return JSONResponse({"query": query, "answer": answer, "results": results})
+
+
+class _TextExtractor(HTMLParser):
+    """Reduce a readable HTML page to bounded plain text without extra dependencies."""
+
+    SKIP = {"script", "style", "noscript", "svg", "head", "nav", "footer", "form"}
+    BREAK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article"}
+    MAIN = {"main", "article"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skip_depth = 0
+        self._main_depth = 0
+        self._parts: list[str] = []
+        self._main_parts: list[str] = []
+        self._in_title = False
+        self.title: str | None = None
+
+    def _sink(self) -> list[str]:
+        return self._main_parts if self._main_depth else self._parts
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self.SKIP:
+            self._skip_depth += 1
+            return
+        if tag in self.MAIN or dict(attrs).get("role") == "main":
+            self._main_depth += 1
+            return
+        if tag == "title":
+            self._in_title = True
+        elif tag in self.BREAK:
+            self._sink().append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.SKIP and self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if tag in self.MAIN and self._main_depth:
+            self._main_depth -= 1
+            return
+        if tag == "title":
+            self._in_title = False
+        elif tag in self.BREAK:
+            self._sink().append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title and self.title is None:
+            self.title = data.strip() or None
+        if self._skip_depth:
+            return
+        text = data.strip()
+        if text:
+            self._sink().append(text + " ")
+
+    @staticmethod
+    def _clean(parts: list[str]) -> str:
+        raw = "".join(parts)
+        raw = re.sub(r"[ \t]+", " ", raw)
+        return re.sub(r"\n\s*\n\s*\n+", "\n\n", raw).strip()
+
+    def text(self) -> str:
+        main = self._clean(self._main_parts)
+        return main if len(main) >= 200 else self._clean(self._parts)
+
+
+def _is_public_url(url: str) -> tuple[bool, str]:
+    """Prevent model-facing web tools from accepting local or private networks."""
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"}:
+        return False, "Only http and https URLs can be fetched."
+    host = parts.hostname
+    if not host:
+        return False, "That URL has no host."
+    if host.rstrip(".").lower() in {"localhost", "localhost.localdomain"}:
+        return False, "Refusing to fetch a local address."
+    try:
+        addresses = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False, f"Could not resolve {host}."
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address[4][0])
+        except ValueError:
+            continue
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+            return False, "Refusing to fetch a private or loopback address."
+    return True, ""
+
+
+class FetchRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/fetch")
+async def fetch_page(req: FetchRequest) -> JSONResponse:
+    """Fetch one public text page; web search only discovers URLs and snippets."""
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="No URL given.")
+    if "://" not in url:
+        url = "https://" + url
+    allowed, reason = _is_public_url(url)
+    if not allowed:
+        raise HTTPException(status_code=400, detail=reason)
+    try:
+        async with httpx.AsyncClient(
+            timeout=FETCH_TIMEOUT_S,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; chatbot/1.0)"},
+        ) as client:
+            response = await client.get(url)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="Could not reach that page.") from exc
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"That page returned {response.status_code}.")
+
+    content_type = response.headers.get("content-type", "")
+    body = response.content[:FETCH_MAX_BYTES]
+    if "html" in content_type:
+        parser = _TextExtractor()
+        try:
+            parser.feed(body.decode(response.encoding or "utf-8", errors="replace"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Could not parse that page.") from exc
+        title, text = parser.title, parser.text()
+    elif "text/" in content_type or "json" in content_type or "xml" in content_type:
+        title, text = None, body.decode(response.encoding or "utf-8", errors="replace").strip()
+    else:
+        raise HTTPException(
+            status_code=415,
+            detail=f"That is not a readable page ({content_type or 'unknown type'}).",
+        )
+    truncated = len(text) > FETCH_MAX_CHARS
+    return JSONResponse(
+        {
+            "url": str(response.url),
+            "title": title,
+            "text": text[:FETCH_MAX_CHARS],
+            "truncated": truncated,
+        }
+    )
+
+
+PI_BIN = ROOT / "node_modules" / ".bin" / "pi"
+CODE_AGENT_ENABLED = os.environ.get("CODE_AGENT", "on").lower() not in {"off", "0", "false"}
+CODE_AGENT_CWD = Path(os.path.expanduser(os.environ.get("CODE_AGENT_CWD", "~")))
+CODE_AGENT_TIMEOUT_S = float(os.environ.get("CODE_AGENT_TIMEOUT", "300"))
+
+
+class CodeRequest(BaseModel):
+    task: str
+
+
+@app.post("/api/code")
+async def code_agent(req: CodeRequest) -> JSONResponse:
+    task = req.task.strip()
+    if not CODE_AGENT_ENABLED:
+        raise HTTPException(status_code=503, detail="The coding agent is turned off.")
+    if not task:
+        raise HTTPException(status_code=400, detail="No task given.")
+    if not PI_BIN.exists():
+        raise HTTPException(status_code=503, detail="Run npm install in the project root first.")
+    logger.warning("code_agent: cwd=%s task=%r", CODE_AGENT_CWD, task[:300])
+    try:
+        process = await asyncio.create_subprocess_exec(
+            str(PI_BIN),
+            "-p",
+            task,
+            "--provider",
+            "openrouter",
+            cwd=CODE_AGENT_CWD,
+            env=dict(os.environ),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        output, _ = await asyncio.wait_for(process.communicate(), timeout=CODE_AGENT_TIMEOUT_S)
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise HTTPException(status_code=504, detail="The coding agent timed out.") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail="Could not start the coding agent.") from exc
+    text = output.decode("utf-8", errors="replace").strip()
+    if len(text) > 4000:
+        text = text[:4000] + "\n[output truncated]"
+    return JSONResponse({"ok": process.returncode == 0, "exit_code": process.returncode, "output": text})
+
+
+DESKTOP_HARNESS_BIN = Path(os.path.expanduser("~/.local/bin/desktop-harness"))
+DESKTOP_CONTROL_ENABLED = os.environ.get("DESKTOP_CONTROL", "on").lower() not in {"off", "0", "false"}
+DESKTOP_CAPTURE_DIR = Path(tempfile.gettempdir()) / "desktop-harness"
+DESKTOP_SCREENSHOT_MAX_BYTES = 8_000_000
+DESKTOP_HARNESS_MAX_OUTPUT_BYTES = 64_000
+LOGIN_HINTS = (
+    "1password",
+    "bitwarden",
+    "keychain",
+    "lastpass",
+    "keepass",
+    "dashlane",
+    "nordpass",
+    "enpass",
+    "wallet",
+    "bank",
+    "sign in",
+    "log in",
+    "login",
+    "password",
+    "passcode",
+    "two-factor",
+    "authenticator",
+    "checkout",
+    "payment",
+    "billing",
+    "credit card",
+    "card number",
+    "security code",
+    "verification code",
+    "one-time code",
+)
+ACTIONS = {
+    "click": "click_text({text!r}, app)",
+    "type": "type_text({text!r})",
+    "key": "key({text!r})",
+    "hotkey": "hotkey(*{keys!r})",
+    "scroll": "scroll(dy={dy!r})",
+    "drag": "drag({x1!r}, {y1!r}, {x2!r}, {y2!r})",
+}
+
+
+def _desktop_control_available() -> bool:
+    return DESKTOP_CONTROL_ENABLED and DESKTOP_HARNESS_BIN.is_file() and os.access(DESKTOP_HARNESS_BIN, os.X_OK)
+
+
+class DesktopActRequest(BaseModel):
+    action: str
+    text: str | None = None
+    app: str | None = None
+    amount: int | None = None
+    coords: list[float] | None = None
+
+
+class ContextPreflightRequest(BaseModel):
+    include_desktop: bool = False
+
+
+async def _run_harness(script: str, timeout: float) -> tuple[int, str]:
+    process = await asyncio.create_subprocess_exec(
+        str(DESKTOP_HARNESS_BIN),
+        "-c",
+        script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+
+    async def complete() -> tuple[int, bytes]:
+        assert process.stdout is not None
+        parts: list[bytes] = []
+        size = 0
+        while chunk := await process.stdout.read(4_096):
+            size += len(chunk)
+            if size > DESKTOP_HARNESS_MAX_OUTPUT_BYTES:
+                process.kill()
+                await process.wait()
+                raise HTTPException(status_code=502, detail="Desktop Harness returned too much output.")
+            parts.append(chunk)
+        return await process.wait(), b"".join(parts)
+
+    try:
+        return_code, output = await asyncio.wait_for(complete(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise HTTPException(status_code=504, detail="That action took too long.") from exc
+    return return_code, output.decode("utf-8", errors="replace").strip()
+
+
+async def _desktop_frontmost_context() -> dict[str, object]:
+    """Return bounded app/window metadata only; never labels, pixels, or document text."""
+    script = (
+        "import json\n"
+        "from desktop_harness.helpers import screen_info\n"
+        "info = screen_info()\n"
+        "front = info.get('frontmost') or {}\n"
+        "pid = front.get('pid')\n"
+        "windows = [w for w in info.get('windows', []) if w.get('pid') == pid]\n"
+        "window = windows[0] if windows else {}\n"
+        "print(json.dumps({'app': str(front.get('name') or '')[:120], "
+        "'title': str(window.get('title') or '')[:200]}))\n"
+    )
+    code, output = await _run_harness(script, 8.0)
+    if code != 0:
+        raise HTTPException(status_code=502, detail="Could not inspect the current app context.")
+    try:
+        payload = json.loads(output.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as exc:
+        raise HTTPException(status_code=502, detail="Desktop Harness returned invalid context metadata.") from exc
+    app_name = str(payload.get("app") or "").strip()[:120]
+    window_title = str(payload.get("title") or "").strip()[:200]
+    sensitive = next((hint for hint in LOGIN_HINTS if hint in f"{app_name} {window_title}".lower()), None)
+    if sensitive:
+        return {"available": True, "sensitive": True, "app": "", "window_title": ""}
+    return {
+        "available": bool(app_name),
+        "sensitive": False,
+        "app": app_name,
+        "window_title": window_title,
+    }
+
+
+@app.post("/api/context/preflight")
+async def context_preflight(req: ContextPreflightRequest) -> JSONResponse:
+    """Classify current context without returning page text or capturing the screen."""
+    entry = _fresh_browser_page_entry()
+    if entry:
+        page, age_s = entry
+        host = (urlsplit(page.url).hostname or "").lower()
+        bridge = {
+            "fresh_readable_page": True,
+            "age_ms": round(age_s * 1000),
+            "host": host,
+            "title": page.title[:300],
+            "content_type": page.content_type,
+            "complete": page.complete,
+            "truncated": page.truncated,
+        }
+    else:
+        bridge = {"fresh_readable_page": False}
+
+    desktop: dict[str, object] = {"inspected": False}
+    if req.include_desktop and _desktop_control_available():
+        desktop = {"inspected": True, **await _desktop_frontmost_context()}
+
+    app_name = str(desktop.get("app") or "").lower()
+    chrome_frontmost = app_name in {"google chrome", "chrome", "chromium"}
+    if desktop.get("sensitive"):
+        route_hint = "ask"
+    elif desktop.get("inspected") and desktop.get("available") and not chrome_frontmost:
+        route_hint = "control_screen_screenshot"
+    elif bridge["fresh_readable_page"]:
+        route_hint = "read_article"
+    else:
+        route_hint = "ask"
+
+    return JSONResponse(
+        {
+            "purpose": "routing_only",
+            "contains_page_text": False,
+            "captured_screenshot": False,
+            "authorization": {
+                "public_page_text": "no_confirmation_required",
+                "desktop_visual_or_action": "explicit_user_request_required",
+            },
+            "chrome_bridge": bridge,
+            "desktop": desktop,
+            "route_hint": route_hint,
+        }
+    )
+
+
+async def _screen_scope_looks_sensitive(app: str | None = None) -> str | None:
+    script = (
+        "import json\n"
+        "from desktop_harness.helpers import labels, screen_info\n"
+        f"info = screen_info({app!r})\n"
+        "try:\n"
+        f"    info['labels'] = labels({app!r}, limit=60)\n"
+        "except Exception as exc:\n"
+        "    info['labels_error'] = str(exc)\n"
+        "print(json.dumps(info))\n"
+    )
+    try:
+        code, text = await _run_harness(script, 20.0)
+        if code != 0:
+            raise HTTPException(status_code=502, detail="Could not inspect the desktop safety scope.")
+        info = json.loads(text.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as exc:
+        raise HTTPException(status_code=502, detail="Could not inspect the desktop safety scope.") from exc
+    scope = json.dumps(info).lower()
+    return next((hint for hint in LOGIN_HINTS if hint in scope), None)
+
+
+async def _capture_desktop_screenshot(app: str | None) -> dict[str, str]:
+    script = (
+        "import json\n"
+        "from desktop_harness.helpers import screenshot\n"
+        f"print(json.dumps({{'path': screenshot(app={app!r})}}))\n"
+    )
+    code, output = await _run_harness(script, 20.0)
+    if code != 0:
+        detail = output[-500:] or "Desktop Harness could not capture the screen."
+        lowered = detail.lower()
+        if "no on-screen window" in lowered:
+            raise HTTPException(status_code=404, detail="No matching visible app or window was found.")
+        if "screen recording" in lowered or "capture returned no image" in lowered:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Screen capture is not available. Grant Screen Recording permission to the "
+                    "app running Chatbot, then restart it."
+                ),
+            )
+        raise HTTPException(status_code=502, detail=detail)
+    try:
+        payload = json.loads(output.splitlines()[-1])
+        path = Path(payload["path"]).resolve(strict=True)
+    except (json.JSONDecodeError, IndexError, KeyError, OSError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail="Desktop Harness returned an invalid screenshot path.") from exc
+    capture_dir = DESKTOP_CAPTURE_DIR.resolve()
+    if path.parent != capture_dir or not path.is_file():
+        raise HTTPException(status_code=502, detail="Desktop Harness returned an unsafe screenshot path.")
+    size = path.stat().st_size
+    if size < 1_000:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Screen capture returned an empty image. Grant Screen Recording permission to the "
+                "app running Chatbot, then restart it."
+            ),
+        )
+    if size > DESKTOP_SCREENSHOT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="The screenshot is too large to attach safely.")
+    data = path.read_bytes()
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(status_code=502, detail="Desktop Harness did not return a valid PNG screenshot.")
+    return {
+        "image": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
+        "path": str(path),
+        "target": app or "main display",
+    }
+
+
+@app.post("/api/desktop/act")
+async def desktop_act(req: DesktopActRequest) -> JSONResponse:
+    if not DESKTOP_CONTROL_ENABLED:
+        raise HTTPException(status_code=503, detail="Desktop control is turned off.")
+    if not DESKTOP_HARNESS_BIN.is_file() or not os.access(DESKTOP_HARNESS_BIN, os.X_OK):
+        raise HTTPException(status_code=503, detail="desktop-harness is not installed.")
+    action = req.action.strip().lower()
+    if action not in {*ACTIONS, "screenshot"}:
+        raise HTTPException(status_code=400, detail=f"Unknown action {action!r}.")
+    app_name = req.app.strip() if req.app else None
+    if app_name and (len(app_name) > 120 or any(ord(char) < 32 for char in app_name)):
+        raise HTTPException(status_code=400, detail="The app or window name is invalid.")
+    sensitive_scope = app_name if action == "screenshot" else None
+    if action in {"click", "type", "key", "hotkey", "screenshot"} and await _screen_scope_looks_sensitive(
+        sensitive_scope
+    ):
+        raise HTTPException(status_code=451, detail="Desktop control is blocked on sign-in and payment windows.")
+    if action == "screenshot":
+        captured = await _capture_desktop_screenshot(app_name)
+        return JSONResponse({"ok": True, "action": action, **captured})
+    text = req.text or ""
+    if action == "scroll":
+        amount = req.amount if req.amount else 15
+        expression = ACTIONS[action].format(dy=-abs(amount) if amount >= 0 else abs(amount))
+    elif action == "drag":
+        coords = req.coords or []
+        if len(coords) != 4:
+            raise HTTPException(status_code=400, detail="Drag needs coords [x1, y1, x2, y2].")
+        expression = ACTIONS[action].format(x1=coords[0], y1=coords[1], x2=coords[2], y2=coords[3])
+    elif action == "hotkey":
+        keys = [key.lower() for key in text.replace("+", " ").split()]
+        if not keys:
+            raise HTTPException(status_code=400, detail="Hotkey needs keys.")
+        expression = ACTIONS[action].format(keys=keys)
+    else:
+        if not text:
+            raise HTTPException(status_code=400, detail=f"{action} needs text.")
+        expression = ACTIONS[action].format(text=text)
+    logger.warning("desktop_act: %s app=%r arg=%r", action, app_name, text[:120])
+    script = (
+        "import json\n"
+        "from desktop_harness.helpers import click_text, type_text, key, hotkey, scroll, drag, labels, wait_stable\n"
+        f"app = {app_name!r}\n"
+        f"verify = {action in {'click', 'type', 'key', 'hotkey'}!r}\n"
+        "before = set(labels(app, limit=60)) if verify else set()\n"
+        f"result = {expression}\n"
+        "if verify: wait_stable(0.35)\n"
+        "changed = [x for x in labels(app, limit=60) if x and x not in before][:12] if verify else []\n"
+        "print(json.dumps({'ok': True, 'result': str(result), 'changed': changed, 'verified': verify}))\n"
+    )
+    code, output = await _run_harness(script, 45.0)
+    if code != 0:
+        raise HTTPException(status_code=502, detail=output[-300:] or "Desktop action failed.")
+    try:
+        payload = json.loads(output.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        payload = {"ok": True, "verified": False, "changed": [], "result": output[-500:]}
+    return JSONResponse({"ok": True, "action": action, **payload})
+
+
+MEMORIES_PATH = Path(os.path.expanduser(os.environ.get("S2S_MEMORIES_PATH", "~/.chatbot/memories.json")))
+memories_lock = asyncio.Lock()
+
+
+def _load_memories() -> list[dict]:
+    try:
+        value = json.loads(MEMORIES_PATH.read_text())
+        return value if isinstance(value, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_memories(items: list[dict]) -> None:
+    MEMORIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = MEMORIES_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(items, indent=2, ensure_ascii=False))
+    temporary.replace(MEMORIES_PATH)
+
+
+class MemoryRequest(BaseModel):
+    text: str
+
+
+@app.get("/api/memories")
+async def list_memories() -> JSONResponse:
+    async with memories_lock:
+        return JSONResponse({"memories": _load_memories()})
+
+
+@app.post("/api/memories")
+async def add_memory(req: MemoryRequest) -> JSONResponse:
+    text = req.text.strip()[:500]
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty memory.")
+    async with memories_lock:
+        items = _load_memories()
+        duplicate = next((item for item in items if item.get("text", "").lower() == text.lower()), None)
+        if duplicate:
+            return JSONResponse({"memory": duplicate, "duplicate": True})
+        record = {
+            "id": max((int(item.get("id", 0)) for item in items), default=0) + 1,
+            "text": text,
+            "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        }
+        items.append(record)
+        _save_memories(items)
+    return JSONResponse({"memory": record, "duplicate": False})
+
+
+@app.delete("/api/memories/{memory_id}")
+async def delete_memory(memory_id: int) -> JSONResponse:
+    async with memories_lock:
+        items = _load_memories()
+        kept = [item for item in items if int(item.get("id", -1)) != memory_id]
+        if len(kept) == len(items):
+            raise HTTPException(status_code=404, detail="No such memory.")
+        _save_memories(kept)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/memories/forget")
+async def forget_memory(req: MemoryRequest) -> JSONResponse:
+    needle = req.text.strip().lower()
+    if not needle:
+        raise HTTPException(status_code=400, detail="Empty forget request.")
+    async with memories_lock:
+        items = _load_memories()
+        matches = [
+            item for item in items if needle in item.get("text", "").lower() or item.get("text", "").lower() in needle
+        ]
+        kept = [item for item in items if item not in matches]
+        _save_memories(kept)
+    return JSONResponse({"forgotten": [item["text"] for item in matches], "remaining": len(kept)})
+
+
+app.mount("/", StaticFiles(directory=HERE, html=True), name="static")

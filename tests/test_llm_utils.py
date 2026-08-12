@@ -33,21 +33,9 @@ def test_remove_unspeechable_keeps_chinese_punctuation() -> None:
 # so `--enable_lang_prompt` silently emits nothing for that language. Parakeet TDT is the
 # default STT and reports 25 languages, of which only 8 overlapped the original 12-entry map.
 
-# Modules that declare a SUPPORTED_LANGUAGES list of codes they can report.
-_STT_HANDLER_MODULES = [
-    "chatbot.STT.parakeet_tdt_handler",
-    "chatbot.STT.whisper_stt_handler",
-    "chatbot.STT.mlx_audio_whisper_handler",
-    "chatbot.STT.lightning_whisper_mlx_handler",
-]
-
-# These have no optional top-level dependency, so a skip here means something is wrong
-# rather than merely uninstalled.
-_ALWAYS_IMPORTABLE = {
-    "chatbot.STT.parakeet_tdt_handler",
-    "chatbot.STT.whisper_stt_handler",
-    "chatbot.STT.mlx_audio_whisper_handler",
-}
+# Parakeet is the single retained STT backend.
+_STT_HANDLER_MODULES = ["chatbot.STT.parakeet_tdt_handler"]
+_ALWAYS_IMPORTABLE = {"chatbot.STT.parakeet_tdt_handler"}
 
 
 def _supported_languages(module_name):

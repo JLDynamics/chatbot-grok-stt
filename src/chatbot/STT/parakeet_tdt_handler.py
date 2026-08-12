@@ -1,9 +1,7 @@
 """
 Parakeet TDT Speech-to-Text Handler
 
-Supports NVIDIA Parakeet TDT model for high-quality multilingual ASR.
-- On Apple Silicon (MPS): Uses mlx-audio with mlx-community/parakeet-tdt-0.6b-v3
-- On CUDA/CPU: Uses nano-parakeet (pure PyTorch) with nvidia/parakeet-tdt-0.6b-v3
+Uses mlx-audio with mlx-community/parakeet-tdt-0.6b-v3 on Apple Silicon.
 
 Model supports 25 European languages with automatic language detection.
 """
@@ -12,8 +10,6 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from sys import platform
-from threading import Lock
 from time import perf_counter
 from typing import Any, Iterator, Optional
 
@@ -92,18 +88,13 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
     """
     Handles Speech-to-Text using NVIDIA Parakeet TDT model.
 
-    On Apple Silicon (MPS): Uses mlx-audio with the MLX-converted model.
-    On CUDA/CPU: Uses nano-parakeet (pure PyTorch) for NeMo-free inference.
-
     Parakeet TDT 0.6B v3 is a 600M parameter multilingual ASR model
     supporting 25 European languages with automatic language detection.
     """
 
     def setup(
         self,
-        model_name: Optional[str] = None,
-        device: str = "auto",
-        compute_type: str = "float16",
+        model_name: str = "mlx-community/parakeet-tdt-0.6b-v3",
         language: Optional[str] = None,
         gen_kwargs: dict[str, Any] = {},
         enable_live_transcription: bool = False,
@@ -113,11 +104,7 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         Initialize the Parakeet TDT model.
 
         Args:
-            model_name: Model identifier. Defaults are:
-                - MPS: "mlx-community/parakeet-tdt-0.6b-v3"
-                - CUDA/CPU: "nvidia/parakeet-tdt-0.6b-v3"
-            device: Device to use ("auto", "cuda", "mps", "cpu")
-            compute_type: Compute precision ("float16", "float32")
+            model_name: MLX model identifier.
             language: Target language code (optional, model auto-detects)
             gen_kwargs: Additional generation kwargs
         """
@@ -126,36 +113,13 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         self.last_language = language if language else "en"
         self.enable_live_transcription = enable_live_transcription
         self.live_transcription_update_interval = live_transcription_update_interval
-        self.compute_lock = Lock()
         self.sample_rate = 16000
-
-        # Determine device
-        if device == "auto":
-            if platform == "darwin":
-                self.device = "mps"
-            else:
-                import torch
-
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = device
-
-        # Set default model based on device
-        if model_name is None:
-            if self.device == "mps":
-                model_name = "mlx-community/parakeet-tdt-0.6b-v3"
-            else:
-                model_name = "nvidia/parakeet-tdt-0.6b-v3"
-
+        if not model_name.startswith("mlx-community/"):
+            raise ValueError("Parakeet must use an mlx-community model on macOS.")
         self.model_name = model_name
-        self.compute_type = compute_type
-
-        logger.info(f"Loading Parakeet TDT model: {model_name} on {self.device}")
-
-        if self.device == "mps":
-            self._setup_mlx(model_name)
-        else:
-            self._setup_nano_parakeet(model_name)
+        self.backend = "mlx"
+        logger.info("Loading Parakeet TDT model: %s via mlx-audio", model_name)
+        self._setup_mlx(model_name)
 
         # Setup streaming handler if live transcription is enabled
         self.streaming_handler = None
@@ -190,26 +154,6 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
                 "mlx-audio is required for Parakeet TDT on Apple Silicon. Install with: pip install mlx-audio"
             ) from e
 
-    def _setup_nano_parakeet(self, model_name: str) -> None:
-        """Setup for CUDA/CPU using nano-parakeet."""
-        try:
-            import torch
-            from nano_parakeet import from_pretrained
-
-            self.backend = "nano_parakeet"
-
-            if self.device == "cuda" and not torch.cuda.is_available():
-                logger.warning("CUDA requested but not available. Falling back to CPU for nano-parakeet.")
-                self.device = "cpu"
-
-            self.model = from_pretrained(model_name=model_name, device=self.device)
-
-            logger.info(f"nano-parakeet model loaded successfully on {self.device}")
-        except ImportError as e:
-            raise ImportError(
-                "nano-parakeet is required for Parakeet TDT on CUDA/CPU. Install with: pip install nano-parakeet"
-            ) from e
-
     def warmup(self) -> None:
         """Warm up the model with a dummy input."""
         logger.info(f"Warming up {self.__class__.__name__}")
@@ -218,16 +162,10 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         dummy_audio = np.zeros(16000, dtype=np.float32)
 
         try:
-            if self.backend == "mlx":
-                import mlx.core as mx
+            import mlx.core as mx
 
-                # Convert to mx.array and call decode_chunk directly
-                audio_mx = mx.array(dummy_audio, dtype=mx.float32)
-                _ = self.model.decode_chunk(audio_mx, verbose=False)
-            elif self.backend == "nano_parakeet":
-                _ = self.model.transcribe(dummy_audio)
-            else:
-                _ = self.model.transcribe([dummy_audio], batch_size=1, verbose=False)
+            audio_mx = mx.array(dummy_audio, dtype=mx.float32)
+            _ = self.model.decode_chunk(audio_mx, verbose=False)
 
             logger.info("Model warmed up and ready")
         except Exception as e:
@@ -319,10 +257,7 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
                     language_code = self.last_language
                 else:
                     inference_start_s = perf_counter()
-                    if self.backend == "mlx":
-                        pred_text, language_code = self._process_mlx_final(audio_input)
-                    else:
-                        pred_text, language_code = self._process_nano_parakeet(audio_input)
+                    pred_text, language_code = self._process_mlx_final(audio_input)
                     inference_s = perf_counter() - inference_start_s
                     lock_scope_s = perf_counter() - lock_scope_start_s
 
@@ -404,34 +339,8 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
 
     @contextmanager
     def _compute_lock_context(self, handler_name: str, timeout: float) -> Iterator[bool]:
-        if self.backend == "mlx":
-            with MLXLockContext(handler_name=handler_name, timeout=timeout) as acquired:
-                yield acquired
-            return
-
-        lock_start_s = perf_counter()
-        acquired = self.compute_lock.acquire(timeout=timeout)
-        wait_s = perf_counter() - lock_start_s
-        hold_start_s: float | None = None
-        if acquired:
-            if wait_s >= 0.25:
-                logger.info("%s: compute lock acquired after %.2fs", handler_name, wait_s)
-            else:
-                logger.debug("%s: compute lock acquired after %.3fs", handler_name, wait_s)
-            hold_start_s = perf_counter()
-        else:
-            logger.warning("%s: Failed to acquire compute lock after %.3fs (timeout=%s)", handler_name, wait_s, timeout)
-        try:
+        with MLXLockContext(handler_name=handler_name, timeout=timeout) as acquired:
             yield acquired
-        finally:
-            if acquired:
-                assert hold_start_s is not None
-                self.compute_lock.release()
-                hold_s = perf_counter() - hold_start_s
-                if hold_s >= 0.25:
-                    logger.info("%s: compute lock released after holding %.2fs", handler_name, hold_s)
-                else:
-                    logger.debug("%s: compute lock released after holding %.3fs", handler_name, hold_s)
 
     def _show_progressive_transcription(self, audio_input: np.ndarray) -> str:
         """Run progressive transcription, print to console, and return the text."""
@@ -610,21 +519,6 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             language_code = self.start_language
         else:
             # Detect language from transcribed text
-            detected_lang = self._detect_language_from_text(pred_text)
-            if detected_lang:
-                language_code = detected_lang
-            else:
-                language_code = self.last_language
-
-        return pred_text, language_code
-
-    def _process_nano_parakeet(self, audio_input: np.ndarray) -> tuple[str, str]:
-        """Process audio using nano-parakeet backend."""
-        pred_text = self.model.transcribe(audio_input).strip()
-
-        if self.start_language and self.start_language != "auto":
-            language_code = self.start_language
-        else:
             detected_lang = self._detect_language_from_text(pred_text)
             if detected_lang:
                 language_code = detected_lang

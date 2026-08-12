@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-import base64
-import io
-import ipaddress
 import logging
 import os
-import wave
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterator
-from typing import Any, Literal, Optional
-from urllib.parse import urlparse
+from typing import Any, Optional
 
 import httpx
-import numpy as np
 from nltk import sent_tokenize
 from openai import OpenAI
 from openai.types.realtime.conversation_item import (
@@ -32,7 +26,6 @@ from chatbot.LLM.chat import (
     SupportedItem,
     build_active_chat,
     make_system_message,
-    make_user_audio_message,
     make_user_message,
 )
 from chatbot.LLM.compaction_prompt import CompactGenerateFn, build_compactor
@@ -141,7 +134,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         model_name: str = "gpt-5.4-mini",
         device: str = "cuda",
         gen_kwargs: dict[str, Any] = {},
-        base_url: Optional[str] = None,
+        base_url: str = "https://openrouter.ai/api/v1",
         api_key: Optional[str] = None,
         stream: bool = True,
         user_role: str = "user",
@@ -153,10 +146,6 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         stream_batch_sentences: int = 3,
         enable_lang_prompt: bool = False,
         compact_history: bool = False,
-        audio_max_tokens: int = 256,
-        audio_temperature: float = 0.0,
-        audio_content_type: Literal["input_audio", "audio_url"] = "input_audio",
-        audio_history_turns: int = 1,
         **_kwargs: Any,
     ) -> None:
         self.cancel_scope = cancel_scope
@@ -166,12 +155,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self.stream_batch_sentences = max(1, stream_batch_sentences)
         self.enable_lang_prompt = enable_lang_prompt
         self.gen_kwargs = dict(gen_kwargs)
-        self.audio_max_tokens = audio_max_tokens
-        self.audio_temperature = audio_temperature
-        if audio_content_type not in {"input_audio", "audio_url"}:
-            raise ValueError("audio_content_type must be either 'input_audio' or 'audio_url'.")
-        self.audio_content_type = audio_content_type
-        self.audio_history_turns = max(0, audio_history_turns)
+        self.base_url = base_url
         self.request_timeout_s = float(request_timeout_s)
         self.request_timeout = httpx.Timeout(
             self.request_timeout_s,
@@ -179,42 +163,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         )
 
         self.user_role = user_role
-        if (
-            api_key is None
-            and not os.environ.get("OPENAI_API_KEY")
-            and base_url is not None
-            and self._is_local_base_url(base_url)
-        ):
-            api_key = "none"
+        if api_key is None:
+            api_key = os.environ.get("OPENROUTER_API_KEY")
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort)
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
         self.warmup()
-
-    @staticmethod
-    def _is_official_openai(base_url: Optional[str]) -> bool:
-        """Whether ``base_url`` points at the official OpenAI server.
-
-        Normalises a trailing slash so ``https://api.openai.com/v1/`` is also
-        recognised; the official server rejects the provider-specific extra_body
-        keys we send to vLLM / the HF router.
-        """
-        if base_url is None:
-            return False
-        return base_url.rstrip("/") == "https://api.openai.com/v1"
-
-    @staticmethod
-    def _is_local_base_url(base_url: str) -> bool:
-        """Whether *base_url* points at localhost or a loopback IP address."""
-        host = urlparse(base_url).hostname
-        if host is None:
-            return False
-        if host.rstrip(".").lower() == "localhost":
-            return True
-        try:
-            return ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            return False
 
     @classmethod
     def _build_extra_body(
@@ -229,11 +183,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         ``chat_template_kwargs.enable_thinking=false``, while others (e.g. GLM via
         the HF router) ignore that and require ``reasoning_effort='none'``. A
         non-empty ``reasoning_effort`` therefore takes precedence; otherwise we fall
-        back to the chat-template flag. None of this applies to the official
-        OpenAI server, which rejects unknown extra_body keys.
+        back to the chat-template flag.
         """
-        if base_url is None or cls._is_official_openai(base_url):
-            return None
         if reasoning_effort:
             return {"reasoning_effort": reasoning_effort}
         if disable_thinking:
@@ -285,50 +236,6 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
     def _build_optional_kwargs(self, req_tools: Any, req_tool_choice: Any) -> dict[str, Any]:
         """Build the per-request tools/tool_choice kwargs in the backend's shape."""
         ...
-
-    # ── audio-input protocol hooks ───────────────────────────────────────────
-
-    def _serialize_audio(self, active_chat: Chat) -> Any:
-        """Serialize an audio turn using the selected backend's native protocol."""
-        return self._serialize(active_chat)
-
-    def _build_audio_optional_kwargs(
-        self,
-        response: Any,
-        req_tools: Any,
-        req_tool_choice: Any,
-    ) -> dict[str, Any]:
-        """Build audio request parameters in the selected backend's shape."""
-        kwargs = self._build_optional_kwargs(req_tools, req_tool_choice)
-        max_tokens = getattr(response, "max_output_tokens", None) if response is not None else None
-        kwargs.setdefault("max_tokens", max_tokens or self.audio_max_tokens)
-        kwargs.setdefault("temperature", self.audio_temperature)
-        return kwargs
-
-    def _request_audio(self, api_input: Any, optional_kwargs: dict[str, Any]) -> Any:
-        return self._request(api_input, optional_kwargs)
-
-    def _iter_audio_events(self, api_response: Any) -> Iterator[ProviderEvent]:
-        yield from self._iter_events(api_response)
-
-    @staticmethod
-    def _audio_to_wav_base64(audio: np.ndarray, sample_rate: int) -> str:
-        """Encode a mono 16-bit WAV payload without touching the filesystem."""
-        audio_array = np.asarray(audio)
-        if audio_array.ndim > 1:
-            audio_array = np.mean(audio_array, axis=1)
-        if np.issubdtype(audio_array.dtype, np.floating):
-            pcm = (np.clip(audio_array, -1.0, 1.0) * 32767.0).astype("<i2")
-        else:
-            pcm = np.clip(audio_array, -32768, 32767).astype("<i2")
-
-        with io.BytesIO() as wav_io:
-            with wave.open(wav_io, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(sample_rate)
-                wav_file.writeframes(pcm.tobytes())
-            return base64.b64encode(wav_io.getvalue()).decode("ascii")
 
     # ── speculative-turn / cancellation gating ─────────────────────────────────
 
@@ -681,94 +588,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     pass
             rollback_transaction()
 
-    def _process_audio(self, request: LLMIn) -> Iterator[LLMOut]:
-        """Process an audio-input turn through the selected backend protocol."""
-        assert request.audio is not None
-        runtime_config = request.runtime_config
-        response = request.response
-        turn_id = request.turn_id
-        turn_revision = request.turn_revision
-        speech_stopped_at_s = request.speech_stopped_at_s
-        if not self._turn_is_latest(turn_id, turn_revision):
-            logger.info("Skipping stale LLM request for turn=%s rev=%s", turn_id, turn_revision)
-            yield EndOfResponse(turn_id=turn_id, turn_revision=turn_revision)
-            return
-
-        original_chat = runtime_config.chat
-        if is_out_of_band(response):
-            try:
-                active_chat = build_active_chat(original_chat, response)
-            except ChatItemError as exc:
-                logger.info("Out-of-band response rejected: %s", exc)
-                yield EndOfResponse(turn_id=turn_id, turn_revision=turn_revision, error=str(exc))
-                return
-        else:
-            active_chat = original_chat.copy()
-
-        language_code = request.language_code
-        instructions = (
-            response.instructions if response and response.instructions else runtime_config.session.instructions
-        ) or ""
-        req_tools = response.tools if response and response.tools else runtime_config.session.tools
-        req_tool_choice = (
-            response.tool_choice if response and response.tool_choice else runtime_config.session.tool_choice
-        )
-        wants_audio = response_wants_audio(response)
-        self._apply_config(active_chat, instructions, wants_audio)
-        language_code, lang_name = resolve_auto_language(language_code)
-        if lang_name and self.enable_lang_prompt:
-            active_chat.add_item(make_user_message(f"Please reply to my message in {lang_name}."))
-
-        audio_b64 = self._audio_to_wav_base64(request.audio, request.audio_sample_rate)
-        audio_message = active_chat.add_item(make_user_audio_message(audio_b64))
-        optional_kwargs = self._build_audio_optional_kwargs(response, req_tools, req_tool_choice)
-
-        transactional_user_message_id: str | None = None
-        history_commit_fn: Callable[[], None] | None = None
-        if not is_out_of_band(response):
-            provisional_message = make_user_audio_message(audio_b64)
-            provisional_message.id = audio_message.id
-            original_chat.add_item(provisional_message)
-            assert provisional_message.id is not None
-            transactional_user_message_id = provisional_message.id
-
-            def commit_audio_history() -> None:
-                original_chat.compact_audio_history(self.audio_history_turns)
-
-            history_commit_fn = commit_audio_history
-
-        # CancelScope.is_stale(gen) is checked when the stream iterator advances; a
-        # blocked read inside httpx cannot be aborted by cancel_scope.cancel() from
-        # the websocket router. Mitigations: request_timeout_s / ReadTimeout.
-        gen = self.cancel_scope.generation if self.cancel_scope else None
-        turn = _Turn(
-            language_code=language_code,
-            gen=gen,
-            runtime_config=runtime_config,
-            response=response,
-            turn_id=turn_id,
-            turn_revision=turn_revision,
-            speech_stopped_at_s=speech_stopped_at_s,
-            wants_audio=wants_audio,
-        )
-        yield from self._generate(
-            active_chat,
-            original_chat,
-            turn,
-            optional_kwargs,
-            serialize_fn=self._serialize_audio,
-            request_fn=self._request_audio,
-            event_iterator_fn=self._iter_audio_events,
-            transactional_user_message_id=transactional_user_message_id,
-            history_commit_fn=history_commit_fn,
-        )
-
     def process(self, request: LLMIn) -> Iterator[LLMOut]:
         """Process a language model request and yield LLMResponseChunks."""
-        if request.audio is not None:
-            yield from self._process_audio(request)
-            return
-
         runtime_config = request.runtime_config
         response = request.response
         turn_id = request.turn_id
