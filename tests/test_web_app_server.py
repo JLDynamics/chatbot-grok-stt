@@ -226,7 +226,7 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
     assert "sendResponse({ ok: true, enabled: true, preserved: true })" in background
     assert "function extractXPost()" in content
     assert "x_primary_post_end" in content
-    assert "[data-testid=\"tweetText\"]" in content
+    assert '[data-testid="tweetText"]' in content
     assert "function runtimeMessage(message" in content
     assert "status delivery failed" in content
     assert "function markContextInvalidated(error)" in content
@@ -263,7 +263,7 @@ def test_chrome_bridge_session_persists_until_disabled_or_receiver_closes():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is required")
-    script = r'''
+    script = r"""
 import { readFileSync } from "node:fs";
 
 let listener;
@@ -430,7 +430,7 @@ await wait();
 if (stored.chatbotPageBridgeSession || badgeText !== "") {
   throw new Error("closing the Chatbot tab did not end the bridge session");
 }
-'''
+"""
     subprocess.run(
         [node, "--input-type=module", "-e", script],
         cwd=ROOT,
