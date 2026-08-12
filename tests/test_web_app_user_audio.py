@@ -90,6 +90,89 @@ if (wav.getInt16(44 + 1600 * 2, true) !== 200) throw new Error("reopened segment
     )
 
 
+def test_noise_gate_changes_pcm_forwarded_to_websocket():
+    _run_node(
+        """
+globalThis.localStorage = { getItem() { return null; } };
+globalThis.WebSocket = { OPEN: 1 };
+globalThis.CustomEvent = class CustomEvent extends Event {
+  constructor(type, init = {}) {
+    super(type);
+    this.detail = init.detail;
+  }
+};
+
+let Processor;
+globalThis.sampleRate = 48000;
+globalThis.AudioWorkletProcessor = class {
+  constructor() {
+    this.port = { onmessage: null, postMessage() {} };
+  }
+};
+globalThis.registerProcessor = (name, cls) => {
+  if (name === "mic-capture") Processor = cls;
+};
+
+const { S2sWsRealtimeClient } = await import("./web_app/ws/s2s-ws-client.js");
+await import("./web_app/worklets/mic-capture.js");
+
+const sent = [];
+const client = new S2sWsRealtimeClient({
+  voice: "Aiden",
+  instructions: "Be helpful.",
+  directUrl: "ws://unused",
+});
+client._ws = {
+  readyState: WebSocket.OPEN,
+  send(raw) { sent.push(JSON.parse(raw)); },
+};
+client._sessionConfigured = true;
+
+const worklet = new Processor({ processorOptions: { chunkMs: 40 } });
+worklet.port.postMessage = (data) => {
+  if (data instanceof ArrayBuffer) client._onMicChunk(data);
+};
+client._captureNode = {
+  port: {
+    postMessage(data) { worklet.port.onmessage({ data }); },
+  },
+};
+
+const frame = new Float32Array(1920);
+frame.fill(0.005); // About -46 dBFS: below -40, but above -60.
+client.setNoiseGate({ enabled: true, thresholdDb: -40 });
+for (let i = 0; i < 12; i++) worklet.process([[frame]]);
+
+const maxPcm16 = (event) => {
+  const bytes = Buffer.from(event.audio, "base64");
+  const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2);
+  return pcm.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
+};
+const closedEvent = sent.at(-1);
+const closedMax = maxPcm16(closedEvent);
+const closedSends = sent.length;
+
+client.setNoiseGate({ enabled: true, thresholdDb: -60 });
+worklet.process([[frame]]);
+const openEvent = sent.at(-1);
+const openMax = maxPcm16(openEvent);
+
+if (closedEvent.type !== "input_audio_buffer.append") {
+  throw new Error(`wrong websocket event: ${closedEvent.type}`);
+}
+if (closedSends !== 12 || sent.length !== 13) {
+  throw new Error(`gate changed frame cadence: ${closedSends}, ${sent.length}`);
+}
+if (closedMax > 1) {
+  throw new Error(`below-threshold frame was not gated: ${closedMax}`);
+}
+if (openMax < 100) {
+  throw new Error(`same input did not reopen below the threshold: ${openMax}`);
+}
+"""
+    )
+
+
 def test_websocket_client_emits_audio_only_user_turn():
     _run_node(
         """

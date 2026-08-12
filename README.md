@@ -46,8 +46,10 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `TAVILY_API_KEY` / `SERPER_API_KEY` | empty | Enables the app's local search function |
 | `CODE_AGENT` | `on` | Set `off` to hide coding-agent delegation |
 | `CODE_AGENT_CWD` | home folder | Default working folder for coding tasks |
+| `CODE_AGENT_MODEL` | `openai/gpt-5.6-luna` | OpenRouter model for coding-agent delegation |
 | `DESKTOP_CONTROL` | `on` | Server-side kill switch for explicit Mac actions |
-| `S2S_MEMORIES_PATH` | `~/.chatbot/memories.json` | Long-term memory file |
+| `CHATBOT_MEMORIES_PATH` | `~/.chatbot/memories.json` | Legacy JSON memory file, if used |
+| `CHATBOT_DATA_DIR` | `~/.chatbot` | Saved chats, personal profile, and project notebooks |
 
 ### Search, fetch, and the Chrome bridge
 
@@ -102,10 +104,9 @@ screenshots remain limited to explicit control or visual requests.
 
 ## Optional tools
 
-- **Camera** captures one browser webcam frame when enabled.
 - **Coding agent** runs the locally installed `pi` executable from this repository's Node dependencies.
 - **Desktop control** uses `~/.local/bin/desktop-harness` and requires macOS Accessibility permission for actions plus Screen Recording permission for screenshots. The server kill switch defaults on, but each browser starts with the tool off; enable it in **Tools → Desktop control**. It acts or captures only when explicitly requested. A screenshot can target the main display or a named visible app/window; sensitive sign-in/payment scopes remain blocked.
-- **Memory** stores a small readable JSON list; say “remember…” or “forget…”.
+- **Memory** uses an editable personal Markdown profile and saved conversations. The assistant can update it when you say “remember…” or “forget…”.
 
 ## Development
 
@@ -114,7 +115,6 @@ uv run ruff check src tests
 uv run mypy src
 uv run pytest -q
 node --check web_app/main.js
-node --check web_app/ws/s2s-ws-client.js
 ```
 
 CI runs on macOS, checks the retained browser path, builds the Python package, and performs an installation smoke test. Publishing is handled by `.github/workflows/publish.yml` for `v*` tags.

@@ -21,3 +21,10 @@ class ModuleArguments:
         default=500,
         metadata={"help": "Silence required to end a live-transcribed turn."},
     )
+    turn_quality_gate: bool = field(
+        default=True,
+        metadata={
+            "help": "Suppress finalized filler-only and explicit non-speech transcripts before the LLM. "
+            "Short commands are always allowed. Enabled by default; pass --no_turn_quality_gate to disable it."
+        },
+    )

@@ -84,8 +84,9 @@ a:hover {
 
 #app {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   min-height: 100vh;
+  height: 100vh;
 }
 
 .hidden {
@@ -201,6 +202,39 @@ a:hover {
   color: var(--text);
   border-color: var(--border-strong);
 }
+
+/* Saved-chat picker: deliberately small and plain so it feels like part of
+ * the conversation rather than a separate project-management app. */
+.sessions-content { max-width: 680px; }
+.sessions-actions { display: flex; gap: 10px; margin: 4px 0 14px; }
+.sessions-actions input {
+  min-width: 0; flex: 1; background: var(--bg-elev-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px;
+}
+.sessions-list, .history-search-results { display: grid; gap: 7px; max-height: 48vh; overflow: auto; }
+.history-search-results:not(:empty) { margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.session-row, .history-result {
+  text-align: left; background: var(--bg-elev); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 11px 12px; cursor: pointer;
+}
+.session-row { display: flex; align-items: center; gap: 10px; padding: 6px; cursor: default; }
+.session-row:hover, .session-row.active, .history-result:hover { border-color: var(--accent); background: var(--bg-elev-2); }
+.session-open { flex: 1; min-width: 0; border: 0; padding: 5px 6px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.session-row strong, .session-row span { display: block; }
+.session-row span, .history-result { color: var(--text-dim); font-size: 13px; line-height: 1.4; }
+.session-row strong { margin-bottom: 3px; font-size: 14px; }
+.session-row small { display: block; margin-top: 6px; color: var(--text-faint); font-size: 11px; }
+.session-delete { flex: none; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; font-size: 12px; }
+.session-delete:hover { color: var(--error); border-color: var(--error); }
+
+.memory-editor {
+  width: 100%; resize: vertical; min-height: 150px; margin-top: 8px; padding: 11px 12px;
+  background: var(--bg-elev-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font: 13px/1.5 var(--font-mono);
+}
+.memory-editor:focus { outline: none; border-color: var(--accent); }
+.memory-editor-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 8px; }
+.memory-editor-footer small { color: var(--text-faint); }
 /* Topbar control cluster reads a touch bigger on desktop. Phones keep the
  * compact 36px (reset in the mobile media query). */
 .topbar-right .icon-btn {
@@ -1366,41 +1400,27 @@ body.cam-on .footer {
 /* ─── Conversation history panel ─────────────────────────────────────── */
 
 .chat-panel {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  pointer-events: none;
+  position: relative;
+  min-height: 0;
+  width: min(900px, 100%);
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex;
+  pointer-events: auto;
 }
 .chat-panel-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(8, 9, 13, 0.45);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  opacity: 0;
-  transition: opacity 0.25s ease;
-}
-.chat-panel.open .chat-panel-backdrop {
-  opacity: 1;
-  pointer-events: auto;
+  display: none;
 }
 .chat-panel-inner {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(360px, 90vw);
+  position: relative;
+  width: 100%;
   background: var(--bg-elev);
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
-  transform: translateX(100%);
-  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
-  pointer-events: auto;
-  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.35);
-}
-.chat-panel.open .chat-panel-inner {
-  transform: translateX(0);
+  min-height: 0;
+  box-shadow: var(--shadow-soft);
 }
 .chat-panel-header {
   display: flex;
@@ -1428,6 +1448,34 @@ body.cam-on .footer {
 .chat-history::-webkit-scrollbar { width: 3px; }
 .chat-history::-webkit-scrollbar-track { background: transparent; }
 .chat-history::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+/* The transcript is the primary surface; the orb is a compact voice composer. */
+#chat-btn,
+.bubble-stack { display: none; }
+.stage {
+  justify-content: center;
+  padding: 12px 24px 16px;
+  gap: 6px;
+}
+.orb-wrap { gap: 14px; }
+.circle { width: clamp(58px, 8vw, 82px); }
+.circle-glow { filter: blur(16px); }
+.circle-caption { min-height: 16px; }
+
+@media (max-width: 600px) {
+  #app { grid-template-rows: auto minmax(0, 1fr) auto; }
+  .topbar { padding: 12px 16px; }
+  .chat-panel { padding: 0 12px; }
+  .chat-panel-inner { border-radius: var(--radius-md); }
+  .chat-panel-header { padding: 12px 14px; }
+  .chat-history { padding: 12px 14px; }
+  .stage { padding: 10px 12px 14px; }
+  .orb-wrap { flex-direction: row; gap: 12px; }
+  .circle { width: 64px; }
+  .side-btn { width: 0; height: 38px; }
+  .orb-wrap.live .side-btn { width: 38px; height: 38px; }
+  .mic-gate-arc { width: 56px; height: 56px; }
+}
 
 .chat-empty {
   flex: 1;

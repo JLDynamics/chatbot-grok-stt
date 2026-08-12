@@ -4,7 +4,7 @@
  * down to 16 kHz, packs the result as little-endian Int16 PCM, and posts it
  * back to the main thread in fixed-size chunks.
  *
- * The Hugging Face speech-to-speech WebSocket route expects the
+ * The Chatbot voice WebSocket route expects the
  * `input_audio_buffer.append` payload at 16 kHz PCM16 mono.
  *
  * Design notes:

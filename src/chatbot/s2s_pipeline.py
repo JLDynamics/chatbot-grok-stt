@@ -204,6 +204,7 @@ def _build_pipeline_unit(
         chat_size=llm_config.config.get("chat_size", 30),
         speculative_turns=speculative_turns,
         default_instructions=llm_config.config.get("init_chat_prompt"),
+        turn_quality_gate=module_kwargs.turn_quality_gate,
     )
     handlers = _build_handlers(
         stop_event=stop_event,

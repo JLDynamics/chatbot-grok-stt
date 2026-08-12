@@ -25,7 +25,7 @@ const EMPTY_STATE_HTML = `<div id="chat-empty" class="chat-empty">${CHAT_BUBBLE_
 
 export class ChatView {
   /**
-   * @param {{ onUserAudioPlaybackChange?: (playing: boolean) => void }} [options]
+   * @param {{ onUserAudioPlaybackChange?: (playing: boolean) => void, onTranscript?: (message: {role: string, text: string, key: string, partial: boolean}) => void, onToolResult?: (message: {role: string, text: string, name: string}) => void }} [options]
    */
   constructor(options = {}) {
     /** @type {HTMLButtonElement} */
@@ -35,15 +35,11 @@ export class ChatView {
     /** @type {HTMLDivElement} */
     this._chatPanel = $("#chat-panel");
     /** @type {HTMLDivElement} */
-    this._chatPanelBackdrop = $("#chat-panel-backdrop");
-    /** @type {HTMLButtonElement} */
-    this._chatPanelClose = $("#chat-panel-close");
-    /** @type {HTMLDivElement} */
     this._chatHistory = $("#chat-history");
     /** @type {HTMLDivElement} */
     this._bubbleStack = $("#bubble-stack");
 
-    this._panelOpen = false;
+    this._panelOpen = true;
     this._scrollQueued = false;
 
     // ── User transcript state (keyed by item_id) ───────────────────────────
@@ -56,6 +52,8 @@ export class ChatView {
     /** @type {HTMLAudioElement | null} */
     this._activeUserAudio = null;
     this._onUserAudioPlaybackChange = options.onUserAudioPlaybackChange ?? (() => {});
+    this._onTranscriptSaved = options.onTranscript ?? (() => {});
+    this._onToolSaved = options.onToolResult ?? (() => {});
     /** @type {HTMLElement | null} */
     this._activeUserBubble = null;
     this._activeUserItemId = "";
@@ -81,12 +79,9 @@ export class ChatView {
     // bubble) so dismissal is strictly oldest-first regardless of per-bubble delays.
     this._reaperHandle = 0;
 
-    this._chatBtn.addEventListener("click", () => (this._panelOpen ? this._closePanel() : this._openPanel()));
-    this._chatPanelClose.addEventListener("click", () => this._closePanel());
-    this._chatPanelBackdrop.addEventListener("click", () => this._closePanel());
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && this._panelOpen) this._closePanel();
-    });
+    // Conversation is always visible. The retained header button simply
+    // returns the reader to the newest turn.
+    this._chatBtn.addEventListener("click", () => this._scrollToBottom());
   }
 
   // ── Panel ───────────────────────────────────────────────────────────────
@@ -99,8 +94,7 @@ export class ChatView {
   }
 
   _closePanel() {
-    this._panelOpen = false;
-    this._chatPanel.classList.remove("open");
+    // Intentionally a no-op: this is now the primary app surface.
   }
 
   // Coalesce scroll-to-bottom: a burst of cumulative transcript deltas would
@@ -312,6 +306,17 @@ export class ChatView {
     this._chatBadge.classList.remove("visible");
   }
 
+  /** Render saved plain-text history when the user opens an older session. */
+  renderSavedMessages(messages = []) {
+    this.clear();
+    for (const message of messages) {
+      const text = String(message?.text || "").trim();
+      if (!text) continue;
+      if (message.role === "tool") this._appendHistTool(message.name || "Tool", "{}", text);
+      else if (message.role === "user" || message.role === "assistant") this._appendHistMsg(message.role, text, false);
+    }
+  }
+
   /** @param {"user"|"assistant"} role @param {string} text @param {boolean} partial @returns {HTMLElement} */
   _appendHistMsg(role, text, partial) {
     const empty = this._chatHistory.querySelector(".chat-empty");
@@ -496,6 +501,7 @@ export class ChatView {
 
       const hist = this._ensureUserHist(id);
       this._updateHistMsg(hist, text, d.partial);
+      this._onTranscriptSaved({ role: "user", text, key: id, partial: d.partial });
 
       // One ephemeral bubble per active item. Purely timer-based: the timer is
       // refreshed on every delta, so it stays while the user keeps talking and
@@ -529,74 +535,17 @@ export class ChatView {
         this._updateHistMsg(entry.hist, d.text, false);
         this._bumpDismiss(entry.bubble);
       }
+      this._onTranscriptSaved({ role: "assistant", text: d.text, key: rid, partial: false });
       this._markUnread();
     }
   }
 
   /**
-   * Attach the browser-local recording to its user turn. This also creates an
-   * audio-only row when STT is disabled and no transcript events arrive.
-   * Reopened VAD segments reuse item_id; the client sends a replacement WAV
-   * containing the accumulated utterance, so the row keeps one player.
-   * @param {{ itemId?: string, audio: Blob, durationMs?: number, truncated?: boolean }} detail
+   * Audio is still sent to the model, but the conversation UI intentionally
+   * shows transcripts only. This keeps every turn compact and chat-like.
+   * @param {{ itemId?: string, audio: Blob, durationMs?: number, truncated?: boolean }} _detail
    */
-  onUserAudio(detail) {
-    const id = detail.itemId || `_u${++this._anonSeq}`;
-    const hist = this._ensureUserHist(id);
-    let container = /** @type {HTMLElement | null} */ (hist.querySelector(".hist-audio"));
-    const isNewPlayer = !container;
-    if (!container) {
-      container = document.createElement("div");
-      container.className = "hist-audio";
-      container.innerHTML = `
-        <div class="hist-audio-label">Audio sent to the model</div>
-        <audio controls preload="metadata" aria-label="Replay your audio"></audio>
-      `;
-      hist.appendChild(container);
-    }
-
-    const audio = /** @type {HTMLAudioElement} */ (container.querySelector("audio"));
-    const previous = this._userAudioByItem.get(id);
-    if (previous) {
-      if (this._activeUserAudio === previous.audio) this._stopUserAudioPlayback();
-      URL.revokeObjectURL(previous.url);
-      this._audioUrls.delete(previous.url);
-    }
-
-    const url = URL.createObjectURL(detail.audio);
-    this._audioUrls.add(url);
-    this._userAudioByItem.set(id, { audio, url });
-    audio.src = url;
-    audio.title = detail.truncated
-      ? "Replay your audio (the beginning was no longer buffered)"
-      : "Replay the audio sent to the model";
-    const label = container.querySelector(".hist-audio-label");
-    if (label) {
-      label.textContent = detail.truncated
-        ? "Audio sent to the model · beginning unavailable"
-        : "Audio sent to the model";
-    }
-
-    if (isNewPlayer) {
-      audio.addEventListener("play", () => {
-        if (this._activeUserAudio && this._activeUserAudio !== audio) {
-          this._activeUserAudio.pause();
-        }
-        this._activeUserAudio = audio;
-        this._onUserAudioPlaybackChange(true);
-      });
-      const stopped = () => {
-        if (this._activeUserAudio !== audio) return;
-        this._activeUserAudio = null;
-        this._onUserAudioPlaybackChange(false);
-      };
-      audio.addEventListener("pause", stopped);
-      audio.addEventListener("ended", stopped);
-      audio.addEventListener("error", stopped);
-    }
-    this._scrollToBottom();
-    this._markUnread();
-  }
+  onUserAudio(_detail) {}
 
   /**
    * A response closed (completed or cancelled).
@@ -644,6 +593,7 @@ export class ChatView {
    *  @param {string} name @param {string} argsJson @param {string} output @param {string} [image] */
   onToolResult(name, argsJson, output, image) {
     this._appendHistTool(name, argsJson, output);
+    this._onToolSaved({ role: "tool", name, text: output || "(no output)" });
     if (image) {
       let label = "Webcam snapshot";
       try {

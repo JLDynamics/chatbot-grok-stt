@@ -1789,6 +1789,69 @@ class TestDispatchPipelineEvent:
         assert runtime_config.chat.buffer == []
         assert service._state(conn_id).response_pending is False
 
+    @pytest.mark.parametrize("transcript", ["um", "Uh...", "[noise]", "(yawning)"])
+    def test_non_meaningful_transcription_emits_event_without_response(
+        self,
+        service,
+        conn_id,
+        runtime_config,
+        text_prompt_queue,
+        transcript,
+    ):
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript=transcript, language_code="en"),
+        )
+
+        assert len(events) == 1
+        assert isinstance(events[0], ConversationItemInputAudioTranscriptionCompletedEvent)
+        assert events[0].transcript == transcript
+        assert text_prompt_queue.empty()
+        assert runtime_config.chat.buffer == []
+        assert service._state(conn_id).response_pending is False
+
+    @pytest.mark.parametrize("transcript", ["yes", "stop", "wait", "no", "help"])
+    def test_important_short_commands_trigger_response(
+        self,
+        service,
+        conn_id,
+        runtime_config,
+        text_prompt_queue,
+        transcript,
+    ):
+        service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript=transcript, language_code="en"),
+        )
+
+        request = text_prompt_queue.get_nowait()
+        assert isinstance(request, GenerateResponseRequest)
+        assert runtime_config.chat.buffer[-1].content[0].text == transcript
+
+    def test_disabled_turn_quality_gate_allows_filler(
+        self,
+        runtime_config,
+        should_listen,
+    ):
+        text_prompt_queue = Queue()
+        service = RealtimeService(
+            text_prompt_queue=text_prompt_queue,
+            should_listen=should_listen,
+            turn_quality_gate=False,
+        )
+        conn_id = service.register()
+        service._state(conn_id).runtime_config = runtime_config
+
+        service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript="um", language_code="en"),
+        )
+
+        request = text_prompt_queue.get_nowait()
+        assert isinstance(request, GenerateResponseRequest)
+        assert runtime_config.chat.buffer[-1].content[0].text == "um"
+        service.unregister(conn_id)
+
     def test_revised_transcription_replaces_speculative_user_message(self, runtime_config, should_listen):
         text_prompt_queue = Queue()
         tracker = SpeculativeTurnTracker()
@@ -1837,7 +1900,13 @@ class TestDispatchPipelineEvent:
         assert service._state(conn_id).response_usage.audio_duration_s == 2.0
         service.unregister(conn_id)
 
-    def test_empty_revised_transcription_removes_speculative_user_message(self, runtime_config, should_listen):
+    @pytest.mark.parametrize("revised_transcript", ["", "um"])
+    def test_non_response_revised_transcription_removes_speculative_user_message(
+        self,
+        runtime_config,
+        should_listen,
+        revised_transcript,
+    ):
         text_prompt_queue = Queue()
         tracker = SpeculativeTurnTracker()
         service = RealtimeService(
@@ -1872,7 +1941,7 @@ class TestDispatchPipelineEvent:
         )
         service.dispatch_pipeline_event(
             conn_id,
-            TranscriptionCompletedEvent(transcript="", turn_id="turn_1", turn_revision=1),
+            TranscriptionCompletedEvent(transcript=revised_transcript, turn_id="turn_1", turn_revision=1),
         )
 
         user_items = [item for item in runtime_config.chat.buffer if getattr(item, "role", None) == "user"]

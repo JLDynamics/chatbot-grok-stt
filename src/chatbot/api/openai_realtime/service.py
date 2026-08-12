@@ -59,6 +59,7 @@ from chatbot.pipeline.events import (
 from chatbot.pipeline.messages import GenerateResponseRequest
 from chatbot.pipeline.queue_types import TextPromptItem
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
+from chatbot.pipeline.turn_quality import TurnQualityPolicy
 from chatbot.utils.utils import _generate_id
 
 logger = logging.getLogger(__name__)
@@ -215,12 +216,14 @@ class RealtimeService:
         chat_size: int = 10,
         speculative_turns: SpeculativeTurnTracker | None = None,
         default_instructions: str | None = None,
+        turn_quality_gate: bool = True,
     ) -> None:
         self.text_prompt_queue = text_prompt_queue
         self.should_listen = should_listen
         self._chat_size = chat_size
         self.speculative_turns = speculative_turns
         self._default_instructions = default_instructions
+        self.turn_quality_policy = TurnQualityPolicy(enabled=turn_quality_gate)
         self._conns: dict[str, ConnState] = {}
         self.total_usage = GlobalUsageMetrics()
 
@@ -454,14 +457,23 @@ class RealtimeService:
 
         cfg = st.runtime_config
         transcript = event.transcript
-        if transcript:
+        decision = self.turn_quality_policy.evaluate(transcript)
+        response_transcript = transcript if decision.should_respond else ""
+        if transcript and not decision.should_respond:
+            logger.info(
+                "Turn-quality gate suppressed response (reason=%s, transcript=%r)",
+                decision.reason,
+                transcript[:80],
+            )
+
+        if response_transcript:
             if same_speculative_turn and st.speculative_user_item_id:
-                replaced = cfg.chat.replace_user_message_text(st.speculative_user_item_id, transcript)
+                replaced = cfg.chat.replace_user_message_text(st.speculative_user_item_id, response_transcript)
                 if not replaced:
-                    item = cfg.chat.add_item(make_user_message(transcript))
+                    item = cfg.chat.add_item(make_user_message(response_transcript))
                     st.speculative_user_item_id = item.id
             else:
-                item = cfg.chat.add_item(make_user_message(transcript))
+                item = cfg.chat.add_item(make_user_message(response_transcript))
                 st.speculative_user_item_id = item.id
         elif same_speculative_turn and st.speculative_user_item_id:
             cfg.chat.remove_user_message(st.speculative_user_item_id)
@@ -475,7 +487,7 @@ class RealtimeService:
             st.speculative_user_speech_stopped_at_s = event.speech_stopped_at_s
 
         queue = self.text_prompt_queue
-        if queue and transcript:
+        if queue and response_transcript:
             st.response_pending = True
             queue.put(
                 GenerateResponseRequest(

@@ -42,7 +42,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Starting the voice models..."
+echo "Starting the Chatbot voice service..."
 PORT="$PORT" ./run-openrouter.sh >"$SERVER_LOG" 2>&1 &
 server_pid=$!
 for _ in $(seq 1 120); do
@@ -60,7 +60,7 @@ fi
 
 echo "Open http://localhost:$WEB_PORT and click the orb."
 echo "Ctrl+C stops both processes."
-SPEECH_TO_SPEECH_URL="ws://localhost:$PORT/v1/realtime" \
+CHATBOT_VOICE_URL="ws://localhost:$PORT/v1/realtime" \
   STARTUP_GREETING="${STARTUP_GREETING:-}" \
   uv run uvicorn --app-dir web_app server:app --host 127.0.0.1 --port "$WEB_PORT" \
   2>&1 | tee "$WEB_LOG" &

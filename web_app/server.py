@@ -10,8 +10,10 @@ import logging
 import os
 import re
 import socket
+import subprocess
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -29,7 +31,9 @@ app = FastAPI()
 logger = logging.getLogger("chatbot.browser")
 logger.setLevel(logging.INFO)
 
-S2S_URL = os.environ.get("SPEECH_TO_SPEECH_URL", "ws://localhost:8766/v1/realtime").strip()
+CHATBOT_VOICE_URL = os.environ.get(
+    "CHATBOT_VOICE_URL", os.environ.get("SPEECH_TO_SPEECH_URL", "ws://localhost:8766/v1/realtime")
+).strip()
 STARTUP_GREETING = os.environ.get("STARTUP_GREETING", "").strip()
 SERPER_KEY = os.environ.get("SERPER_API_KEY", "").strip()
 TAVILY_KEY = os.environ.get("TAVILY_API_KEY", "").strip()
@@ -228,7 +232,9 @@ def config() -> dict:
     return {
         "search": bool(SERPER_KEY or TAVILY_KEY),
         "allowDirect": False,
-        "s2sUrl": S2S_URL,
+        "chatbotUrl": CHATBOT_VOICE_URL,
+        # Legacy field retained briefly so an older browser tab can still connect.
+        "s2sUrl": CHATBOT_VOICE_URL,
         "startupGreeting": STARTUP_GREETING,
         "codeAgent": CODE_AGENT_ENABLED,
         "desktopControl": _desktop_control_available(),
@@ -436,6 +442,7 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
 PI_BIN = ROOT / "node_modules" / ".bin" / "pi"
 CODE_AGENT_ENABLED = os.environ.get("CODE_AGENT", "on").lower() not in {"off", "0", "false"}
 CODE_AGENT_CWD = Path(os.path.expanduser(os.environ.get("CODE_AGENT_CWD", "~")))
+CODE_AGENT_MODEL = os.environ.get("CODE_AGENT_MODEL", "openai/gpt-5.6-luna")
 CODE_AGENT_TIMEOUT_S = float(os.environ.get("CODE_AGENT_TIMEOUT", "300"))
 
 
@@ -460,6 +467,8 @@ async def code_agent(req: CodeRequest) -> JSONResponse:
             task,
             "--provider",
             "openrouter",
+            "--model",
+            CODE_AGENT_MODEL,
             cwd=CODE_AGENT_CWD,
             env=dict(os.environ),
             stdout=asyncio.subprocess.PIPE,
@@ -782,8 +791,307 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
     return JSONResponse({"ok": True, "action": action, **payload})
 
 
-MEMORIES_PATH = Path(os.path.expanduser(os.environ.get("S2S_MEMORIES_PATH", "~/.chatbot/memories.json")))
+# Prefer Chatbot names for new configuration, while honoring the old variables
+# so an existing local setup continues to work after the rename.
+MEMORIES_PATH = Path(os.path.expanduser(
+    os.environ.get("CHATBOT_MEMORIES_PATH", os.environ.get("S2S_MEMORIES_PATH", "~/.chatbot/memories.json"))
+))
 memories_lock = asyncio.Lock()
+
+# Durable conversation data lives beside the chatbot's existing local settings,
+# never inside a code repository.  Full transcripts are the source of truth;
+# the Markdown files are small, editable guides that can safely be included in
+# a new model session.
+CHATBOT_DATA = Path(os.path.expanduser(
+    os.environ.get("CHATBOT_DATA_DIR", os.environ.get("S2S_DATA_DIR", "~/.chatbot"))
+))
+SESSIONS_DIR = CHATBOT_DATA / "sessions"
+PROJECTS_DIR = CHATBOT_DATA / "projects"
+PROJECTS_INDEX = CHATBOT_DATA / "projects.json"
+PERSONAL_MEMORY_PATH = CHATBOT_DATA / "personal-memory.md"
+PERSONAL_MEMORY_MAX_CHARS = 10_000  # roughly 2,500 English-language tokens
+PROJECT_MEMORY_MAX_CHARS = 20_000   # roughly 5,000 English-language tokens
+history_lock = asyncio.Lock()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _atomic_write(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(value, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _read_json(path: Path, default: object) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def _session_path(session_id: str) -> Path:
+    if not re.fullmatch(r"[a-f0-9]{32}", session_id):
+        raise HTTPException(status_code=400, detail="Invalid session.")
+    return SESSIONS_DIR / f"{session_id}.json"
+
+
+def _session_summary(session: dict) -> dict:
+    messages = session.get("messages", [])
+    preview = next((str(m.get("text", "")).strip() for m in messages if str(m.get("text", "")).strip()), "")
+    return {
+        "id": session.get("id"), "title": session.get("title", "New conversation"),
+        "created_at": session.get("created_at"), "updated_at": session.get("updated_at"),
+        "message_count": len(messages), "preview": preview[:180],
+    }
+
+
+def _load_session(session_id: str) -> dict:
+    value = _read_json(_session_path(session_id), None)
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=404, detail="Session not found.")
+    value.setdefault("messages", [])
+    return value
+
+
+def _save_session(session: dict) -> None:
+    _atomic_write(_session_path(str(session["id"])), json.dumps(session, indent=2, ensure_ascii=False))
+
+
+def _project_slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug[:64] or "project"
+
+
+def _load_projects() -> list[dict]:
+    value = _read_json(PROJECTS_INDEX, [])
+    return value if isinstance(value, list) else []
+
+
+def _save_projects(items: list[dict]) -> None:
+    _atomic_write(PROJECTS_INDEX, json.dumps(items, indent=2, ensure_ascii=False))
+
+
+def _find_project(project_id: str) -> dict:
+    project = next((item for item in _load_projects() if item.get("id") == project_id), None)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return project
+
+
+def _project_memory_path(project_id: str) -> Path:
+    if not re.fullmatch(r"[a-z0-9-]{1,64}", project_id):
+        raise HTTPException(status_code=400, detail="Invalid project.")
+    return PROJECTS_DIR / project_id / "project-memory.md"
+
+
+def _git_snapshot(root: Path) -> dict:
+    """Read real repository state. This is evidence, not an AI summary."""
+    if not root.is_dir():
+        return {"available": False, "reason": "The project folder is unavailable."}
+    def run(*args: str) -> str:
+        try:
+            result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=4)
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+    inside = run("rev-parse", "--is-inside-work-tree")
+    if inside != "true":
+        return {"available": True, "git": False, "checked_at": _utc_now()}
+    return {
+        "available": True, "git": True, "checked_at": _utc_now(),
+        "branch": run("branch", "--show-current") or "detached HEAD",
+        "head": run("log", "-1", "--pretty=%h %s"),
+        "status": run("status", "--short").splitlines()[:80],
+    }
+
+
+class SessionCreateRequest(BaseModel):
+    title: str = "New conversation"
+
+
+class SessionUpdateRequest(BaseModel):
+    title: str | None = None
+    messages: list[dict] | None = None
+
+
+class ProfileUpdateRequest(BaseModel):
+    content: str
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str
+    path: str
+
+
+@app.get("/api/sessions")
+async def list_sessions() -> JSONResponse:
+    async with history_lock:
+        sessions = []
+        for path in SESSIONS_DIR.glob("*.json") if SESSIONS_DIR.exists() else []:
+            value = _read_json(path, None)
+            if isinstance(value, dict):
+                sessions.append(_session_summary(value))
+        sessions.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+    return JSONResponse({"sessions": sessions})
+
+
+@app.post("/api/sessions")
+async def create_session(req: SessionCreateRequest) -> JSONResponse:
+    session = {"id": uuid.uuid4().hex, "title": req.title.strip()[:120] or "New conversation",
+               "created_at": _utc_now(), "updated_at": _utc_now(), "messages": []}
+    async with history_lock:
+        _save_session(session)
+    return JSONResponse({"session": session})
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str) -> JSONResponse:
+    async with history_lock:
+        return JSONResponse({"session": _load_session(session_id)})
+
+
+@app.patch("/api/sessions/{session_id}")
+async def update_session(session_id: str, req: SessionUpdateRequest) -> JSONResponse:
+    async with history_lock:
+        session = _load_session(session_id)
+        if req.title is not None:
+            session["title"] = req.title.strip()[:120] or "New conversation"
+        if req.messages is not None:
+            # Browser-rendered transcript messages are plain data: role, text,
+            # time and optional tool metadata. Keeping them bounded prevents a
+            # broken client from filling the disk in one request.
+            session["messages"] = req.messages[-2000:]
+        session["updated_at"] = _utc_now()
+        _save_session(session)
+    return JSONResponse({"session": session})
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str) -> JSONResponse:
+    async with history_lock:
+        path = _session_path(session_id)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Session not found.")
+        path.unlink()
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/history/search")
+async def search_history(q: str = "", limit: int = 8) -> JSONResponse:
+    terms = [term.lower() for term in re.findall(r"[\w'-]+", q) if len(term) > 1][:12]
+    if not terms:
+        return JSONResponse({"results": []})
+    results: list[dict] = []
+    async with history_lock:
+        for path in SESSIONS_DIR.glob("*.json") if SESSIONS_DIR.exists() else []:
+            session = _read_json(path, None)
+            if not isinstance(session, dict):
+                continue
+            for index, message in enumerate(session.get("messages", [])):
+                text = str(message.get("text", ""))
+                lowered = text.lower()
+                score = sum(lowered.count(term) for term in terms)
+                if not score:
+                    continue
+                first = min((lowered.find(term) for term in terms if term in lowered), default=0)
+                start, end = max(0, first - 140), min(len(text), first + 360)
+                results.append({"session_id": session.get("id"), "title": session.get("title", "New conversation"),
+                                "role": message.get("role", "assistant"), "text": text[start:end], "score": score,
+                                "updated_at": session.get("updated_at", "")})
+    results.sort(key=lambda item: (item["score"], item["updated_at"]), reverse=True)
+    return JSONResponse({"results": results[:max(1, min(limit, 20))]})
+
+
+@app.get("/api/personal-memory")
+async def get_personal_memory() -> JSONResponse:
+    content = PERSONAL_MEMORY_PATH.read_text(encoding="utf-8") if PERSONAL_MEMORY_PATH.exists() else ""
+    return JSONResponse({"content": content, "max_chars": PERSONAL_MEMORY_MAX_CHARS})
+
+
+@app.put("/api/personal-memory")
+async def put_personal_memory(req: ProfileUpdateRequest) -> JSONResponse:
+    content = req.content.strip()
+    if len(content) > PERSONAL_MEMORY_MAX_CHARS:
+        raise HTTPException(status_code=400, detail="Personal memory is too long; consolidate it first.")
+    async with history_lock:
+        _atomic_write(PERSONAL_MEMORY_PATH, content + ("\n" if content else ""))
+    return JSONResponse({"content": content, "max_chars": PERSONAL_MEMORY_MAX_CHARS})
+
+
+@app.get("/api/projects")
+async def list_projects() -> JSONResponse:
+    return JSONResponse({"projects": _load_projects()})
+
+
+@app.post("/api/projects")
+async def create_project(req: ProjectCreateRequest) -> JSONResponse:
+    root = Path(os.path.expanduser(req.path)).resolve()
+    if not root.is_dir():
+        raise HTTPException(status_code=400, detail="Project folder was not found.")
+    name = req.name.strip()[:120] or root.name
+    async with history_lock:
+        projects = _load_projects()
+        existing = next((item for item in projects if item.get("path") == str(root)), None)
+        if existing:
+            return JSONResponse({"project": existing, "duplicate": True})
+        used = {str(item.get("id")) for item in projects}
+        base, suffix = _project_slug(name), 2
+        project_id = base
+        while project_id in used:
+            project_id = f"{base}-{suffix}"
+            suffix += 1
+        project = {"id": project_id, "name": name, "path": str(root), "created_at": _utc_now(), "last_verified": _git_snapshot(root)}
+        projects.append(project)
+        _save_projects(projects)
+        if not _project_memory_path(project_id).exists():
+            _atomic_write(_project_memory_path(project_id), f"# {name}\n\n## Current project knowledge\n\n")
+    return JSONResponse({"project": project, "duplicate": False})
+
+
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str) -> JSONResponse:
+    project = _find_project(project_id)
+    content = _project_memory_path(project_id).read_text(encoding="utf-8") if _project_memory_path(project_id).exists() else ""
+    return JSONResponse({"project": project, "memory": content, "max_chars": PROJECT_MEMORY_MAX_CHARS})
+
+
+@app.get("/api/projects/{project_id}/context")
+async def get_project_context(project_id: str) -> JSONResponse:
+    """Fresh project context for a real work request, never stale notes alone."""
+    async with history_lock:
+        project = _find_project(project_id)
+        snapshot = _git_snapshot(Path(project["path"]))
+        project["last_verified"] = snapshot
+        projects = [project if item.get("id") == project_id else item for item in _load_projects()]
+        _save_projects(projects)
+        memory = _project_memory_path(project_id).read_text(encoding="utf-8") if _project_memory_path(project_id).exists() else ""
+    return JSONResponse({"project": project, "memory": memory, "current_state": snapshot,
+                         "rule": "The current project state is the source of truth; the Markdown is a compact guide."})
+
+
+@app.post("/api/projects/{project_id}/refresh")
+async def refresh_project(project_id: str) -> JSONResponse:
+    async with history_lock:
+        project = _find_project(project_id)
+        project["last_verified"] = _git_snapshot(Path(project["path"]))
+        projects = _load_projects()
+        projects = [project if item.get("id") == project_id else item for item in projects]
+        _save_projects(projects)
+    return JSONResponse({"project": project})
+
+
+@app.put("/api/projects/{project_id}/memory")
+async def put_project_memory(project_id: str, req: ProfileUpdateRequest) -> JSONResponse:
+    _find_project(project_id)
+    content = req.content.strip()
+    if len(content) > PROJECT_MEMORY_MAX_CHARS:
+        raise HTTPException(status_code=400, detail="Project memory is too long; consolidate it first.")
+    async with history_lock:
+        _atomic_write(_project_memory_path(project_id), content + ("\n" if content else ""))
+    return JSONResponse({"content": content, "max_chars": PROJECT_MEMORY_MAX_CHARS})
 
 
 def _load_memories() -> list[dict]:

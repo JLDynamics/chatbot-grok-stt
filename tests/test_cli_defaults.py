@@ -19,6 +19,13 @@ def test_current_defaults_are_mac_voice_profile():
     assert args.llm_backend.config["model_name"] == "openai/gpt-5.6-luna"
     assert args.tts_backend.config["speaker"] == "Ryan"
     assert args.tts_backend.config["mlx_quantization"] == "8bit"
+    assert args.module_kwargs.turn_quality_gate is True
+
+
+def test_turn_quality_gate_can_be_disabled():
+    args = parse_arguments(["--no_turn_quality_gate"])
+
+    assert args.module_kwargs.turn_quality_gate is False
 
 
 def test_removed_commands_and_backends_are_rejected():

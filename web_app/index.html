@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="style.css?v=17" />
+    <link rel="stylesheet" href="style.css?v=20" />
   </head>
   <!--
     `booting` disables transitions/animations until the first paint commits.
@@ -25,6 +25,9 @@
           <div class="ident"></div>
         </div>
         <div class="topbar-right">
+          <button id="sessions-btn" class="icon-btn" title="Saved conversations" aria-label="Saved conversations">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+          </button>
           <button id="tools-btn" class="icon-btn" title="Tools" aria-label="Tools">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
           </button>
@@ -37,6 +40,16 @@
           </button>
         </div>
       </header>
+
+      <!-- The transcript is the main screen; voice controls sit below it. -->
+      <section id="chat-panel" class="chat-panel open" aria-label="Conversation">
+        <div class="chat-panel-inner">
+          <header class="chat-panel-header">
+            <h3>Conversation</h3>
+          </header>
+          <div id="chat-history" class="chat-history"></div>
+        </div>
+      </section>
 
       <main class="stage">
         <div class="orb-wrap">
@@ -113,20 +126,6 @@
       <span class="cam-label">camera</span>
     </div>
 
-    <!-- Conversation history panel (overlay) -->
-    <div id="chat-panel" class="chat-panel">
-      <div id="chat-panel-backdrop" class="chat-panel-backdrop"></div>
-      <div class="chat-panel-inner">
-        <header class="chat-panel-header">
-          <h3>Conversation</h3>
-          <button id="chat-panel-close" class="icon-btn" aria-label="Close">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </header>
-        <div id="chat-history" class="chat-history"></div>
-      </div>
-    </div>
-
     
 
     <dialog id="settings-modal" class="modal">
@@ -141,10 +140,10 @@
         <div class="tab-panels">
           <section class="tab-panel active" role="tabpanel">
             <label class="field" id="conn-field">
-              <span id="conn-label">Speech-to-speech server URL</span>
+              <span id="conn-label">Chatbot voice server URL</span>
               <input id="lb-url" type="text" autocomplete="off" spellcheck="false" placeholder="http://localhost:port" />
               <small id="conn-hint">
-                URL of your speech-to-speech server, e.g.
+                URL of your local Chatbot voice service, e.g.
                 <code>http://localhost:8080</code> (the app adds <code>/v1/realtime</code>).
               </small>
             </label>
@@ -234,6 +233,21 @@
       </form>
     </dialog>
 
+    <dialog id="sessions-modal" class="modal">
+      <div class="modal-content sessions-content">
+        <header class="modal-header">
+          <h2>Saved conversations</h2>
+          <button id="sessions-close" class="icon-btn" aria-label="Close">×</button>
+        </header>
+        <div class="sessions-actions">
+          <input id="sessions-search" type="search" placeholder="Search past conversations" autocomplete="off" />
+          <button id="new-session" type="button" class="btn primary">New chat</button>
+        </div>
+        <div id="history-search-results" class="history-search-results"></div>
+        <div id="sessions-list" class="sessions-list"></div>
+      </div>
+    </dialog>
+
     <dialog id="tools-modal" class="modal">
       <div class="modal-content">
         <header class="modal-header">
@@ -262,18 +276,6 @@
             <small id="tool-web-hint"></small>
           </label>
 
-          <div class="tool-row tool-row-sep" id="tool-cam-row">
-            <div class="tool-info">
-              <span class="tool-name">Camera</span>
-              <span class="tool-desc">Let the assistant see through your webcam.</span>
-            </div>
-            <label class="switch">
-              <input id="tool-cam" type="checkbox" />
-              <span class="switch-track" aria-hidden="true"></span>
-            </label>
-          </div>
-          <small id="tool-cam-hint" class="tool-hint">A live preview shows bottom-left while the camera is on.</small>
-
           <div class="tool-row tool-row-sep" id="tool-code-row">
             <div class="tool-info">
               <span class="tool-name">Coding agent</span>
@@ -284,7 +286,7 @@
               <span class="switch-track" aria-hidden="true"></span>
             </label>
           </div>
-          <small id="tool-code-hint" class="tool-hint">Off. Every task it runs is logged to /tmp/s2s-web.log.</small>
+          <small id="tool-code-hint" class="tool-hint">Off. Every task it runs is logged to the Chatbot server log.</small>
 
           <div class="tool-row tool-row-sep" id="tool-read-row">
             <div class="tool-info">
@@ -298,17 +300,18 @@
           </div>
           <small id="tool-read-hint" class="tool-hint">Off. Needs desktop-harness plus macOS Accessibility and Screen Recording permissions.</small>
 
-          <div class="tool-row tool-row-sep" id="memories-row">
+          <div class="tool-row tool-row-sep" id="personal-memory-row">
             <div class="tool-info">
-              <span class="tool-name">Memory</span>
-              <span class="tool-desc">Facts the assistant has saved about you. Say "remember..." or "forget..." while talking, or delete here.</span>
+              <span class="tool-name">Personal memory</span>
+              <span class="tool-desc">Your durable Markdown profile. It loads into every new conversation and stays compact.</span>
             </div>
           </div>
-          <ul id="memories-list" class="memories-list" aria-label="Saved memories"></ul>
+          <textarea id="personal-memory-editor" class="memory-editor" rows="9" placeholder="Your personal profile will appear here."></textarea>
+          <div class="memory-editor-footer"><small id="personal-memory-count"></small><button id="personal-memory-save" type="button" class="btn">Save profile</button></div>
         </div>
       </div>
     </dialog>
 
-    <script type="module" src="main.js?v=19"></script>
+    <script type="module" src="main.js?v=22"></script>
   </body>
 </html>
