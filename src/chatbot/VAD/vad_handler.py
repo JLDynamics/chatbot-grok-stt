@@ -40,16 +40,6 @@ class _PendingShortSegment:
 _SHORT_SEGMENT_MIN_FRAGMENT_MS = 100
 
 
-# Optional import for audio enhancement
-try:
-    from df.enhance import enhance, init_df
-
-    HAS_DF = True
-except (ImportError, ModuleNotFoundError) as e:
-    HAS_DF = False
-    logger.warning(f"DeepFilterNet not available for audio enhancement: {e}")
-
-
 class VADHandler(BaseHandler[VADIn, VADOut]):
     """
     Handles voice activity detection. When voice activity is detected, audio will be accumulated until the end of speech is detected and then passed
@@ -67,7 +57,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         min_speech_continuation_ms: int = 192,
         max_speech_ms: float = float("inf"),
         speech_pad_ms: int = 30,
-        audio_enhancement: bool = False,
         enable_realtime_transcription: bool = False,
         realtime_processing_pause: float = 0.5,
         text_output_queue: Queue[TextEventItem] | None = None,
@@ -132,16 +121,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             min_silence_duration_ms=min_silence_ms,
             speech_pad_ms=speech_pad_ms,
         )
-        self.audio_enhancement = audio_enhancement
-        if audio_enhancement:
-            if not HAS_DF:
-                logger.error(
-                    "Audio enhancement requested but DeepFilterNet is not available. Disabling audio enhancement."
-                )
-                self.audio_enhancement = False
-            else:
-                self.enhanced_model, self.df_state, _ = init_df()
-
         # State for progressive audio release
         self.last_process_time: float = 0.0
 
@@ -747,8 +726,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                 )
                 analysis_audio = self._combined_raw_turn_audio(array)
                 reopen_grace_ms, processing_delay_ms = self._smart_turn_timing_ms(analysis_audio)
-                if self.audio_enhancement:
-                    array = self._apply_audio_enhancement(array)
                 output_array = self._combined_turn_audio(array)
                 combined_duration_s = len(output_array) / self.sample_rate
                 if self.text_output_queue:
@@ -795,30 +772,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         else:
             multiplier = 6.0
         return min(base_pause * multiplier, 2.0)
-
-    def _apply_audio_enhancement(self, array: np.ndarray) -> np.ndarray:
-        """Apply audio enhancement if enabled."""
-        import torchaudio
-
-        if self.sample_rate != self.df_state.sr():
-            audio_float32 = torchaudio.functional.resample(
-                torch.from_numpy(array),
-                orig_freq=self.sample_rate,
-                new_freq=self.df_state.sr(),
-            )
-            enhanced = enhance(
-                self.enhanced_model,
-                self.df_state,
-                audio_float32.unsqueeze(0),
-            )
-            enhanced = torchaudio.functional.resample(
-                enhanced,
-                orig_freq=self.df_state.sr(),
-                new_freq=self.sample_rate,
-            )
-        else:
-            enhanced = enhance(self.enhanced_model, self.df_state, torch.from_numpy(array))
-        return enhanced.numpy().squeeze()
 
     def on_session_end(self):
         self.iterator.reset_states()

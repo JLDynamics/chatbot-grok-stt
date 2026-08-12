@@ -3,11 +3,8 @@
 The per-unit send loop in ``websocket_router`` is transport-agnostic: it owns
 the pipeline output queues (sentinels, generation discards, SESSION_END drain)
 and hands client-visible traffic to the transport attached to the current
-``SessionState``. Two implementations exist:
-
-- ``WebSocketTransport`` (here): events and base64 audio deltas as JSON frames.
-- ``WebRTCSession`` (in ``webrtc_session``, requires the ``webrtc`` extra):
-  events over the ``oai-events`` data channel, audio over the RTP media track.
+``SessionState``. ``WebSocketTransport`` sends events and base64 audio deltas
+as JSON frames.
 """
 
 from __future__ import annotations
@@ -41,9 +38,7 @@ class SessionTransport(ABC):
     def discard_pending_audio(self) -> None:
         """Drop transport-buffered audio that has not reached the client yet.
 
-        WebSocket clients buffer audio on their side, so this is a no-op there;
-        the WebRTC transport paces playback server-side and must flush its
-        track buffer for barge-in to actually silence the assistant.
+        WebSocket clients buffer audio on their side, so this is a no-op here.
         """
 
     @abstractmethod

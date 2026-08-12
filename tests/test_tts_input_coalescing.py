@@ -14,29 +14,25 @@ def _make_handler():
     return handler
 
 
-def test_coalesce_pending_tts_input_merges_ready_sentences_and_absorbs_response_end():
+def test_coalesce_merges_ready_sentences_and_leaves_response_end():
     handler = _make_handler()
 
     handler.queue_in.put(TTSInput(text="Second sentence.", language_code="en"))
     handler.queue_in.put(TTSInput(text="Third sentence.", language_code="en"))
     handler.queue_in.put(EndOfResponse())
 
-    text, lang, saw_end = handler._coalesce_pending_tts_input(TTSInput(text="First sentence.", language_code="en"))
+    text = handler._coalesce(TTSInput(text="First sentence.", language_code="en"))
 
     assert text == "First sentence. Second sentence. Third sentence."
-    assert lang == "en"
-    assert saw_end is True
     remaining = handler.queue_in.get_nowait()
     assert isinstance(remaining, EndOfResponse)
 
 
-def test_coalesce_pending_tts_input_stops_before_control_messages():
+def test_coalesce_stops_before_control_messages():
     handler = _make_handler()
 
     handler.queue_in.put(SESSION_END)
-    text, lang, saw_end = handler._coalesce_pending_tts_input(TTSInput(text="Hello.", language_code="en"))
+    text = handler._coalesce(TTSInput(text="Hello.", language_code="en"))
 
     assert text == "Hello."
-    assert lang == "en"
-    assert saw_end is False
     assert handler.queue_in.get_nowait() == SESSION_END

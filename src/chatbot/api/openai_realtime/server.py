@@ -4,7 +4,6 @@ from threading import Event
 
 import uvicorn
 
-from chatbot.api.openai_realtime.llm_proxy import LLMProxyConfig
 from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
 from chatbot.api.openai_realtime.websocket_router import create_app
 
@@ -15,34 +14,26 @@ class RealtimeServer:
     """
     Pipeline handler for the OpenAI Realtime API mode.
 
-    Owns a pool of isolated PipelineUnits and a single uvicorn server.
-    The websocket route claims the next free unit on each accept and releases
-    it on disconnect; once all units are in use, further connections are rejected.
+    Owns the single browser pipeline and its uvicorn WebSocket server.
     """
 
     def __init__(
         self,
         stop_event: Event,
-        pool: list[PipelineUnit],
+        unit: PipelineUnit,
         host: str = "0.0.0.0",
         port: int = 8765,
-        llm_proxy_config: LLMProxyConfig | None = None,
     ) -> None:
-        if not pool:
-            raise ValueError("RealtimeServer requires at least one PipelineUnit in the pool")
         self.stop_event = stop_event
-        self.pool = pool
+        self.unit = unit
         self.host = host
         self.port = port
-        self.llm_proxy_config = llm_proxy_config
 
     def run(self) -> None:
         """Start the FastAPI/uvicorn server (called from a ThreadManager thread)."""
-        app = create_app(pool=self.pool, stop_event=self.stop_event, llm_proxy_config=self.llm_proxy_config)
+        app = create_app(unit=self.unit, stop_event=self.stop_event)
 
-        logger.info(
-            f"OpenAI Realtime API starting on ws://{self.host}:{self.port}/v1/realtime (pool size {len(self.pool)})"
-        )
+        logger.info(f"OpenAI Realtime API starting on ws://{self.host}:{self.port}/v1/realtime")
 
         config = uvicorn.Config(
             app,

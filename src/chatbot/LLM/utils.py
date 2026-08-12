@@ -1,10 +1,5 @@
-import base64
-import io
 import re
 from typing import Optional
-
-import requests  # type: ignore[import-untyped]
-from PIL import Image
 
 SMART_PUNCT_TRANSLATION = str.maketrans(
     {
@@ -83,18 +78,3 @@ def resolve_auto_language(language_code: Optional[str]) -> tuple[Optional[str], 
     if language_code not in WHISPER_LANGUAGE_TO_LLM_LANGUAGE:
         return language_code, None
     return language_code, WHISPER_LANGUAGE_TO_LLM_LANGUAGE.get(language_code)
-
-
-def image_url_to_pil(image_url: str) -> Image.Image:
-    """Convert an image URL or base64 data URI to a PIL Image.
-
-    Accepts:
-    - 'data:image/...;base64,<b64>' data URIs
-    - 'https://...`` or ``http://...' URLs (fetched with a 10s timeout)
-    """
-    if image_url.startswith("data:"):
-        _, b64_data = image_url.split(",", 1)
-        return Image.open(io.BytesIO(base64.b64decode(b64_data)))
-    resp = requests.get(image_url, timeout=10)
-    resp.raise_for_status()
-    return Image.open(io.BytesIO(resp.content))

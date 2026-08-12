@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Chatbot Page Bridge",
+  "version": "0.4.1",
+  "description": "Passes the visible webpage's main text to the local chatbot reader.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1:7860/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Chatbot Page Bridge starts automatically with Chatbot"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

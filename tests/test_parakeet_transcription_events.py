@@ -121,7 +121,7 @@ def test_process_yields_partial_tagged_tuple(monkeypatch):
 def test_process_yields_final_transcript(monkeypatch):
     handler = object.__new__(ParakeetTDTSTTHandler)
     handler.enable_live_transcription = False
-    handler.backend = "nano_parakeet"
+    handler.backend = "mlx"
     handler.last_language = "en"
     handler.start_language = None
 
@@ -130,7 +130,7 @@ def test_process_yields_final_transcript(monkeypatch):
         yield True
 
     handler._compute_lock_context = fake_lock
-    handler._process_nano_parakeet = lambda audio_input: ("I am here.", "en")
+    handler._process_mlx_final = lambda audio_input: ("I am here.", "en")
     monkeypatch.setattr(parakeet_tdt_handler.console, "print", lambda *args, **kwargs: None)
 
     result = list(handler.process(VADAudio(audio=np.zeros(16000, dtype=np.float32))))
@@ -153,7 +153,7 @@ def test_parakeet_timing_logs_only_final_transcriptions():
 def test_final_transcription_resets_live_streaming_state(monkeypatch):
     handler = object.__new__(ParakeetTDTSTTHandler)
     handler.enable_live_transcription = True
-    handler.backend = "nano_parakeet"
+    handler.backend = "mlx"
     handler.last_language = "en"
     handler.start_language = None
     handler.processing_final = False
@@ -166,7 +166,7 @@ def test_final_transcription_resets_live_streaming_state(monkeypatch):
         yield True
 
     handler._compute_lock_context = fake_lock
-    handler._process_nano_parakeet = lambda audio_input: ("I am here.", "en")
+    handler._process_mlx_final = lambda audio_input: ("I am here.", "en")
     monkeypatch.setattr(parakeet_tdt_handler.console, "print", lambda *args, **kwargs: None)
 
     result = list(handler.process(VADAudio(audio=np.zeros(16000, dtype=np.float32), mode="final")))
@@ -249,22 +249,17 @@ def test_mlx_final_ignores_fixed_text_that_exceeds_current_audio(monkeypatch):
 
 
 def test_final_transcription_prevents_stale_fixed_window_on_next_progressive(monkeypatch):
-    class Model:
-        def __init__(self):
-            self.progressive_window_lengths = []
-
-        def transcribe(self, audio, timestamps=True):
-            self.progressive_window_lengths.append(len(audio))
-            return SimpleNamespace(text="new partial", timestamp={"segment": []})
-
-    model = Model()
+    progressive_window_lengths = []
     handler = object.__new__(ParakeetTDTSTTHandler)
     handler.enable_live_transcription = True
-    handler.backend = "nano_parakeet"
+    handler.backend = "mlx"
     handler.last_language = "en"
     handler.start_language = None
     handler.processing_final = False
-    handler.streaming_handler = SmartProgressiveStreamingHandler(model)
+    handler.streaming_handler = SmartProgressiveStreamingHandler(object())
+    handler.streaming_handler._decode_window = lambda audio: (
+        progressive_window_lengths.append(len(audio)) or SimpleNamespace(text="new partial", sentences=[])
+    )
     handler.streaming_handler.fixed_sentences = ["previous fixed sentence"]
     handler.streaming_handler.fixed_end_time = 10.0
     handler.streaming_handler.last_transcribed_length = 20 * 16000
@@ -274,7 +269,7 @@ def test_final_transcription_prevents_stale_fixed_window_on_next_progressive(mon
         yield True
 
     handler._compute_lock_context = fake_lock
-    handler._process_nano_parakeet = lambda audio_input: ("previous final", "en")
+    handler._process_mlx_final = lambda audio_input: ("previous final", "en")
     monkeypatch.setattr(parakeet_tdt_handler.console, "print", lambda *args, **kwargs: None)
 
     final_result = list(handler.process(VADAudio(audio=np.zeros(16000, dtype=np.float32), mode="final")))
@@ -283,7 +278,7 @@ def test_final_transcription_prevents_stale_fixed_window_on_next_progressive(mon
 
     assert len(final_result) == 1
     assert isinstance(final_result[0], Transcription)
-    assert model.progressive_window_lengths == [len(progressive_audio)]
+    assert progressive_window_lengths == [len(progressive_audio)]
     assert len(progressive_result) == 1
     assert isinstance(progressive_result[0], PartialTranscription)
     assert progressive_result[0].text == "new partial"

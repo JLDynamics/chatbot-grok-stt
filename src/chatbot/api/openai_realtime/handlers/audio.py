@@ -65,11 +65,9 @@ class AudioHandler(RealtimeBaseHandler):
     def append_pcm(self, conn_id: str, pcm_bytes: bytes, src_rate: int) -> list[bytes]:
         """Resample raw PCM16 to the pipeline rate and split into 512-sample chunks for the VAD.
 
-        Shared by both transports: the WebSocket route feeds it decoded
-        ``input_audio_buffer.append`` payloads, the WebRTC transport feeds it
-        PCM decoded from inbound media-track frames. Keeps the sub-chunk
-        remainder and the commit bookkeeping (``audio_buffer_has_data``) in
-        one place regardless of how audio arrives.
+        The WebSocket route feeds it decoded ``input_audio_buffer.append``
+        payloads. It keeps the sub-chunk remainder and commit bookkeeping
+        (``audio_buffer_has_data``) in one place.
         """
         st = self._state(conn_id)
         pcm_bytes = resample(pcm_bytes, src_rate, PIPELINE_SAMPLE_RATE)
@@ -171,10 +169,8 @@ class AudioHandler(RealtimeBaseHandler):
         ``response.create``), ``current_response_id`` is still ``None``
         and the event is emitted here on the first audio chunk.
 
-        Returns ``(response_id, item_id, events)``. Shared by both
-        transports: the WebSocket path appends the base64 audio delta to the
-        returned events, the WebRTC path sends only the bookkeeping events
-        over the data channel while audio travels on the media track.
+        Returns ``(response_id, item_id, events)``. The WebSocket path appends
+        the base64 audio delta to the returned events.
         """
         response = self._service.response
         st = self._state(conn_id)

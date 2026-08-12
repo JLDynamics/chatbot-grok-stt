@@ -203,8 +203,8 @@ class ConnState(BaseModel):
 class RealtimeService:
     """Translates between OpenAI Realtime protocol events and internal pipeline messages.
 
-    Each PipelineUnit owns one instance and uses it for whichever WebSocket or
-    WebRTC session currently claims that unit. Per-session response and audio
+    Each PipelineUnit owns one instance and uses it for the WebSocket session
+    currently claiming that unit. Per-session response and audio
     state is keyed by connection id.
     """
 

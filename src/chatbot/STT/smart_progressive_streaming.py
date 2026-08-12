@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Smart Progressive Streaming Handler
 
@@ -9,7 +8,6 @@ Provides frequent partial transcriptions (every 500ms) with:
 """
 
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any, Generator
 
 import numpy as np
@@ -72,17 +70,10 @@ class SmartProgressiveStreamingHandler:
           - text: full transcript for the window
           - sentences: list of objects with .text and .end (seconds)
         """
-        if hasattr(self.model, "decode_chunk"):
-            import mlx.core as mx
+        import mlx.core as mx
 
-            audio_mx = mx.array(audio_window, dtype=mx.float32)
-            return self.model.decode_chunk(audio_mx, verbose=False)
-
-        # nano-parakeet: use timestamps from transcribe
-        result = self.model.transcribe(audio_window, timestamps=True)
-        segments = result.timestamp.get("segment", []) if hasattr(result, "timestamp") else []
-        sentences = [SimpleNamespace(text=seg.get("segment", "").strip(), end=seg.get("end", 0.0)) for seg in segments]
-        return SimpleNamespace(text=getattr(result, "text", ""), sentences=sentences)
+        audio_mx = mx.array(audio_window, dtype=mx.float32)
+        return self.model.decode_chunk(audio_mx, verbose=False)
 
     def transcribe_incremental(self, audio: np.ndarray) -> PartialTranscription:
         """
@@ -238,106 +229,3 @@ class SmartProgressiveStreamingHandler:
 
             if is_final:
                 break
-
-
-def demo_smart_progressive() -> None:
-    """Demonstrate smart progressive streaming."""
-    import time
-
-    import soundfile as sf
-    from mlx_audio.stt.generate import load_model
-
-    print("=" * 80)
-    print("SMART PROGRESSIVE STREAMING DEMO")
-    print("=" * 80)
-    print("\nFeatures:")
-    print("  • Partial updates every 500ms")
-    print("  • Growing window up to 15s")
-    print("  • Sentence-aware window sliding for long audio")
-    print()
-
-    # Load model
-    print("Loading model...")
-    model = load_model("mlx-community/parakeet-tdt-0.6b-v3")
-
-    # Load audio
-    audio, sr = sf.read("reachy-voice-test.wav")
-    if len(audio.shape) > 1:
-        audio = audio.mean(axis=1)
-    if sr != 16000:
-        from scipy import signal
-
-        audio = signal.resample(audio, int(len(audio) * 16000 / sr))
-    audio = audio.astype(np.float32)
-
-    # Test cases
-    test_cases = [
-        (audio, "Short (5.8s)"),
-        (np.concatenate([audio] * 3), "Medium (17.5s) - exceeds 15s window"),
-        (np.concatenate([audio] * 5), "Long (29.1s) - multiple sentence fixings"),
-    ]
-
-    for test_audio, label in test_cases:
-        duration = len(test_audio) / 16000
-
-        print(f"\n{'=' * 80}")
-        print(f"TEST: {label} - Duration: {duration:.1f}s")
-        print("=" * 80)
-
-        handler = SmartProgressiveStreamingHandler(
-            model,
-            emission_interval=0.5,  # 500ms updates
-            max_window_size=15.0,  # Max 15s window
-            sentence_buffer=2.0,  # Keep 2s of sentences in active window
-        )
-
-        print("\nProgressive transcriptions (showing every 4th update for readability):")
-        print()
-
-        update_count = 0
-        start_time = time.perf_counter()
-
-        for result in handler.transcribe_progressive(test_audio):
-            update_count += 1
-
-            # Show every other update (every 1s) to keep output manageable
-            if update_count % 2 == 0 or result.is_final:
-                elapsed = time.perf_counter() - start_time
-                marker = "FINAL" if result.is_final else f"Update {update_count}"
-
-                print(f"[{result.timestamp:5.1f}s | {elapsed:.3f}s elapsed] {marker}:")
-
-                if result.fixed_text:
-                    print(f"  Fixed:  {result.fixed_text[:70]}...")
-                print(f"  Active: {result.active_text[:70]}...")
-                print()
-
-        total_time = time.perf_counter() - start_time
-        print(f"Total updates: {update_count}")
-        print(f"Total time: {total_time:.3f}s ({total_time / duration:.3f}s per audio second)")
-
-    print("\n" + "=" * 80)
-    print("KEY INSIGHTS")
-    print("=" * 80)
-    print("""
-1. Frequent updates (500ms):
-   - User sees transcription building in real-time
-   - Low latency feel
-
-2. Growing window (up to 15s):
-   - Better accuracy with more context
-   - No arbitrary chunking for short audio
-
-3. Sentence-aware sliding (for audio > 15s):
-   - Completed sentences become "fixed"
-   - Only active portion re-transcribed
-   - Maintains accuracy while managing window size
-
-4. Performance:
-   - Processing happens DURING user speaking
-   - Final result available immediately when user stops
-    """)
-
-
-if __name__ == "__main__":
-    demo_smart_progressive()
