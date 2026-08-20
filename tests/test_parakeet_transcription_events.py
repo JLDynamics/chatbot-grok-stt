@@ -141,6 +141,26 @@ def test_process_yields_final_transcript(monkeypatch):
     assert result[0].language_code == "en"
 
 
+def test_final_transcription_lock_timeout_sets_error(monkeypatch):
+    handler = object.__new__(ParakeetTDTSTTHandler)
+    handler.enable_live_transcription = False
+    handler.backend = "mlx"
+    handler.last_language = "en"
+    handler.start_language = None
+
+    @contextmanager
+    def fake_lock(*args, **kwargs):
+        yield False
+
+    handler._compute_lock_context = fake_lock
+    monkeypatch.setattr(parakeet_tdt_handler.console, "print", lambda *args, **kwargs: None)
+
+    result = list(handler.process(VADAudio(audio=np.zeros(16000, dtype=np.float32))))
+    assert len(result) == 1
+    assert result[0].text == ""
+    assert result[0].error == "stt_lock_timeout"
+
+
 def test_parakeet_timing_logs_only_final_transcriptions():
     handler = object.__new__(ParakeetTDTSTTHandler)
     handler._times = [0.01]

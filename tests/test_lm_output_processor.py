@@ -119,33 +119,21 @@ def test_empty_modalities_is_forwarded_to_tts():
     assert isinstance(outputs[0], TTSInput)
 
 
-def test_pending_reopen_holds_assistant_chunk_until_cancelled():
+def test_pending_reopen_does_not_block_assistant_chunk():
     tracker = SpeculativeTurnTracker()
     tracker.observe("turn_1", 0)
-    candidate_revision = tracker.begin_reopen_candidate("turn_1", 0)
+    tracker.begin_reopen_candidate("turn_1", 0)
     processor = _processor(tracker)
-    done = Event()
-    outputs = []
 
-    def run_processor():
-        outputs.extend(
-            processor.process(
-                LLMResponseChunk(
-                    text="hello",
-                    turn_id="turn_1",
-                    turn_revision=0,
-                )
+    outputs = list(
+        processor.process(
+            LLMResponseChunk(
+                text="hello",
+                turn_id="turn_1",
+                turn_revision=0,
             )
         )
-        done.set()
-
-    thread = Thread(target=run_processor)
-    thread.start()
-
-    assert not done.wait(0.05)
-    tracker.cancel_reopen_candidate("turn_1", candidate_revision)
-    assert done.wait(1.0)
-    thread.join(timeout=1.0)
+    )
 
     assert len(outputs) == 1
     assert outputs[0].text == "hello"
@@ -153,32 +141,21 @@ def test_pending_reopen_holds_assistant_chunk_until_cancelled():
     assert event.text == "hello"
 
 
-def test_reopen_grace_holds_assistant_chunk_until_elapsed():
+def test_reopen_grace_does_not_block_assistant_chunk():
     tracker = SpeculativeTurnTracker()
     tracker.observe("turn_1", 0)
-    tracker.start_reopen_grace("turn_1", 0, grace_s=0.08)
+    tracker.start_reopen_grace("turn_1", 0, grace_s=2.0)
     processor = _processor(tracker)
-    done = Event()
-    outputs = []
 
-    def run_processor():
-        outputs.extend(
-            processor.process(
-                LLMResponseChunk(
-                    text="hello",
-                    turn_id="turn_1",
-                    turn_revision=0,
-                )
+    outputs = list(
+        processor.process(
+            LLMResponseChunk(
+                text="hello",
+                turn_id="turn_1",
+                turn_revision=0,
             )
         )
-        done.set()
-
-    thread = Thread(target=run_processor)
-    thread.start()
-
-    assert not done.wait(0.02)
-    assert done.wait(1.0)
-    thread.join(timeout=1.0)
+    )
 
     assert len(outputs) == 1
     assert outputs[0].text == "hello"
@@ -186,33 +163,22 @@ def test_reopen_grace_holds_assistant_chunk_until_elapsed():
     assert event.text == "hello"
 
 
-def test_confirmed_reopen_drops_held_assistant_chunk():
+def test_confirmed_reopen_drops_stale_assistant_chunk():
     tracker = SpeculativeTurnTracker()
     tracker.observe("turn_1", 0)
     candidate_revision = tracker.begin_reopen_candidate("turn_1", 0)
     processor = _processor(tracker)
-    done = Event()
-    outputs = []
-
-    def run_processor():
-        outputs.extend(
-            processor.process(
-                LLMResponseChunk(
-                    text="hello",
-                    turn_id="turn_1",
-                    turn_revision=0,
-                )
-            )
-        )
-        done.set()
-
-    thread = Thread(target=run_processor)
-    thread.start()
-
-    assert not done.wait(0.05)
     assert tracker.confirm_reopen_candidate("turn_1", 0, candidate_revision)
-    assert done.wait(1.0)
-    thread.join(timeout=1.0)
+
+    outputs = list(
+        processor.process(
+            LLMResponseChunk(
+                text="hello",
+                turn_id="turn_1",
+                turn_revision=0,
+            )
+        )
+    )
 
     assert outputs == []
     assert processor.text_output_queue.empty()

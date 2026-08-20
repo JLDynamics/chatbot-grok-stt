@@ -214,6 +214,13 @@ class SpeculativeTurnTracker:
                 return
             self._commit_locked(turn_id, revision)
 
+    def commit_if_latest(self, turn_id: str | None, revision: int | None) -> bool:
+        """Commit *revision* now if it is still latest. Does not wait on grace/reopen."""
+        if turn_id is None or revision is None:
+            return True
+        with self._condition:
+            return self._commit_locked(turn_id, revision)
+
     def is_committed(self, turn_id: str | None, revision: int | None = None) -> bool:
         if turn_id is None:
             return False
@@ -376,11 +383,12 @@ class SpeculativeTurnTracker:
         while pending is not None and pending.base_revision == revision:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                logger.warning("Timed out waiting for pending speculative reopen turn=%s rev=%s", turn_id, revision)
-                if self._pending_reopen.get(turn_id) == pending:
-                    del self._pending_reopen[turn_id]
-                    self._prune_tracked_turns()
-                    self._condition.notify_all()
+                logger.warning(
+                    "Timed out waiting for pending speculative reopen turn=%s rev=%s; "
+                    "keeping the candidate so a late VAD confirm can still reopen",
+                    turn_id,
+                    revision,
+                )
                 return
             self._condition.wait(remaining)
             pending = self._pending_reopen.get(turn_id)

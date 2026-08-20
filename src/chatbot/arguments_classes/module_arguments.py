@@ -7,7 +7,7 @@ class ModuleArguments:
 
     stt: str = field(default="parakeet-tdt", metadata={"choices": ("parakeet-tdt",)})
     llm_backend: str = field(default="responses-api", metadata={"choices": ("responses-api",)})
-    tts: str = field(default="qwen3", metadata={"choices": ("qwen3",)})
+    tts: str = field(default="csm", metadata={"choices": ("csm",)})
     log_level: str = field(default="info", metadata={"help": "Python logging level."})
     enable_live_transcription: bool = field(
         default=True,

@@ -4,9 +4,11 @@ A Mac-first live voice chatbot that runs its ears and voice locally, while a Res
 
 The retained path is intentionally small:
 
-`browser microphone → Parakeet MLX → Responses API → Qwen3-TTS MLX → browser speakers`
+`browser microphone → Parakeet MLX → Responses API → Sesame CSM-1B MLX → browser speakers`
 
 It keeps realtime WebSocket turn-taking, interruption/cancellation, partial transcripts, long-term memory, web tools, the Chrome page bridge, camera, coding-agent delegation, and explicit desktop control.
+
+The mic stays open while the assistant speaks (full-duplex barge-in). Echo control is the browser's AEC plus Silero VAD — we do not mute capture during TTS. Saved sidebar chats are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. CSM does not apply an AI watermark unless `silentcipher` is installed.
 
 ## Requirements
 
@@ -25,9 +27,9 @@ npm install
 ./run-browser.sh
 ```
 
-Open `http://127.0.0.1:7860`, allow microphone access, and click the orb. The first launch may download the Parakeet and Qwen model files.
+Open `http://127.0.0.1:7860`, allow microphone access, and click the orb. The first launch may download the Parakeet and CSM model files.
 
-The default model path is `openai/gpt-5.6-luna` through OpenRouter. Parakeet and the Qwen3 1.7B CustomVoice model run locally with MLX; the default Qwen voice is `Ryan` at 8-bit precision.
+The default model path is `openai/gpt-5.6-luna` through OpenRouter. Parakeet and Sesame CSM-1B run locally with MLX; the default CSM voice is `conversational_b`.
 
 ## Configuration
 
@@ -36,10 +38,10 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `MODEL` | `openai/gpt-5.6-luna` | OpenRouter Responses API model ID |
-| `VOICE` | `Ryan` | Built-in Qwen CustomVoice speaker |
-| `QUANT` | `8bit` | Qwen MLX precision: `bf16`, `8bit`, `6bit`, or `4bit` |
-| `TTS_TEMP` | `0.5` | Voice variation; lower is steadier |
-| `BATCH_SENTENCES` | `3` | More sentences improve continuity but delay first speech |
+| `CSM_MODEL` | `mlx-community/csm-1b-8bit` | CSM-1B MLX model repo |
+| `CSM_VOICE` | `conversational_b` | CSM voice prompt (`conversational_a`/`conversational_b`) |
+| `CSM_TEMP` | `0.55` | CSM sampling temperature; lower is steadier |
+| `CSM_BATCH_SENTENCES` | `3` | Sentences grouped per CSM generation; higher keeps voice continuity |
 | `PORT` / `WEB_PORT` | `8766` / `7860` | Realtime and browser ports |
 | `PROMPT` | concise voice prompt | Backend system prompt |
 | `STARTUP_GREETING` | empty | Optional greeting instruction on connection |
@@ -49,6 +51,7 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `CODE_AGENT_MODEL` | `openai/gpt-5.6-luna` | OpenRouter model for coding-agent delegation |
 | `DESKTOP_CONTROL` | `on` | Server-side kill switch for explicit Mac actions |
 | `CHATBOT_MEMORIES_PATH` | `~/.chatbot/memories.json` | Legacy JSON memory file, if used |
+| `CHATBOT_WATERMARK` | off | CSM watermarking is not installed (`silentcipher`); leave off unless you accept extra per-chunk latency |
 | `CHATBOT_DATA_DIR` | `~/.chatbot` | Saved chats, personal profile, and project notebooks |
 
 ### Search, fetch, and the Chrome bridge

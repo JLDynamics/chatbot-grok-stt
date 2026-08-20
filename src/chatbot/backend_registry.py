@@ -8,8 +8,8 @@ from queue import Queue
 from threading import Event
 from typing import Any, Literal
 
+from chatbot.arguments_classes.csm_tts_arguments import CsmTTSHandlerArguments
 from chatbot.arguments_classes.parakeet_tdt_arguments import ParakeetTDTSTTHandlerArguments
-from chatbot.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandlerArguments
 from chatbot.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
@@ -122,6 +122,7 @@ def _factory(
     *,
     should_listen: bool = False,
     runtime_context: bool = False,
+    text_output_queue: bool = False,
 ) -> HandlerFactory:
     def create(context: HandlerContext, config: Mapping[str, Any]) -> Any:
         setup_kwargs = dict(config)
@@ -130,6 +131,8 @@ def _factory(
                 cancel_scope=context.cancel_scope,
                 speculative_turns=context.speculative_turns,
             )
+        if text_output_queue:
+            setup_kwargs["text_output_queue"] = context.text_output_queue
         handler = _load_handler(module_name, class_name)(
             context.stop_event,
             queue_in=context.queue_in,
@@ -182,16 +185,17 @@ TTS_BACKENDS = build_backend_registry(
     "tts",
     [
         BackendSpec(
-            "qwen3",
+            "csm",
             "tts",
-            Qwen3TTSHandlerArguments,
+            CsmTTSHandlerArguments,
             _factory(
-                "chatbot.TTS.qwen3_tts_handler",
-                "Qwen3TTSHandler",
+                "chatbot.TTS.csm_tts_handler",
+                "CsmTTSHandler",
                 should_listen=True,
                 runtime_context=True,
+                text_output_queue=True,
             ),
-            "qwen3_tts",
-        )
+            "csm_tts",
+        ),
     ],
 )

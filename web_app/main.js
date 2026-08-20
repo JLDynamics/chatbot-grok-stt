@@ -20,7 +20,8 @@ import {
   readDesktopControlPreference,
 } from "./ui/desktop-control.js";
 
-const DEFAULT_VOICE = "Ryan";
+const DEFAULT_VOICE = "conversational_b";
+const CSM_VOICES = new Set(["conversational_a", "conversational_b"]);
 // The soul. Everything here is read aloud, so the speech rules are physics,
 // not style: markdown, lists and emoji come out as noise, and each sentence is
 // its own TTS batch. The rest is personality — opinions over hedging, brevity
@@ -119,7 +120,7 @@ const STORAGE_KEYS = {
 // where the gate cuts on the same scale as the level bar.
 const GATE_OFF_DB = -66; // slider minimum = off / bottom of the meter axis
 const GATE_MAX_DB = -3; // slider maximum = most aggressive / top of the meter axis
-const GATE_DEFAULT_DB = -50; // first-run default: a gentle gate, enabled
+const GATE_DEFAULT_DB = -50; // first-run default: keep soft onsets, reject room hiss
 
 /** @param {number} thresholdDb @returns {import("./ws/s2s-ws-client.js").NoiseGate} */
 function gateParams(thresholdDb) {
@@ -335,7 +336,10 @@ const SNAPSHOT_QUALITY = 0.7;
 function loadSettings() {
   return {
     directUrl: localStorage.getItem(STORAGE_KEYS.directUrl) || "",
-    voice: localStorage.getItem(STORAGE_KEYS.voice) || DEFAULT_VOICE,
+    voice: (() => {
+      const stored = localStorage.getItem(STORAGE_KEYS.voice) || DEFAULT_VOICE;
+      return CSM_VOICES.has(stored) ? stored : DEFAULT_VOICE;
+    })(),
     instructions: (() => {
       const stored = localStorage.getItem(STORAGE_KEYS.instructions);
       // Saving Settings persists whatever was in the box, so most users have
@@ -1950,6 +1954,7 @@ async function doStart(audioContext = null) {
     voice: settings.voice,
     instructions: effectiveInstructions(),
     startupGreeting,
+    historyMessages: orderedHistoryMessages(),
     acquireMic: acquireMicStream,
     tools: activeToolDefs(),
     audioOutputId: settings.audioOutputId || "",

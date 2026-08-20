@@ -49,7 +49,9 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
     def _turn_output_allowed(self, turn_id: str | None, turn_revision: int | None) -> bool:
         if self.speculative_turns is None:
             return True
-        return self.speculative_turns.is_latest_after_reopen_grace(turn_id, turn_revision)
+        # Don't wait out the reopen grace before forwarding to TTS. If the user
+        # continues speaking, barge-in cancels this speculative audio.
+        return self.speculative_turns.is_latest(turn_id, turn_revision)
 
     def process(self, lm_output: LLMOut) -> Iterator[TTSIn]:
         """

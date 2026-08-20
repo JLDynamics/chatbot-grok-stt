@@ -297,6 +297,46 @@ if (view._assistantDismissedUserItemId !== "item_voice") {
     )
 
 
+def test_audio_delta_buffered_until_playback_worklet_ready():
+    _run_node(
+        """
+globalThis.localStorage = { getItem() { return null; } };
+globalThis.WebSocket = { OPEN: 1 };
+globalThis.CustomEvent = class CustomEvent extends Event {
+  constructor(type, init = {}) {
+    super(type);
+    this.detail = init.detail;
+  }
+};
+const { S2sWsRealtimeClient } = await import("./web_app/ws/s2s-ws-client.js");
+const client = new S2sWsRealtimeClient({
+  voice: "Aiden",
+  instructions: "Be helpful.",
+  directUrl: "ws://unused",
+});
+if (client._pendingAudio.length !== 0) throw new Error("should start with no pending audio");
+
+// A single sample of known PCM16 (0x1234) that arrives before the worklet exists.
+client._pushAudioDelta("NBI="); // little-endian 0x1234 -> base64
+if (client._pendingAudio.length !== 1) throw new Error("early delta was not buffered");
+
+const posted = [];
+client._playbackNode = { port: { postMessage(data) { posted.push(data); } } };
+client._flushPendingAudio();
+if (client._pendingAudio.length !== 0) throw new Error("pending audio was not cleared");
+if (posted.length !== 1 || posted[0].kind !== "audio") throw new Error("buffered delta was not posted");
+if (Math.abs(posted[0].samples[0] - (0x1234 / 0x8000)) > 1e-4) {
+  throw new Error(`wrong decoded sample: ${posted[0].samples[0]}`);
+}
+
+// Once the worklet exists, later deltas go straight through.
+client._pushAudioDelta("NBI=");
+if (client._pendingAudio.length !== 0) throw new Error("ready delta should not be buffered");
+if (posted.length !== 2) throw new Error("ready delta was not posted");
+"""
+    )
+
+
 def test_late_user_turn_stop_does_not_recreate_dismissed_voice_bubble():
     _run_node(
         """

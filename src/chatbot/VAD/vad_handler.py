@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
 from queue import Queue
 from threading import Event
@@ -41,22 +43,25 @@ _SHORT_SEGMENT_MIN_FRAGMENT_MS = 100
 
 
 class VADHandler(BaseHandler[VADIn, VADOut]):
-    """
-    Handles voice activity detection. When voice activity is detected, audio will be accumulated until the end of speech is detected and then passed
-    to the following part.
+    """Voice activity detection for a full-duplex speech pipeline.
+
+    Incoming audio is always inspected: ``should_listen`` is kept set so the
+    user can barge in while the assistant is speaking. Echo suppression is
+    therefore the client's job (browser AEC) plus Silero's speech threshold;
+    this handler does not mute the mic when TTS is playing.
     """
 
     def setup(
         self,
         should_listen: Event,
         speculative_turns: SpeculativeTurnTracker,
-        thresh: float = 0.6,
+        thresh: float = 0.55,
         sample_rate: int = 16000,
-        min_silence_ms: int = 64,
-        min_speech_ms: int = 384,
+        min_silence_ms: int = 350,
+        min_speech_ms: int = 400,
         min_speech_continuation_ms: int = 192,
         max_speech_ms: float = float("inf"),
-        speech_pad_ms: int = 30,
+        speech_pad_ms: int = 500,
         enable_realtime_transcription: bool = False,
         realtime_processing_pause: float = 0.5,
         text_output_queue: Queue[TextEventItem] | None = None,
@@ -103,6 +108,11 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                 threshold=smart_turn_threshold,
                 cpu_count=smart_turn_cpu_count,
             )
+        self._smart_turn_pool = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="smart-turn")
+            if self.smart_turn_analyzer is not None
+            else None
+        )
         self.unanswered_reopen_ms = max(
             self.speculative_reopen_ms,
             unanswered_reopen_ms,
@@ -492,7 +502,16 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             return self.speculative_reopen_ms, 0
 
         try:
-            result = analyzer.predict(audio, sample_rate=self.sample_rate)
+            pool = getattr(self, "_smart_turn_pool", None)
+            if pool is None:
+                result = analyzer.predict(audio, sample_rate=self.sample_rate)
+            else:
+                future = pool.submit(analyzer.predict, audio, sample_rate=self.sample_rate)
+                # Bound how long the VAD thread waits so incoming chunks keep moving.
+                result = future.result(timeout=min(0.08, max(0.01, self.smart_turn_max_wait_ms / 1000.0)))
+        except FuturesTimeout:
+            logger.warning("Smart Turn still running; using the default speculative reopen grace")
+            return self.speculative_reopen_ms, 0
         except Exception:
             # A transient classifier failure falls back to the ordinary short
             # speculative window instead of delaying the response for seconds.
@@ -525,10 +544,9 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             audio_chunk, runtime_config = audio_chunk
         self._apply_runtime_turn_detection(runtime_config)
 
-        if not self.should_listen.is_set():
-            return
-
-        # Normal listening mode
+        # Full-duplex: never drop chunks while the assistant is speaking.
+        # ``should_listen`` stays set; call sites that ``.set()`` it are
+        # leftovers from a half-duplex mute and are intentional no-ops.
         self._log_chunks += 1
         audio_int16 = np.frombuffer(audio_chunk, dtype=np.int16)
         self._total_samples += len(audio_int16)
@@ -563,12 +581,18 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                     turn_revision,
                 )
                 if self.text_output_queue:
+                    # Continuation hysteresis (192ms) may reopen a soft-ended
+                    # turn for STT, but must not cancel TTS. A real barge-in
+                    # needs a full min_speech_ms of active speech (echo / "um"
+                    # was cutting replies mid-sentence).
                     self.text_output_queue.put(
                         SpeechStartedEvent(
                             audio_start_ms=effective_start_ms,
                             turn_id=turn_id,
                             turn_revision=turn_revision,
                             reopened=reopened,
+                            interrupt_response=effective_active_speech_duration_ms
+                            >= self.min_speech_ms,
                         )
                     )
         elif not is_triggered_now and vad_output is None:
@@ -705,13 +729,18 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                 if not self._speech_started_emitted:
                     turn_id, turn_revision, reopened = self._ensure_turn_for_speech_start(start_ms)
                     if self.text_output_queue:
+                        # This path is a final segment that never crossed the
+                        # live speech-start bar. Noise below the fragment floor
+                        # was already dropped; anything that survived stitching
+                        # and the min-active check is a real short command
+                        # ("stop"/"wait") and should barge in.
                         self.text_output_queue.put(
                             SpeechStartedEvent(
                                 audio_start_ms=start_ms,
                                 turn_id=turn_id,
                                 turn_revision=turn_revision,
                                 reopened=reopened,
-                                interrupt_response=False,
+                                interrupt_response=active_speech_duration_ms >= 200,
                             )
                         )
                 else:

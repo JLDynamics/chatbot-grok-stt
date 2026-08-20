@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 @dataclass
 class VADHandlerArguments:
     thresh: float = field(
-        default=0.6,
+        default=0.55,
         metadata={
             "help": "The threshold value for voice activity detection (VAD). Values typically range from 0 to 1, with higher values requiring higher confidence in speech detection."
         },
@@ -16,21 +16,21 @@ class VADHandlerArguments:
         },
     )
     min_silence_ms: int = field(
-        default=64,
+        default=350,
         metadata={
-            "help": "Minimum length of silence intervals to be used for segmenting speech. Measured in milliseconds. Default is 64 ms."
+            "help": "Minimum length of silence intervals to be used for segmenting speech. Measured in milliseconds. Default is 350 ms."
         },
     )
     min_speech_ms: int = field(
-        default=384,
+        default=400,
         metadata={
-            "help": "Minimum length of speech segments to be considered valid speech. Measured in milliseconds. Default is 384 ms."
+            "help": "Minimum length of speech segments to be considered valid speech. Measured in milliseconds. Default is 400 ms."
         },
     )
     min_speech_continuation_ms: int = field(
         default=192,
         metadata={
-            "help": "Hysteresis threshold (ms of active speech) for accepting speech that continues a reopenable turn (soft-ended, uncommitted, within the reopen window). Set to 0 to disable the split and use min_speech_ms. Clamped to [100, min_speech_ms]. New turns and barge-ins always require min_speech_ms. Default and recommended: 192 with min_speech_ms 384."
+            "help": "Hysteresis threshold (ms of active speech) for accepting speech that continues a reopenable turn (soft-ended, uncommitted, within the reopen window). Set to 0 to disable the split and use min_speech_ms. Clamped to [100, min_speech_ms]. New turns and barge-ins always require min_speech_ms. Default: 192 (clamped against the min_speech_ms default of 500)."
         },
     )
     max_speech_ms: float = field(
@@ -68,9 +68,9 @@ class VADHandlerArguments:
         },
     )
     short_segment_merge_ms: int = field(
-        default=0,
+        default=400,
         metadata={
-            "help": "When greater than 0, adjacent VAD segments below min_speech_ms are held and stitched for this many milliseconds before being discarded. Fragments shorter than 100 ms of active speech are never held. Useful with very low min_silence_ms values."
+            "help": "When greater than 0, adjacent VAD segments below min_speech_ms are held and stitched for this many milliseconds before being discarded. Fragments shorter than 100 ms of active speech are never held. Default 400 ms keeps clipped words from being dropped."
         },
     )
     smart_turn: bool = field(

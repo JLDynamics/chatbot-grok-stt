@@ -2,12 +2,12 @@
 /**
  * AudioWorkletProcessor that plays back Float32 mono samples received from
  * the main thread, upsampling whatever incoming rate the server uses
- * (typically 24 kHz PCM16) to the AudioContext rate (typically 48 kHz).
+ * (16 kHz PCM16 for this pipeline) to the AudioContext rate (typically 48 kHz).
  *
  * Lifecycle / messaging:
  *
  *   main -> worklet:
- *     { kind: "config", inputRate: 24000 }              one-shot at startup
+ *     { kind: "config", inputRate: 16000 }              one-shot at startup
  *     { kind: "audio", samples: Float32Array }          (transferable) per chunk
  *     { kind: "clear" }                                 wipe queue (barge-in)
  *
@@ -24,11 +24,17 @@
 
 const STATS_INTERVAL_FRAMES = 12000;
 const FADE_FRAMES = 32;
+// Minimum queued audio (ms) before playback starts. Gives a slow,
+// near-real-time TTS model (e.g. CSM) a small head start so its output queue
+// doesn't run dry between chunks (audible stutter). Higher = smoother but more
+// latency; lower = faster first sound but more underruns.
+const PRE_BUFFER_MS = 200;
+const PRE_BUFFER_MAX_MS = 500;
 
 class AudioPlaybackProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this._inputRate = 24000;
+    this._inputRate = 16000;
     this._stepRatio = this._inputRate / sampleRate;
     this._queue = [];
     this._readIdx = 0;
@@ -38,7 +44,10 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
     this._totalPlayed = 0;
     this._fadeIn = 0;
     this._fadeOut = 0;
+    this._underrunPending = false;
     this._lastSample = 0;
+    this._preBufferMs = PRE_BUFFER_MS;
+    this._preBufferSamples = Math.round((this._inputRate * this._preBufferMs) / 1000);
 
     this.port.onmessage = (e) => {
       const data = e.data;
@@ -48,12 +57,13 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
           if (typeof data.inputRate === "number" && data.inputRate > 0) {
             this._inputRate = data.inputRate;
             this._stepRatio = this._inputRate / sampleRate;
+            this._preBufferSamples = Math.round((this._inputRate * this._preBufferMs) / 1000);
           }
           break;
         case "audio":
           if (data.samples instanceof Float32Array && data.samples.length > 0) {
             this._queue.push(data.samples);
-            if (!this._playing) {
+            if (!this._playing && this._queuedSamples() >= this._preBufferSamples) {
               this._playing = true;
               this._fadeIn = FADE_FRAMES;
               this._fadeOut = 0;
@@ -65,6 +75,7 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
           this._readIdx = 0;
           this._fracPos = 0;
           this._fadeOut = FADE_FRAMES;
+          this._underrunPending = false;
           break;
       }
     };
@@ -111,8 +122,13 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
   process(_, outputs) {
     const channels = outputs[0];
     if (!channels || channels.length === 0) return true;
+    // The node is created with outputChannelCount: [1]; ignore extra channels.
     const out = channels[0];
-    const stereo = channels.length > 1 ? channels[1] : null;
+    if (!this._playing && this._queuedSamples() >= this._preBufferSamples) {
+      this._playing = true;
+      this._fadeIn = FADE_FRAMES;
+      this._fadeOut = 0;
+    }
 
     for (let i = 0; i < out.length; i++) {
       let sample = 0;
@@ -120,14 +136,12 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
       if (this._playing) {
         const v = this._readInterpolated();
         if (v === null) {
-          // Underrun: try to ramp out cleanly to avoid clicks.
-          sample = this._lastSample * Math.max(0, 1 - 1 / FADE_FRAMES);
-          this._lastSample = sample;
-          if (Math.abs(sample) < 1e-4) {
-            this._playing = false;
-            this._lastSample = 0;
-            this.port.postMessage({ kind: "underrun" });
+          // Underrun: linear ramp-out (same slope as a barge-in fade).
+          if (this._fadeOut === 0) {
+            this._fadeOut = FADE_FRAMES;
+            this._underrunPending = true;
           }
+          sample = this._lastSample;
         } else {
           sample = v;
           this._lastSample = v;
@@ -146,6 +160,14 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
           if (this._fadeOut === 0) {
             this._playing = false;
             this._lastSample = 0;
+            if (this._underrunPending) {
+              this._underrunPending = false;
+              if (this._preBufferMs < PRE_BUFFER_MAX_MS) {
+                this._preBufferMs = Math.min(PRE_BUFFER_MAX_MS, this._preBufferMs + 150);
+                this._preBufferSamples = Math.round((this._inputRate * this._preBufferMs) / 1000);
+              }
+              this.port.postMessage({ kind: "underrun" });
+            }
           }
         }
 
@@ -153,7 +175,6 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
       }
 
       out[i] = sample;
-      if (stereo) stereo[i] = sample;
     }
 
     this._framesSinceStats += out.length;

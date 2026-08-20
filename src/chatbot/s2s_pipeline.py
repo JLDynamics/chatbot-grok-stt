@@ -13,9 +13,9 @@ from rich.console import Console
 from transformers import HfArgumentParser
 
 from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
+from chatbot.arguments_classes.csm_tts_arguments import CsmTTSHandlerArguments
 from chatbot.arguments_classes.module_arguments import ModuleArguments
 from chatbot.arguments_classes.parakeet_tdt_arguments import ParakeetTDTSTTHandlerArguments
-from chatbot.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandlerArguments
 from chatbot.arguments_classes.realtime_server_arguments import RealtimeServerArguments
 from chatbot.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
@@ -72,11 +72,12 @@ def parse_arguments(
         VADHandlerArguments,
         ParakeetTDTSTTHandlerArguments,
         ResponsesApiLanguageModelHandlerArguments,
-        Qwen3TTSHandlerArguments,
+        CsmTTSHandlerArguments,
     )
     parser = HfArgumentParser(argument_types, prog=f"chatbot {command}")
     parsed = parser.parse_args_into_dataclasses(args=list(argv) if argv is not None else None)
-    module, server, vad, stt_config, llm_config, tts_config = parsed
+    module, server, vad, stt_config, llm_config, csm_tts_config = parsed
+    tts_backend = BackendSelection(TTS_BACKENDS["csm"], TTS_BACKENDS["csm"].normalize(csm_tts_config))
     return ParsedArguments(
         module_kwargs=module,
         realtime_server_kwargs=server,
@@ -85,7 +86,7 @@ def parse_arguments(
         llm_backend=BackendSelection(
             LLM_BACKENDS["responses-api"], LLM_BACKENDS["responses-api"].normalize(llm_config)
         ),
-        tts_backend=BackendSelection(TTS_BACKENDS["qwen3"], TTS_BACKENDS["qwen3"].normalize(tts_config)),
+        tts_backend=tts_backend,
     )
 
 
@@ -180,6 +181,8 @@ def _build_pipeline_unit(
 ) -> PipelineUnit:
     from chatbot.api.openai_realtime.service import RealtimeService
 
+    # Kept set for the whole session. Full-duplex barge-in: VAD never mutes
+    # while TTS plays. Echo suppression is client AEC + Silero, not this Event.
     should_listen = Event()
     response_playing = Event()
     cancel_scope = CancelScope()

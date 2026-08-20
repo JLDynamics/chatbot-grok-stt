@@ -1518,7 +1518,7 @@ class TestDispatchPipelineEvent:
         assert tool_event.output_index == 1
         assert tool_event.name == "get_weather"
 
-    def test_assistant_text_waits_for_pending_reopen_and_drops_confirmed_stale_turn(
+    def test_assistant_text_after_confirmed_reopen_is_dropped(
         self,
         runtime_config,
         should_listen,
@@ -1529,29 +1529,18 @@ class TestDispatchPipelineEvent:
         service._state(conn_id).runtime_config = runtime_config
         tracker.observe("turn_1", 0)
         candidate_revision = tracker.begin_reopen_candidate("turn_1", 0)
-        done = Event()
-        result = {}
-
-        def dispatch():
-            result["events"] = service.dispatch_pipeline_event(
-                conn_id,
-                AssistantTextEvent(text="stale", turn_id="turn_1", turn_revision=0),
-            )
-            done.set()
-
-        thread = Thread(target=dispatch)
-        thread.start()
-
-        assert not done.wait(0.05)
         assert tracker.confirm_reopen_candidate("turn_1", 0, candidate_revision)
-        assert done.wait(1.0)
-        thread.join(timeout=1.0)
 
-        assert result["events"] == []
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            AssistantTextEvent(text="stale", turn_id="turn_1", turn_revision=0),
+        )
+
+        assert events == []
         assert service._state(conn_id).current_response_id is None
         service.unregister(conn_id)
 
-    def test_assistant_text_waits_for_pending_reopen_and_emits_cancelled_reopen(
+    def test_assistant_text_emits_during_pending_reopen(
         self,
         runtime_config,
         should_listen,
@@ -1561,32 +1550,20 @@ class TestDispatchPipelineEvent:
         conn_id = service.register()
         service._state(conn_id).runtime_config = runtime_config
         tracker.observe("turn_1", 0)
-        candidate_revision = tracker.begin_reopen_candidate("turn_1", 0)
-        done = Event()
-        result = {}
+        tracker.begin_reopen_candidate("turn_1", 0)
 
-        def dispatch():
-            result["events"] = service.dispatch_pipeline_event(
-                conn_id,
-                AssistantTextEvent(text="latest", turn_id="turn_1", turn_revision=0),
-            )
-            done.set()
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            AssistantTextEvent(text="latest", turn_id="turn_1", turn_revision=0),
+        )
 
-        thread = Thread(target=dispatch)
-        thread.start()
-
-        assert not done.wait(0.05)
-        tracker.cancel_reopen_candidate("turn_1", candidate_revision)
-        assert done.wait(1.0)
-        thread.join(timeout=1.0)
-
-        assert len(result["events"]) == 1
-        assert isinstance(result["events"][0], ResponseAudioTranscriptDeltaEvent)
-        assert result["events"][0].delta == "latest"
+        assert len(events) == 1
+        assert isinstance(events[0], ResponseAudioTranscriptDeltaEvent)
+        assert events[0].delta == "latest"
         assert tracker.is_committed("turn_1", 0)
         service.unregister(conn_id)
 
-    def test_token_usage_waits_for_pending_reopen_and_drops_confirmed_stale_turn(
+    def test_token_usage_after_confirmed_reopen_is_dropped(
         self,
         runtime_config,
         should_listen,
@@ -1597,25 +1574,14 @@ class TestDispatchPipelineEvent:
         service._state(conn_id).runtime_config = runtime_config
         tracker.observe("turn_1", 0)
         candidate_revision = tracker.begin_reopen_candidate("turn_1", 0)
-        done = Event()
-        result = {}
-
-        def dispatch():
-            result["events"] = service.dispatch_pipeline_event(
-                conn_id,
-                TokenUsageEvent(input_tokens=10, output_tokens=5, turn_id="turn_1", turn_revision=0),
-            )
-            done.set()
-
-        thread = Thread(target=dispatch)
-        thread.start()
-
-        assert not done.wait(0.05)
         assert tracker.confirm_reopen_candidate("turn_1", 0, candidate_revision)
-        assert done.wait(1.0)
-        thread.join(timeout=1.0)
 
-        assert result["events"] == []
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            TokenUsageEvent(input_tokens=10, output_tokens=5, turn_id="turn_1", turn_revision=0),
+        )
+
+        assert events == []
         assert service._state(conn_id).response_usage.input_tokens == 0
         assert service._state(conn_id).response_usage.output_tokens == 0
         service.unregister(conn_id)
@@ -1780,13 +1746,30 @@ class TestDispatchPipelineEvent:
             TranscriptionCompletedEvent(transcript="", language_code="en"),
         )
 
-        assert len(events) == 1
+        assert len(events) == 2
         evt = events[0]
         assert isinstance(evt, ConversationItemInputAudioTranscriptionCompletedEvent)
         assert evt.transcript == ""
+        assert events[1].type == "error"
+        assert events[1].error.type == "turn_ignored"
         assert evt.usage.seconds == 1.1
         assert text_prompt_queue.empty()
         assert runtime_config.chat.buffer == []
+        assert service._state(conn_id).response_pending is False
+
+    def test_stt_error_emits_stt_failed_without_response(
+        self,
+        service,
+        conn_id,
+        text_prompt_queue,
+    ):
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript="", error="stt_lock_timeout"),
+        )
+        assert events[-1].type == "error"
+        assert events[-1].error.type == "stt_failed"
+        assert text_prompt_queue.empty()
         assert service._state(conn_id).response_pending is False
 
     @pytest.mark.parametrize("transcript", ["um", "Uh...", "[noise]", "(yawning)"])
@@ -1803,9 +1786,11 @@ class TestDispatchPipelineEvent:
             TranscriptionCompletedEvent(transcript=transcript, language_code="en"),
         )
 
-        assert len(events) == 1
+        assert len(events) == 2
         assert isinstance(events[0], ConversationItemInputAudioTranscriptionCompletedEvent)
         assert events[0].transcript == transcript
+        assert events[1].type == "error"
+        assert events[1].error.type == "turn_ignored"
         assert text_prompt_queue.empty()
         assert runtime_config.chat.buffer == []
         assert service._state(conn_id).response_pending is False

@@ -67,6 +67,12 @@ def _keep_audio_sentinel(item: Any) -> bool:
     return _is_audio_done(item) or is_control_message(item, SESSION_END.kind)
 
 
+def _keep_session_end(item: Any) -> bool:
+    # SESSION_END must survive barge-in flushes of the LLM input queue so the
+    # release path still receives its drain signal.
+    return is_control_message(item, SESSION_END.kind)
+
+
 def _keep_user_text_event(item: Any) -> bool:
     return isinstance(
         item,
@@ -271,7 +277,9 @@ async def _release_unit_after_drain(unit: PipelineUnit, session: Any, session_id
         try:
             _safe_unregister(unit, session_id)
         finally:
-            unit.session = None
+            # Don't clobber a session that stole the unit after we started draining.
+            if unit.session is session:
+                unit.session = None
         recovered = " after quarantine" if session.quarantined_at is not None else ""
         logger.info(f"Pipeline {unit.index} released{recovered} (session {session_id} ended)")
 
@@ -354,6 +362,9 @@ async def _dispatch_client_event(
             unit.cancel_scope.cancel()
         _flush_queue(unit.output_queue, preserve=_keep_audio_sentinel)
         _flush_queue(unit.text_output_queue, preserve=_keep_user_text_event)
+        # Drop any LLM request still waiting to be processed so it can't
+        # recapture the post-cancel generation and emit stale output.
+        _flush_queue(unit.text_prompt_queue, preserve=_keep_session_end)
         transport.discard_pending_audio()
         events = service.handle_response_cancel(session_id)
         if events:
@@ -389,7 +400,14 @@ def create_app(
         Creates a placeholder SessionState that the caller fills in with the
         session_id after RealtimeService.register().
         """
-        if unit.session is not None:
+        existing = unit.session
+        if existing is not None:
+            # Previous client is gone and the drain is still finishing, or the
+            # websocket already died. Unblock the drain so a refresh can retry.
+            ws = getattr(existing.transport, "websocket", None)
+            ws_dead = ws is not None and getattr(ws, "client_state", None) is not None and ws.client_state.name != "CONNECTED"
+            if existing.quarantined_at is None and (existing.released_at is not None or ws_dead):
+                existing.drained.set()
             return None
         unit.session = SessionState(transport=transport)
         return unit
@@ -512,6 +530,9 @@ def create_app(
                                 unit.service._state(session_id).response_pending = False
                                 _flush_queue(unit.output_queue, preserve=_keep_audio_sentinel)
                                 _flush_queue(unit.text_output_queue, preserve=_keep_user_text_event)
+                                # Drop queued LLM work so a stale request can't
+                                # recapture the new generation and keep talking.
+                                _flush_queue(unit.text_prompt_queue, preserve=_keep_session_end)
                                 if unit.response_playing.is_set():
                                     unit.response_playing.clear()
                                 logger.info(
@@ -546,7 +567,7 @@ def create_app(
                                 unit.service._state(session_id).response_pending = False
                             unit.cancel_scope.response_done(audio_generation)
                             unit.should_listen.set()
-                            logger.info(f"Pipeline {unit.index}: stale response complete, listening re-enabled")
+                            logger.info(f"Pipeline {unit.index}: stale response complete")
                             continue
                         await _drain_pending_response_events(transport, unit, session_id)
                         if transport is not None and session_id:
@@ -556,7 +577,7 @@ def create_app(
                         unit.response_playing.clear()
                         unit.cancel_scope.response_done(audio_generation)
                         unit.should_listen.set()
-                        logger.info(f"Pipeline {unit.index}: response complete, listening re-enabled")
+                        logger.info(f"Pipeline {unit.index}: response complete")
                         continue
 
                     # SESSION_END travels from input_queue through every handler to

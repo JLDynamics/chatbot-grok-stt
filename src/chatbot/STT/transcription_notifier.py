@@ -49,12 +49,14 @@ class TranscriptionNotifier(BaseHandler[STTOut, LLMIn]):
             turn_id = transcription.turn_id
             turn_revision = transcription.turn_revision
             speech_stopped_at_s = transcription.speech_stopped_at_s
+            stt_error = transcription.error
         else:
             text = transcription
             language_code = None
             turn_id = None
             turn_revision = None
             speech_stopped_at_s = None
+            stt_error = None
 
         transcript = str(text)
         # Always close the client-visible transcription item. Empty final STT
@@ -68,14 +70,16 @@ class TranscriptionNotifier(BaseHandler[STTOut, LLMIn]):
                     turn_id=turn_id,
                     turn_revision=turn_revision,
                     speech_stopped_at_s=speech_stopped_at_s,
+                    error=stt_error,
                 )
             )
 
         if not transcript:
             logger.debug("Transcription completed with empty transcript")
             if self.should_listen is not None:
+                # Listening is already enabled (full-duplex). Keep the Event
+                # set so any leftover half-duplex caller still observes True.
                 self.should_listen.set()
-                logger.debug("Empty transcription completed; listening re-enabled")
             return
 
         if language_code:

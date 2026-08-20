@@ -70,6 +70,9 @@ class Transcription(PipelineMessage):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = None
+    # Set when STT could not produce a real transcript (lock timeout, crash).
+    # Distinct from an empty string, which means "heard nothing".
+    error: str | None = None
 
 
 # ── LLM → LMOutputProcessor ──────────────────────────────────────────

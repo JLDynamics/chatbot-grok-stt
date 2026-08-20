@@ -39,18 +39,18 @@ def main() -> None:
     if "serve" not in root_help or "talk" in root_help or "local" in root_help:
         raise RuntimeError("Installed CLI does not expose the browser-only serve command.")
 
+    from chatbot.arguments_classes.csm_tts_arguments import CsmTTSHandlerArguments
     from chatbot.arguments_classes.module_arguments import ModuleArguments
-    from chatbot.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandlerArguments
 
     modules = ModuleArguments()
-    qwen = Qwen3TTSHandlerArguments()
-    assert (modules.stt, modules.llm_backend, modules.tts) == ("parakeet-tdt", "responses-api", "qwen3")
-    assert qwen.qwen3_tts_speaker == "Ryan"
-    assert qwen.qwen3_tts_mlx_quantization == "8bit"
+    csm = CsmTTSHandlerArguments()
+    assert (modules.stt, modules.llm_backend, modules.tts) == ("parakeet-tdt", "responses-api", "csm")
+    assert csm.csm_tts_voice == "conversational_b"
+    assert csm.csm_tts_model_name == "mlx-community/csm-1b-8bit"
     for module in (
         "chatbot.STT.parakeet_tdt_handler",
         "chatbot.LLM.responses_api_language_model",
-        "chatbot.TTS.qwen3_tts_handler",
+        "chatbot.TTS.csm_tts_handler",
         "chatbot.api.openai_realtime.server",
     ):
         importlib.import_module(module)

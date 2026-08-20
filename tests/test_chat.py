@@ -800,7 +800,7 @@ class TestToTransformersChat:
     def test_function_call_renders_in_template_reading_content(self):
         """Chat templates read ``content`` on every assistant message, tool calls included.
 
-        Concatenation mirrors what the Qwen3 template does; a missing key would
+        Concatenation mirrors what the chat template does; a missing key would
         leave an undefined value here and raise rather than render empty.
         """
         sandbox = pytest.importorskip("jinja2.sandbox")

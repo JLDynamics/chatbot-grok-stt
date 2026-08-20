@@ -424,7 +424,7 @@ class RealtimeService:
         if isinstance(event, (AssistantTextEvent, TokenUsageEvent)):
             is_latest: bool | None
             if wait_for_pending_reopen:
-                is_latest = self.speculative_turns.is_latest_after_reopen_grace(turn_id, turn_revision)
+                is_latest = self.speculative_turns.is_latest(turn_id, turn_revision)
             else:
                 is_latest = self.speculative_turns.try_is_latest_after_reopen_grace(turn_id, turn_revision)
             if is_latest is None:
@@ -487,17 +487,26 @@ class RealtimeService:
             st.speculative_user_speech_stopped_at_s = event.speech_stopped_at_s
 
         queue = self.text_prompt_queue
-        if queue and response_transcript:
-            st.response_pending = True
-            queue.put(
-                GenerateResponseRequest(
-                    runtime_config=cfg,
-                    language_code=event.language_code,
-                    turn_id=event.turn_id,
-                    turn_revision=event.turn_revision,
-                    speech_stopped_at_s=event.speech_stopped_at_s,
+        if response_transcript:
+            if queue:
+                st.response_pending = True
+                queue.put(
+                    GenerateResponseRequest(
+                        runtime_config=cfg,
+                        language_code=event.language_code,
+                        turn_id=event.turn_id,
+                        turn_revision=event.turn_revision,
+                        speech_stopped_at_s=event.speech_stopped_at_s,
+                    )
                 )
-            )
+        else:
+            # No LLM turn: tell the client to leave "processing" so the orb
+            # does not sit on thinking after filler, empty STT, or an STT fault.
+            if event.error:
+                events.append(self.make_error(event.error, "stt_failed"))
+            else:
+                reason = decision.reason if transcript else "no_text"
+                events.append(self.make_error(f"Turn ignored ({reason})", "turn_ignored"))
 
         return events
 

@@ -11,6 +11,12 @@ from chatbot.pipeline.turn_quality import TurnQualityPolicy
         ("um", "filler_only"),
         ("Uh...", "filler_only"),
         ("ummm, er, hmmm", "filler_only"),
+        ("ah", "filler_only"),
+        ("aah", "filler_only"),
+        ("oh", "filler_only"),
+        ("huh", "filler_only"),
+        ("mm-hmm", "filler_only"),
+        ("uh-huh", "filler_only"),
         ("[noise]", "non_speech"),
         ("(yawning)", "non_speech"),
         ("<blank audio>", "non_speech"),
@@ -34,7 +40,7 @@ def test_important_short_commands_are_always_allowed(command: str) -> None:
 
 @pytest.mark.parametrize(
     "transcript",
-    ["what?", "I", "sí", "music", "noise", "um, stop", "there is background noise"],
+    ["what?", "I", "sí", "music", "noise", "um, stop", "ah, stop", "there is background noise"],
 )
 def test_policy_allows_other_short_or_meaningful_speech(transcript: str) -> None:
     assert TurnQualityPolicy().evaluate(transcript).should_respond is True

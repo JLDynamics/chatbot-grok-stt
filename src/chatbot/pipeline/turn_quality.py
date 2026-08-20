@@ -63,7 +63,10 @@ _PROTECTED_SHORT_COMMANDS = frozenset(
 
 # Common ASR renderings of non-lexical hesitation.  These patterns are only
 # applied when *every* token in the transcript is filler, so "um, stop" passes.
-_FILLER_TOKEN_RE = re.compile(r"(?:u+h+m*|u+m+|e+r+m*|h+m+|m{2,})", re.IGNORECASE)
+_FILLER_TOKEN_RE = re.compile(
+    r"(?:u+h+m*|u+m+|e+r+m*|h+m+|m{2,}|a+h+|o+h+|huh|mm(?:-?hmm)?|uh-?huh)",
+    re.IGNORECASE,
+)
 
 # Some STT systems emit bracketed action/non-speech labels.  Plain single words
 # such as "music" remain allowed because they can also be real short commands.

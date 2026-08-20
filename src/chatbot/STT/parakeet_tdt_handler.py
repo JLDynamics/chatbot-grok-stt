@@ -242,24 +242,36 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         )
         inference_s = 0.0
         lock_scope_s = 0.0
+        stt_error: str | None = None
         try:
             if self.enable_live_transcription:
                 # Mark that we're processing final audio (ignore stale progressive updates)
                 self.processing_final = True
 
-            # Acquire lock with longer timeout for final transcription
+            # TTS often holds the MLX lock for longer than a first 5s try.
+            # Retry once with a long wait so barge-in speech is not dropped.
             lock_scope_start_s = perf_counter()
-            with self._compute_lock_context(handler_name="ParakeetSTT-Final", timeout=5.0) as acquired:
-                lock_scope_s = perf_counter() - lock_scope_start_s
-                if not acquired:
-                    logger.error("Failed to acquire compute lock for final transcription")
-                    pred_text = ""
-                    language_code = self.last_language
-                else:
-                    inference_start_s = perf_counter()
-                    pred_text, language_code = self._process_mlx_final(audio_input)
-                    inference_s = perf_counter() - inference_start_s
+            acquired = False
+            for timeout_s in (5.0, 25.0):
+                with self._compute_lock_context(handler_name="ParakeetSTT-Final", timeout=timeout_s) as got:
                     lock_scope_s = perf_counter() - lock_scope_start_s
+                    if got:
+                        acquired = True
+                        inference_start_s = perf_counter()
+                        pred_text, language_code = self._process_mlx_final(audio_input)
+                        inference_s = perf_counter() - inference_start_s
+                        lock_scope_s = perf_counter() - lock_scope_start_s
+                        break
+                logger.warning(
+                    "Final STT waiting for MLX lock (timeout=%.0fs, turn=%s)",
+                    timeout_s,
+                    vad_audio.turn_id,
+                )
+            if not acquired:
+                logger.error("Failed to acquire compute lock for final transcription")
+                pred_text = ""
+                language_code = self.last_language
+                stt_error = "stt_lock_timeout"
 
             # Validate and update language
             if language_code and language_code in SUPPORTED_LANGUAGES:
@@ -271,6 +283,7 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             logger.error(f"Parakeet TDT inference failed: {e}")
             pred_text = ""
             language_code = self.last_language
+            stt_error = "stt_failed"
 
         total_s = perf_counter() - process_start_s
         logger.info(
@@ -302,6 +315,7 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             turn_id=vad_audio.turn_id,
             turn_revision=vad_audio.turn_revision,
             speech_stopped_at_s=vad_audio.created_at_s,
+            error=stt_error,
         )
 
     @property
@@ -431,69 +445,15 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         return " ".join(part for part in parts if part).strip()
 
     def _process_mlx_final(self, audio_input: np.ndarray) -> tuple[str, str]:
-        """Process final audio using MLX backend with streaming handler."""
-        # If we have fixed sentences from progressive updates, only transcribe the new part
-        if (
-            self.streaming_handler is not None
-            and hasattr(self.streaming_handler, "fixed_sentences")
-            and self.streaming_handler.fixed_sentences
-        ):
+        """Decode the full final utterance.
+
+        Progressive captions are UI-only. Stitching their ``fixed_sentences``
+        onto a tail decode was a common source of duplicated or dropped words.
+        """
+        if self.streaming_handler is not None:
             self._clear_live_transcription_line()
-
-            # Get fixed text from previous progressive updates
-            fixed_text = " ".join(self.streaming_handler.fixed_sentences).strip()
-
-            # Calculate where fixed part ends in audio
-            fixed_end_time = self.streaming_handler.fixed_end_time
-            sample_rate = 16000
-            fixed_end_sample = int(fixed_end_time * sample_rate)
-            if fixed_end_sample > len(audio_input):
-                logger.warning(
-                    "Ignoring stale progressive fixed text: fixed_end_sample=%d exceeds final audio samples=%d",
-                    fixed_end_sample,
-                    len(audio_input),
-                )
-                pred_text, language_code = self._process_mlx(audio_input)
-                return pred_text, language_code
-
-            # Only transcribe the part after fixed sentences
-            if fixed_end_sample < len(audio_input):
-                remaining_audio = audio_input[fixed_end_sample:]
-
-                import mlx.core as mx
-
-                audio_mx = mx.array(remaining_audio, dtype=mx.float32)
-                result = self.model.decode_chunk(audio_mx, verbose=False)
-
-                if hasattr(result, "text"):
-                    new_text = result.text.strip()
-                else:
-                    new_text = str(result).strip()
-
-                # Combine fixed + new
-                pred_text = f"{fixed_text} {new_text}".strip() if new_text else fixed_text
-            else:
-                # All audio already transcribed in progressive updates
-                pred_text = fixed_text
-
-            # Reset streaming handler for next utterance
             self.streaming_handler.reset()
-        else:
-            # No progressive updates, transcribe everything
-            pred_text, language_code = self._process_mlx(audio_input)
-            return pred_text, language_code
-
-        # Determine language
-        if self.start_language and self.start_language != "auto":
-            language_code = self.start_language
-        else:
-            detected_lang = self._detect_language_from_text(pred_text)
-            if detected_lang:
-                language_code = detected_lang
-            else:
-                language_code = self.last_language
-
-        return pred_text, language_code
+        return self._process_mlx(audio_input)
 
     def _process_mlx(self, audio_input: np.ndarray) -> tuple[str, str]:
         """Process audio using MLX backend."""

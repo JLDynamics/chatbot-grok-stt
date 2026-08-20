@@ -262,12 +262,17 @@ class ResponseHandler(RealtimeBaseHandler):
         )
 
     def handle_response_cancel(self, conn_id: str) -> list[ServerEvent]:
-        """Cancel the in-progress response and re-enable listening."""
+        """Cancel the in-progress response.
+
+        Listening stays enabled for the whole session (full-duplex barge-in);
+        ``should_listen.set()`` is kept so leftover half-duplex callers still
+        observe a set Event.
+        """
         events = self.finish_response(conn_id, status="cancelled", reason="client_cancelled")
         should_listen = self._should_listen(conn_id)
         if should_listen:
             should_listen.set()
-        logger.info("Response cancelled, listening re-enabled")
+        logger.info("Response cancelled")
         return events
 
     def finish_response(
@@ -356,7 +361,7 @@ class ResponseHandler(RealtimeBaseHandler):
         if self._service.speculative_turns:
             commit_result: bool | None
             if wait_for_pending_reopen:
-                commit_result = self._service.speculative_turns.commit_if_latest_after_reopen_grace(
+                commit_result = self._service.speculative_turns.commit_if_latest(
                     event.turn_id,
                     event.turn_revision,
                 )

@@ -65,7 +65,7 @@ def test_tracker_keeps_pending_reopen_while_pruning():
     assert "turn_2" in tracker._latest_revision
 
 
-def test_pending_reopen_wait_timeout_clears_candidate():
+def test_pending_reopen_wait_timeout_keeps_candidate():
     tracker = SpeculativeTurnTracker()
     tracker.observe("turn_1", 0)
     candidate_revision = tracker.begin_reopen_candidate("turn_1", 0)
@@ -73,7 +73,8 @@ def test_pending_reopen_wait_timeout_clears_candidate():
     tracker.wait_for_pending_reopen("turn_1", 0, timeout_s=0)
 
     assert candidate_revision == 1
-    assert tracker._pending_reopen == {}
+    assert tracker._pending_reopen["turn_1"].candidate_revision == 1
+    assert tracker.confirm_reopen_candidate("turn_1", 0, candidate_revision)
 
 
 def test_commit_if_latest_waits_for_pending_reopen_and_drops_confirmed_reopen():
@@ -481,6 +482,26 @@ def test_vad_pending_reopen_starts_before_active_speech_threshold():
     assert handler._speech_started_emitted is False
 
 
+def test_vad_processes_audio_when_should_listen_is_unset():
+    """Full-duplex: the VAD gate no longer drops chunks while TTS plays."""
+    chunks = [torch.zeros(512) for _ in range(20)]
+    iterator = _StaticVADIterator(
+        triggered=True,
+        vad_output=None,
+        buffer_chunks=chunks,
+        speech_chunks=chunks,
+        active_speech_samples=12 * 512,
+    )
+    handler = _vad_handler_for_iterator(iterator)
+    handler.should_listen.clear()
+
+    assert list(handler.process(_audio_bytes())) == []
+
+    event = handler.text_output_queue.get_nowait()
+    assert event.interrupt_response is True
+    assert handler._speech_started_emitted is True
+
+
 def test_vad_interruption_emits_after_active_speech_threshold():
     chunks = [torch.zeros(512) for _ in range(20)]
     iterator = _StaticVADIterator(
@@ -633,6 +654,7 @@ def test_soft_ended_direct_audio_turn_reopens_at_revision_one():
     started = handler.text_output_queue.get_nowait()
     assert isinstance(started, SpeechStartedEvent)
     assert (started.turn_id, started.turn_revision, started.reopened) == ("turn_1", 1, True)
+    assert started.interrupt_response is False
     assert handler._speech_started_emitted is True
 
 
@@ -827,7 +849,7 @@ def test_vad_stitches_adjacent_short_segments_before_discarding():
     started = handler.text_output_queue.get_nowait()
     stopped = handler.text_output_queue.get_nowait()
     assert isinstance(started, SpeechStartedEvent)
-    assert started.interrupt_response is False
+    assert started.interrupt_response is True
     assert isinstance(stopped, SpeechStoppedEvent)
     assert handler._pending_short_segment is None
 
@@ -936,7 +958,7 @@ def test_vad_final_synthetic_start_does_not_interrupt_response():
     started = handler.text_output_queue.get_nowait()
     stopped = handler.text_output_queue.get_nowait()
     assert isinstance(started, SpeechStartedEvent)
-    assert started.interrupt_response is False
+    assert started.interrupt_response is True
     assert isinstance(stopped, SpeechStoppedEvent)
 
 
