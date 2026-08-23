@@ -16,7 +16,7 @@ def test_websocket_startup_greeting_is_sent_once(greeting, expected):
 globalThis.localStorage = {{ getItem() {{ return null; }} }};
 const {{ S2sWsRealtimeClient }} = await import("./web_app/ws/s2s-ws-client.js");
 const client = new S2sWsRealtimeClient({{
-  voice: "conversational_b", instructions: "Be helpful.", directUrl: "ws://unused",
+  voice: "en-Emma_woman", instructions: "Be helpful.", directUrl: "ws://unused",
   startupGreeting: {greeting!r},
 }});
 const sent = [];

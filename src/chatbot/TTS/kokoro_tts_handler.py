@@ -1,4 +1,9 @@
-"""Sesame CSM-1B conversational TTS handler for Apple Silicon (mlx-audio)."""
+"""Kokoro-82M conversational TTS handler for Apple Silicon (via mlx-audio).
+
+Matches the official speech-to-speech Kokoro setup: ``mlx-community/Kokoro-82M-bf16``
+on Apple Silicon, ``bm_fable`` (British male) by default, automatic language ->
+Kokoro-lang-code -> voice mapping from the STT language.
+"""
 
 from __future__ import annotations
 
@@ -20,147 +25,120 @@ from chatbot.pipeline.handler_types import TTSIn, TTSOut
 from chatbot.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, EndOfResponse, TTSInput
 from chatbot.pipeline.queue_types import TextEventItem
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
-from chatbot.TTS.tts_common import drop_queued_tts_inputs
+from chatbot.TTS.tts_common import SpectralDenoiser, TTSNoiseGate, drop_queued_tts_inputs
 from chatbot.utils.mlx_lock import MLXLockContext
 
 logger = logging.getLogger(__name__)
 console = Console()
 
-DEFAULT_MODEL = "mlx-community/csm-1b-8bit"
-DEFAULT_VOICE = "conversational_b"
-CSM_VOICES = ("conversational_a", "conversational_b")
-DEFAULT_TEMPERATURE = 0.55
-# Conversational replies should not ramble for a minute. The 90s upstream
-# default lets voice_match-style drift generate 20–50s for two sentences.
-MAX_AUDIO_LENGTH_MS = 20_000
-TOP_K = 50
-PIPELINE_SR = 16000
-MODEL_SR = 24000
+DEFAULT_MODEL = "mlx-community/Kokoro-82M-bf16"
+# Kokoro voice naming: <lang><gender>_<name>. Default = British male.
+DEFAULT_VOICE = "bm_fable"
+DEFAULT_LANG_CODE = "b"
+DEFAULT_SPEED = 1.0
+PIPELINE_SR = 24000
 BLOCK_SIZE = 512
-STREAMING_INTERVAL_S = 0.5
+
+WHISPER_LANGUAGE_TO_KOKORO_LANG = {
+    "en": "b",
+    "ja": "j",
+    "zh": "z",
+    "fr": "f",
+    "es": "e",
+    "it": "i",
+    "pt": "p",
+    "hi": "h",
+    "de": "b",
+    "nl": "b",
+    "pl": "b",
+    "ru": "b",
+    "uk": "b",
+}
+
+KOKORO_LANG_DEFAULT_VOICES = {
+    "a": "af_heart",
+    "b": "bm_fable",
+    "e": "ef_dora",
+    "f": "ff_siwis",
+    "h": "hf_alpha",
+    "i": "if_sara",
+    "j": "jf_alpha",
+    "p": "pf_dora",
+    "z": "zf_xiaobei",
+}
 
 
-def install_prompt_cache(model: Any) -> None:
-    """Cache the speaker prompt and its audio tokens on a CSM model instance.
-
-    Upstream ``generate()`` rebuilds the speaker context on every call: it
-    re-reads/resamples the ~30s prompt WAV (``default_speaker_prompt``) and
-    re-runs the full Mimi audio-token encode over ~375 frames
-    (``_tokenize_audio``) before the backbone can start producing frames.
-    The prompt is identical across generations for a given voice, so wrap
-    the model *instance* (not the module) to compute each piece once.
-
-    Only audio arrays originating from the cached speaker segments are
-    tokenized once; anything else (e.g. caller-supplied ``ref_audio``) is
-    passed through uncached so the cache cannot grow unboundedly.
-    """
-    segment_cache: dict[Any, Any] = {}
-    token_cache: dict[tuple[int, bool], tuple[Any, Any]] = {}
-    # Hold references to the cached audio arrays so their ``id()`` stays valid
-    # for the lifetime of the cache (ids are only unique among live objects).
-    keepalive: list[Any] = []
-    cached_audio_ids: set[int] = set()
-
-    original_prompt = model.default_speaker_prompt
-    original_tokenize_audio = model._tokenize_audio
-
-    def cached_default_speaker_prompt(voice: str, repo_id: str = "sesame/csm-1b") -> list[Any]:
-        if voice not in segment_cache:
-            segment = original_prompt(voice, repo_id)[0]
-            segment_cache[voice] = segment
-            keepalive.append(segment.audio)
-            cached_audio_ids.add(id(segment.audio))
-        return [segment_cache[voice]]
-
-    def cached_tokenize_audio(audio: Any, add_eos: bool = True) -> tuple[Any, Any]:
-        if id(audio) in cached_audio_ids:
-            key = (id(audio), add_eos)
-            cached = token_cache.get(key)
-            if cached is None:
-                cached = original_tokenize_audio(audio, add_eos=add_eos)
-                token_cache[key] = cached
-            return cached
-        return original_tokenize_audio(audio, add_eos=add_eos)
-
-    model.default_speaker_prompt = cached_default_speaker_prompt
-    model._tokenize_audio = cached_tokenize_audio
-
-
-class CsmTTSHandler(BaseHandler[TTSIn, TTSOut]):
-    """Synthesize speech with Sesame CSM-1B (conversational TTS) via mlx-audio."""
+class KokoroTTSHandler(BaseHandler[TTSIn, TTSOut]):
+    """Synthesize speech with Kokoro-82M (via mlx-audio) on Apple Silicon."""
 
     def setup(
         self,
         should_listen: Event,
         model_name: str = DEFAULT_MODEL,
         voice: str = DEFAULT_VOICE,
-        temperature: float = DEFAULT_TEMPERATURE,
-        stream: bool = True,
+        lang_code: str = DEFAULT_LANG_CODE,
+        speed: float = DEFAULT_SPEED,
+        blocksize: int = BLOCK_SIZE,
         gen_kwargs: dict[str, Any] | None = None,
         cancel_scope: CancelScope | None = None,
         speculative_turns: SpeculativeTurnTracker | None = None,
         text_output_queue: Queue[TextEventItem] | None = None,
     ) -> None:
         self.should_listen = should_listen
+        self.voice = voice
+        self.lang_code = lang_code
+        self.speed = float(speed)
+        self.blocksize = int(blocksize)
+        self.gen_kwargs = gen_kwargs or {}
         self.cancel_scope = cancel_scope
         self.speculative_turns = speculative_turns
         self.text_output_queue = text_output_queue
         self._failed_turn: tuple[str | None, int | None] | None = None
-        self.voice = voice
-        self.temperature = float(temperature)
-        self.stream = stream
-        self.gen_kwargs = gen_kwargs or {}
         self.model_name = model_name
-        logger.info("Loading CSM-1B model %s with mlx-audio", self.model_name)
+        logger.info("Loading Kokoro model %s with mlx-audio", self.model_name)
         try:
             from mlx_audio.tts.utils import load_model
 
             self.model = load_model(self.model_name)
         except ImportError as exc:
-            raise ImportError("CSM-1B requires mlx-audio and its TTS dependencies. Run uv sync.") from exc
-        install_prompt_cache(self.model)
+            raise ImportError(
+                "Kokoro TTS on Apple Silicon requires mlx-audio plus its TTS deps "
+                "(misaki, espeakng-loader, num2words, spacy, phonemizer-fork). Run uv sync."
+            ) from exc
         self.warmup()
 
     def warmup(self) -> None:
-        logger.info("Warming up CSM-1B")
+        logger.info("Warming up Kokoro")
         try:
             for _ in self._process("Hello, this is a warmup."):
                 pass
         except Exception as exc:  # startup remains usable when a warmup-only call fails
-            logger.warning("CSM-1B warmup failed: %s", exc)
+            logger.warning("Kokoro warmup failed: %s", exc)
 
     def _process(self, text: str) -> Iterator[np.ndarray]:
-        with MLXLockContext(handler_name="CsmTTS", timeout=10.0) as acquired:
+        with MLXLockContext(handler_name="KokoroTTS", timeout=10.0) as acquired:
             if not acquired:
                 raise TimeoutError("Timed out waiting for MLX lock")
-            import soxr
-            from mlx_lm.sample_utils import make_sampler
 
-            # Pull length/interval knobs out of gen_kwargs so they can't collide
-            # with the explicit kwargs below, and default to the handler constants.
             gen_kwargs = dict(self.gen_kwargs)
-            max_audio_length_ms = float(gen_kwargs.pop("max_audio_length_ms", MAX_AUDIO_LENGTH_MS))
-            streaming_interval = float(gen_kwargs.pop("streaming_interval", STREAMING_INTERVAL_S))
-            # voice_match=True (mlx-audio default) prepends the 30s speaker
-            # prompt transcript to every sentence. CSM then rambles 20–50s for
-            # a two-line reply. Tokenize the prompt as context only.
-            gen_kwargs.pop("voice_match", None)
+            speed = float(gen_kwargs.pop("speed", self.speed))
+            lang_code = gen_kwargs.pop("lang_code", self.lang_code)
+            # Spectral denoise (removes hiss inside the voice) + noise gate
+            # (removes pause hiss), shared with the VibeVoice backend.
+            spectral_enabled = bool(gen_kwargs.pop("spectral_denoise", True))
+            spectral_floor = float(gen_kwargs.pop("spectral_denoise_floor", 0.04))
+            denoiser = SpectralDenoiser(enabled=spectral_enabled, floor=spectral_floor)
+            noise_gate_enabled = bool(gen_kwargs.pop("noise_gate", True))
+            noise_gate_threshold = float(gen_kwargs.pop("noise_gate_threshold", 0.010))
+            gate = TTSNoiseGate(enabled=noise_gate_enabled, threshold=noise_gate_threshold)
+
             generation = self.model.generate(
                 text=text,
                 voice=self.voice,
-                speaker=0,
-                sampler=make_sampler(temp=self.temperature, top_k=TOP_K),
-                stream=self.stream,
-                streaming_interval=streaming_interval,
-                max_audio_length_ms=max_audio_length_ms,
-                voice_match=False,
+                speed=speed,
+                lang_code=lang_code,
                 **gen_kwargs,
             )
-            # Stateful streaming resampler: emit audio as CSM produces it (low
-            # time-to-first-audio) while keeping filter state across chunks, so
-            # chunk boundaries stay clean (no stutter). soxr is already a project
-            # dependency.
-            resampler = soxr.ResampleStream(MODEL_SR, PIPELINE_SR, 1, dtype="float32")
             cancel_generation = self.cancel_scope.generation if self.cancel_scope else None
             leftover = np.array([], dtype=np.int16)
             total_samples = 0
@@ -168,15 +146,16 @@ class CsmTTSHandler(BaseHandler[TTSIn, TTSOut]):
             first = True
             for item in generation:
                 if cancel_generation is not None and self.cancel_scope and self.cancel_scope.is_stale(cancel_generation):
-                    logger.info("CSM-1B generation cancelled")
+                    logger.info("Kokoro generation cancelled")
                     return
                 audio = np.asarray(item.audio, dtype=np.float32)
                 if first:
-                    logger.info("CSM-1B TTFA %.2fs", perf_counter() - start)
+                    logger.info("Kokoro TTFA %.2fs", perf_counter() - start)
                     first = False
                 if not audio.size:
                     continue
-                pcm = resampler.resample_chunk(np.ascontiguousarray(audio), last=False)
+                pcm = denoiser.process(audio)
+                pcm = gate.process(pcm)
                 pcm = np.clip(pcm * 32768, -32768, 32767).astype(np.int16)
                 pcm = np.concatenate((leftover, pcm))
                 complete = len(pcm) // BLOCK_SIZE * BLOCK_SIZE
@@ -184,8 +163,9 @@ class CsmTTSHandler(BaseHandler[TTSIn, TTSOut]):
                     yield pcm[offset : offset + BLOCK_SIZE]
                     total_samples += BLOCK_SIZE
                 leftover = pcm[complete:]
-            tail = resampler.resample_chunk(np.zeros(0, dtype=np.float32), last=True)
-            tail = np.clip(tail * 32768, -32768, 32767).astype(np.int16)
+            tail_float = denoiser.flush()
+            tail_float = gate.process(tail_float)
+            tail = np.clip(tail_float * 32768, -32768, 32767).astype(np.int16)
             pcm = np.concatenate((leftover, tail))
             complete = len(pcm) // BLOCK_SIZE * BLOCK_SIZE
             for offset in range(0, complete, BLOCK_SIZE):
@@ -198,26 +178,19 @@ class CsmTTSHandler(BaseHandler[TTSIn, TTSOut]):
             audio_s = total_samples / PIPELINE_SR
             elapsed = perf_counter() - start
             rtf = elapsed / audio_s if audio_s > 0 else 0.0
-            logger.info("CSM-1B generated %.2fs of audio in %.2fs (RTF %.2f)", audio_s, elapsed, rtf)
-            if audio_s >= max_audio_length_ms / 1000.0 - 0.5:
-                logger.warning(
-                    "CSM-1B generation likely hit the %.0fms length cap (produced %.2fs); the tail may be truncated",
-                    max_audio_length_ms,
-                    audio_s,
-                )
+            logger.info("Kokoro generated %.2fs of audio in %.2fs (RTF %.2f)", audio_s, elapsed, rtf)
 
-    def _apply_session_voice(self, runtime_config: Any, response: Any) -> None:
-        voice: str | None = None
-        if response and getattr(response, "audio", None) and response.audio.output and response.audio.output.voice:
-            voice = str(response.audio.output.voice)
-        if voice is None and runtime_config is not None:
-            audio = runtime_config.session.audio
-            output = audio.output if audio is not None else None
-            if output is not None and output.voice:
-                voice = str(output.voice)
-        if voice in CSM_VOICES and voice != self.voice:
-            logger.info("CSM voice set to %s", voice)
-            self.voice = voice
+    def _apply_language(self, tts_input: TTSInput) -> None:
+        # Map the STT-detected language to a Kokoro lang code + native voice.
+        lang = (tts_input.language_code or "").lower()
+        if not lang:
+            return
+        kokoro_lang = WHISPER_LANGUAGE_TO_KOKORO_LANG.get(lang)
+        if kokoro_lang and kokoro_lang != self.lang_code:
+            new_voice = KOKORO_LANG_DEFAULT_VOICES.get(kokoro_lang, self.voice)
+            logger.info("Kokoro language %s -> %s, voice %s -> %s", lang, kokoro_lang, self.voice, new_voice)
+            self.lang_code = kokoro_lang
+            self.voice = new_voice
 
     def _coalesce(self, current: TTSInput) -> str:
         parts = [current.text.strip()] if current.text.strip() else []
@@ -254,7 +227,7 @@ class CsmTTSHandler(BaseHandler[TTSIn, TTSOut]):
             return
         if tracker:
             tracker.commit(tts_input.turn_id, tts_input.turn_revision)
-        self._apply_session_voice(tts_input.runtime_config, tts_input.response)
+        self._apply_language(tts_input)
         text = self._coalesce(tts_input)
         if not text:
             return
@@ -270,18 +243,18 @@ class CsmTTSHandler(BaseHandler[TTSIn, TTSOut]):
                 yield audio
             if produced <= BLOCK_SIZE and len(text) > 80:
                 logger.warning(
-                    "CSM-1B produced almost no audio for a long prompt (%d chars, %d samples); possible early EOS",
+                    "Kokoro produced almost no audio for a long prompt (%d chars, %d samples); possible early EOS",
                     len(text),
                     produced,
                 )
         except Exception as exc:
-            logger.error("CSM-1B generation failed: %s", exc, exc_info=True)
+            logger.error("Kokoro generation failed: %s", exc, exc_info=True)
             self._failed_turn = turn_key
             drop_queued_tts_inputs(self.queue_in, tts_input.turn_id, tts_input.turn_revision)
             if self.text_output_queue is not None:
                 self.text_output_queue.put(
                     ResponseFailedEvent(
-                        message=f"CSM-1B generation failed: {exc}",
+                        message=f"Kokoro generation failed: {exc}",
                         turn_id=tts_input.turn_id,
                         turn_revision=tts_input.turn_revision,
                     )
@@ -294,4 +267,4 @@ class CsmTTSHandler(BaseHandler[TTSIn, TTSOut]):
 
             mx.clear_cache()
         except Exception as exc:
-            logger.warning("CSM-1B cleanup failed: %s", exc)
+            logger.warning("Kokoro cleanup failed: %s", exc)

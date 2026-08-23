@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PIPELINE_SAMPLE_RATE = 16000
+# TTS backends now emit at 24 kHz and are streamed to the client at that rate;
+# the browser's playback worklet upsalims 24 kHz to the AudioContext rate.
+TTS_SAMPLE_RATE = 24000
 CHUNK_SAMPLES = 512
 BYTES_PER_SAMPLE = 2
 CHUNK_SIZE_BYTES = CHUNK_SAMPLES * BYTES_PER_SAMPLE
@@ -207,10 +210,10 @@ class AudioHandler(RealtimeBaseHandler):
         if client_out_rate is None:
             audio_cfg = st.runtime_config.session.audio
             if audio_cfg is not None and audio_cfg.output is not None:
-                client_out_rate = getattr(audio_cfg.output.format, "rate", None) or PIPELINE_SAMPLE_RATE
+                client_out_rate = getattr(audio_cfg.output.format, "rate", None) or TTS_SAMPLE_RATE
             else:
-                client_out_rate = PIPELINE_SAMPLE_RATE
-        audio = resample(audio, PIPELINE_SAMPLE_RATE, client_out_rate)
+                client_out_rate = TTS_SAMPLE_RATE
+        audio = resample(audio, TTS_SAMPLE_RATE, client_out_rate)
         b64 = base64.b64encode(audio).decode("ascii")
         events.append(
             ResponseAudioDeltaEvent(

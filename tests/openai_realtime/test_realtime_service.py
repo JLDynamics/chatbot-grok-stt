@@ -7,7 +7,6 @@ validated for correct type, attributes, and state transitions.
 import base64
 import json
 from queue import Queue
-from threading import Event, Thread
 from time import sleep
 
 import numpy as np

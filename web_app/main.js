@@ -20,8 +20,12 @@ import {
   readDesktopControlPreference,
 } from "./ui/desktop-control.js";
 
-const DEFAULT_VOICE = "conversational_b";
-const CSM_VOICES = new Set(["conversational_a", "conversational_b"]);
+const DEFAULT_VOICE = "en-Emma_woman";
+const VIBEVOICE_VOICES = new Set([
+  "en-Emma_woman", "en-Grace_woman", "en-Carter_man", "en-Davis_man",
+  "en-Frank_man", "en-Mike_man", "de-Spk0_man", "de-Spk1_woman",
+  "fr-Spk0_man", "fr-Spk1_woman", "jp-Spk0_man", "jp-Spk1_woman",
+]);
 // The soul. Everything here is read aloud, so the speech rules are physics,
 // not style: markdown, lists and emoji come out as noise, and each sentence is
 // its own TTS batch. The rest is personality — opinions over hedging, brevity
@@ -211,6 +215,8 @@ const TOOL_DEFS = {
       "this is a read-only public-page operation and the user's request is sufficient authorization, " +
       "so call it immediately without asking for approval or confirmation. Prefer it over " +
       "control_screen and do not first claim that page text is unavailable. " +
+      "If it reports the bridge is unavailable, fall back to control_screen (screenshot) only for " +
+      "the visible screen content; never default to a screenshot for article text alone. " +
       "Do not use this for a generic screen, app/window, layout, image, chart, or other " +
       "visual inspection. The read-only Chrome bridge does not click, type, scroll, or take " +
       "screenshots. On X, long-form Articles and individual status posts are supported; " +
@@ -338,7 +344,7 @@ function loadSettings() {
     directUrl: localStorage.getItem(STORAGE_KEYS.directUrl) || "",
     voice: (() => {
       const stored = localStorage.getItem(STORAGE_KEYS.voice) || DEFAULT_VOICE;
-      return CSM_VOICES.has(stored) ? stored : DEFAULT_VOICE;
+      return VIBEVOICE_VOICES.has(stored) ? stored : DEFAULT_VOICE;
     })(),
     instructions: (() => {
       const stored = localStorage.getItem(STORAGE_KEYS.instructions);
@@ -1418,9 +1424,10 @@ async function runTool(name, argsJson, callId) {
       } else {
         let detail = String(res.status);
         try { detail = (await res.json()).detail || detail; } catch {}
-        result.output = `The read-only Chrome page bridge is unavailable: ${detail} ` +
-          "Do not ask the user for approval and do not fall back to a screenshot. Tell them to " +
-          "reload the Chatbot Page Bridge extension and the public page, then retry read_article.";
+        result.output = `The read-only Chrome page bridge is unavailable (${detail}). ` +
+          "If the user asked for the visible content, try a control_screen screenshot as a fallback; " +
+          "if they asked specifically for article/webpage text, tell them to reload the Chatbot Page " +
+          "Bridge extension and the public page, then retry read_article.";
       }
       client.sendToolOutput(callId, result.output);
     } else if (name === "control_screen") {

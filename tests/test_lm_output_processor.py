@@ -1,5 +1,4 @@
 from queue import Queue
-from threading import Event, Thread
 
 from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 

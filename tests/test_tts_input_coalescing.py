@@ -3,11 +3,11 @@ from threading import Event
 
 from chatbot.pipeline.control import SESSION_END
 from chatbot.pipeline.messages import EndOfResponse, TTSInput
-from chatbot.TTS.csm_tts_handler import CsmTTSHandler
+from chatbot.TTS.vibevoice_tts_handler import VibeVoiceTTSHandler
 
 
 def _make_handler():
-    handler = object.__new__(CsmTTSHandler)
+    handler = object.__new__(VibeVoiceTTSHandler)
     handler.queue_in = Queue()
     handler.queue_out = Queue()
     handler.stop_event = Event()

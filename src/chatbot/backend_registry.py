@@ -8,11 +8,12 @@ from queue import Queue
 from threading import Event
 from typing import Any, Literal
 
-from chatbot.arguments_classes.csm_tts_arguments import CsmTTSHandlerArguments
+from chatbot.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from chatbot.arguments_classes.parakeet_tdt_arguments import ParakeetTDTSTTHandlerArguments
 from chatbot.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
+from chatbot.arguments_classes.vibevoice_tts_arguments import VibeVoiceTTSHandlerArguments
 from chatbot.pipeline.cancel_scope import CancelScope
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 
@@ -185,17 +186,30 @@ TTS_BACKENDS = build_backend_registry(
     "tts",
     [
         BackendSpec(
-            "csm",
+            "kokoro",
             "tts",
-            CsmTTSHandlerArguments,
+            KokoroTTSHandlerArguments,
             _factory(
-                "chatbot.TTS.csm_tts_handler",
-                "CsmTTSHandler",
+                "chatbot.TTS.kokoro_tts_handler",
+                "KokoroTTSHandler",
                 should_listen=True,
                 runtime_context=True,
                 text_output_queue=True,
             ),
-            "csm_tts",
+            "kokoro_tts",
+        ),
+        BackendSpec(
+            "vibevoice",
+            "tts",
+            VibeVoiceTTSHandlerArguments,
+            _factory(
+                "chatbot.TTS.vibevoice_tts_handler",
+                "VibeVoiceTTSHandler",
+                should_listen=True,
+                runtime_context=True,
+                text_output_queue=True,
+            ),
+            "vibevoice_tts",
         ),
     ],
 )

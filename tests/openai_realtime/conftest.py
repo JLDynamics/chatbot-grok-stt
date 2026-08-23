@@ -12,14 +12,15 @@ from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
 from chatbot.api.openai_realtime.service import RealtimeService
 
 
-def _session_16k() -> RealtimeSessionCreateRequest:
-    """Build a test session with 16 kHz audio rates (matches PIPELINE_SAMPLE_RATE)."""
-    fmt = AudioPCM.model_construct(rate=16000, type="audio/pcm")
+def _session_pipeline() -> RealtimeSessionCreateRequest:
+    """Build a test session: 16 kHz mic input, 24 kHz TTS output (pipeline rates)."""
+    in_fmt = AudioPCM.model_construct(rate=16000, type="audio/pcm")
+    out_fmt = AudioPCM.model_construct(rate=24000, type="audio/pcm")
     return RealtimeSessionCreateRequest.model_construct(
         type="realtime",
         audio=RealtimeAudioConfig.model_construct(
-            input=RealtimeAudioConfigInput.model_construct(format=fmt),
-            output=RealtimeAudioConfigOutput.model_construct(format=fmt),
+            input=RealtimeAudioConfigInput.model_construct(format=in_fmt),
+            output=RealtimeAudioConfigOutput.model_construct(format=out_fmt),
         ),
     )
 
@@ -27,7 +28,7 @@ def _session_16k() -> RealtimeSessionCreateRequest:
 @pytest.fixture
 def runtime_config():
     cfg = RuntimeConfig()
-    cfg.session = _session_16k()
+    cfg.session = _session_pipeline()
     return cfg
 
 

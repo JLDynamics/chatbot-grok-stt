@@ -439,10 +439,10 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
     )
 
 
-PI_BIN = ROOT / "node_modules" / ".bin" / "pi"
+GROK_BIN = Path(os.path.expanduser("~/.local/bin/grok"))
 CODE_AGENT_ENABLED = os.environ.get("CODE_AGENT", "on").lower() not in {"off", "0", "false"}
 CODE_AGENT_CWD = Path(os.path.expanduser(os.environ.get("CODE_AGENT_CWD", "~")))
-CODE_AGENT_MODEL = os.environ.get("CODE_AGENT_MODEL", "openai/gpt-5.6-luna")
+CODE_AGENT_MODEL = os.environ.get("CODE_AGENT_MODEL", "grok-4.6")
 CODE_AGENT_TIMEOUT_S = float(os.environ.get("CODE_AGENT_TIMEOUT", "300"))
 
 
@@ -457,19 +457,22 @@ async def code_agent(req: CodeRequest) -> JSONResponse:
         raise HTTPException(status_code=503, detail="The coding agent is turned off.")
     if not task:
         raise HTTPException(status_code=400, detail="No task given.")
-    if not PI_BIN.exists():
-        raise HTTPException(status_code=503, detail="Run npm install in the project root first.")
-    logger.warning("code_agent: cwd=%s task=%r", CODE_AGENT_CWD, task[:300])
+    if not GROK_BIN.exists():
+        raise HTTPException(status_code=503, detail="Grok Build (grok) is not installed on ~/.local/bin.")
+    logger.warning("code_agent: cwd=%s task=%r model=%s", CODE_AGENT_CWD, task[:300], CODE_AGENT_MODEL)
     try:
         process = await asyncio.create_subprocess_exec(
-            str(PI_BIN),
+            str(GROK_BIN),
             "-p",
             task,
-            "--provider",
-            "openrouter",
             "--model",
             CODE_AGENT_MODEL,
-            cwd=CODE_AGENT_CWD,
+            "--cwd",
+            str(CODE_AGENT_CWD),
+            "--permission-mode",
+            "bypassPermissions",
+            "--output-format",
+            "json",
             env=dict(os.environ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -481,7 +484,17 @@ async def code_agent(req: CodeRequest) -> JSONResponse:
         raise HTTPException(status_code=504, detail="The coding agent timed out.") from exc
     except OSError as exc:
         raise HTTPException(status_code=502, detail="Could not start the coding agent.") from exc
-    text = output.decode("utf-8", errors="replace").strip()
+    raw = output.decode("utf-8", errors="replace").strip()
+    # --output-format json emits a single object with the response `text`.
+    text = raw
+    try:
+        payload = json.loads(raw)
+        if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+            text = payload["text"]
+        elif isinstance(payload, list):
+            text = "\n".join(str(x) for x in payload)
+    except (json.JSONDecodeError, ValueError):
+        pass
     if len(text) > 4000:
         text = text[:4000] + "\n[output truncated]"
     return JSONResponse({"ok": process.returncode == 0, "exit_code": process.returncode, "output": text})
@@ -552,6 +565,13 @@ async def _run_harness(script: str, timeout: float) -> tuple[int, str]:
         script,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        # Run in-process (no warm daemon). The daemon auto-starts on first call
+        # and writes to ~/Library/Caches/desktop-harness/daemon.log, which fails
+        # when the web server can't write there, and screenshots captured in the
+        # daemon can lack Screen Recording permission. In-process keeps desktop
+        # actions/screenshots working regardless of daemon state (at the cost of
+        # a cold pyobjc import per call).
+        env={**os.environ, "DH_NO_DAEMON": "1"},
     )
 
     async def complete() -> tuple[int, bytes]:
@@ -636,10 +656,12 @@ async def context_preflight(req: ContextPreflightRequest) -> JSONResponse:
     chrome_frontmost = app_name in {"google chrome", "chrome", "chromium"}
     if desktop.get("sensitive"):
         route_hint = "ask"
+    elif bridge["fresh_readable_page"]:
+        # Prefer the fast, text-based Chrome page bridge for reading page/article
+        # content; desktop-harness / screenshot are the fallback, not the default.
+        route_hint = "read_article"
     elif desktop.get("inspected") and desktop.get("available") and not chrome_frontmost:
         route_hint = "control_screen_screenshot"
-    elif bridge["fresh_readable_page"]:
-        route_hint = "read_article"
     else:
         route_hint = "ask"
 

@@ -15,10 +15,10 @@ def test_current_defaults_are_mac_voice_profile():
     assert args.realtime_server_kwargs.port == 8765
     assert args.stt_backend.name == "parakeet-tdt"
     assert args.llm_backend.name == "responses-api"
-    assert args.tts_backend.name == "csm"
+    assert args.tts_backend.name == "kokoro"
     assert args.llm_backend.config["model_name"] == "openai/gpt-5.6-luna"
-    assert args.tts_backend.config["voice"] == "conversational_b"
-    assert args.tts_backend.config["model_name"] == "mlx-community/csm-1b-8bit"
+    assert args.tts_backend.config["voice"] == "bm_fable"
+    assert args.tts_backend.config["model_name"] == "mlx-community/Kokoro-82M-bf16"
     assert args.module_kwargs.turn_quality_gate is True
 
 

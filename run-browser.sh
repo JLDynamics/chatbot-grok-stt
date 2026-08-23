@@ -22,7 +22,7 @@ PORT="${PORT:-8766}"
 WEB_PORT="${WEB_PORT:-7860}"
 SERVER_LOG="${SERVER_LOG:-/tmp/chatbot-server.log}"
 WEB_LOG="${WEB_LOG:-/tmp/chatbot-web.log}"
-MODEL="${MODEL:-openai/gpt-5.6-luna}"
+MODEL="${MODEL:-meta/muse-spark-1.2-contributor}"
 export MODEL
 
 listener() { lsof -ti "TCP:$1" -sTCP:LISTEN 2>/dev/null | head -1 || true; }

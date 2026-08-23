@@ -13,7 +13,7 @@ from rich.console import Console
 from transformers import HfArgumentParser
 
 from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
-from chatbot.arguments_classes.csm_tts_arguments import CsmTTSHandlerArguments
+from chatbot.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from chatbot.arguments_classes.module_arguments import ModuleArguments
 from chatbot.arguments_classes.parakeet_tdt_arguments import ParakeetTDTSTTHandlerArguments
 from chatbot.arguments_classes.realtime_server_arguments import RealtimeServerArguments
@@ -21,6 +21,7 @@ from chatbot.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
 from chatbot.arguments_classes.vad_arguments import VADHandlerArguments
+from chatbot.arguments_classes.vibevoice_tts_arguments import VibeVoiceTTSHandlerArguments
 from chatbot.backend_registry import (
     LLM_BACKENDS,
     STT_BACKENDS,
@@ -72,12 +73,20 @@ def parse_arguments(
         VADHandlerArguments,
         ParakeetTDTSTTHandlerArguments,
         ResponsesApiLanguageModelHandlerArguments,
-        CsmTTSHandlerArguments,
+        KokoroTTSHandlerArguments,
+        VibeVoiceTTSHandlerArguments,
     )
     parser = HfArgumentParser(argument_types, prog=f"chatbot {command}")
     parsed = parser.parse_args_into_dataclasses(args=list(argv) if argv is not None else None)
-    module, server, vad, stt_config, llm_config, csm_tts_config = parsed
-    tts_backend = BackendSelection(TTS_BACKENDS["csm"], TTS_BACKENDS["csm"].normalize(csm_tts_config))
+    module, server, vad, stt_config, llm_config, kokoro_config, vibevoice_config = parsed
+    if module.tts == "kokoro":
+        tts_backend = BackendSelection(
+            TTS_BACKENDS["kokoro"], TTS_BACKENDS["kokoro"].normalize(kokoro_config)
+        )
+    else:
+        tts_backend = BackendSelection(
+            TTS_BACKENDS["vibevoice"], TTS_BACKENDS["vibevoice"].normalize(vibevoice_config)
+        )
     return ParsedArguments(
         module_kwargs=module,
         realtime_server_kwargs=server,

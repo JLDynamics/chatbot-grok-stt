@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the single supported realtime backend:
-# Parakeet MLX -> Responses API -> Sesame CSM-1B MLX.
+# Parakeet MLX -> Responses API -> VibeVoice (Microsoft) TTS.
 set -euo pipefail
 
 CHATBOT_ENV="$HOME/.config/chatbot/env"
@@ -11,16 +11,13 @@ if [[ -f "$CHATBOT_ENV" ]]; then
   [[ -n "$saved_openrouter" ]] && OPENROUTER_API_KEY="$saved_openrouter"
 fi
 
-MODEL="${MODEL:-openai/gpt-5.6-luna}"
+MODEL="${MODEL:-meta/muse-spark-1.2-contributor}"
 PORT="${PORT:-8766}"
-CSM_MODEL="${CSM_MODEL:-mlx-community/csm-1b-8bit}"
-CSM_VOICE="${CSM_VOICE:-conversational_b}"
-CSM_TEMP="${CSM_TEMP:-0.55}"
-BATCH_SENTENCES="${CSM_BATCH_SENTENCES:-${BATCH_SENTENCES:-3}}"
+BATCH_SENTENCES="${BATCH_SENTENCES:-3}"
 PROMPT="${PROMPT:-You are a concise, friendly voice assistant. Speak naturally without markdown or lists.}"
-VAD_THRESH="${VAD_THRESH:-0.55}"
-VAD_MIN_SILENCE_MS="${VAD_MIN_SILENCE_MS:-350}"
-VAD_MIN_SPEECH_MS="${VAD_MIN_SPEECH_MS:-400}"
+VAD_THRESH="${VAD_THRESH:-0.60}"
+VAD_MIN_SILENCE_MS="${VAD_MIN_SILENCE_MS:-400}"
+VAD_MIN_SPEECH_MS="${VAD_MIN_SPEECH_MS:-600}"
 VAD_SPEECH_PAD_MS="${VAD_SPEECH_PAD_MS:-500}"
 VAD_SHORT_SEGMENT_MERGE_MS="${VAD_SHORT_SEGMENT_MERGE_MS:-400}"
 PARAKEET_LANG="${PARAKEET_LANG:-en}"
@@ -45,24 +42,64 @@ if [[ -n "$occupant" ]]; then
   exit 1
 fi
 
-exec "$CHATBOT_BIN" serve \
-  --host 127.0.0.1 \
-  --port "$PORT" \
-  --stt parakeet-tdt \
-  --llm_backend responses-api \
-  --tts csm \
-  --csm_tts_model_name "$CSM_MODEL" \
-  --csm_tts_voice "$CSM_VOICE" \
-  --csm_tts_temperature "$CSM_TEMP" \
-  --model_name "$MODEL" \
-  --responses_api_stream \
-  --no_responses_api_disable_thinking \
-  --init_chat_prompt "$PROMPT" \
-  --stream_batch_sentences "$BATCH_SENTENCES" \
-  --thresh "$VAD_THRESH" \
-  --min_silence_ms "$VAD_MIN_SILENCE_MS" \
-  --min_speech_ms "$VAD_MIN_SPEECH_MS" \
-  --speech_pad_ms "$VAD_SPEECH_PAD_MS" \
-  --short_segment_merge_ms "$VAD_SHORT_SEGMENT_MERGE_MS" \
-  --parakeet_tdt_language "$PARAKEET_LANG" \
+TTS="${TTS:-kokoro}"
+
+# Kokoro (default)
+KOKORO_MODEL="${KOKORO_MODEL:-mlx-community/Kokoro-82M-bf16}"
+KOKORO_VOICE="${KOKORO_VOICE:-bm_fable}"
+KOKORO_LANG="${KOKORO_LANG:-b}"
+KOKORO_SPEED="${KOKORO_SPEED:-1.0}"
+KOKORO_BLOCKSIZE="${KOKORO_BLOCKSIZE:-512}"
+KOKORO_DENOISE_FLOOR="${KOKORO_DENOISE_FLOOR:-0.04}"
+
+# VibeVoice (alternative)
+VIBEVOICE_MODEL="${VIBEVOICE_MODEL:-mlx-community/VibeVoice-Realtime-0.5B-8bit}"
+VIBEVOICE_VOICE="${VIBEVOICE_VOICE:-en-Emma_woman}"
+VIBEVOICE_MAX_TOKENS="${VIBEVOICE_MAX_TOKENS:-1024}"
+VIBEVOICE_CFG_SCALE="${VIBEVOICE_CFG_SCALE:-1.5}"
+VIBEVOICE_DENOISE_FLOOR="${VIBEVOICE_DENOISE_FLOOR:-0.04}"
+
+args=(
+  serve
+  --host 127.0.0.1
+  --port "$PORT"
+  --stt parakeet-tdt
+  --llm_backend responses-api
+  --tts "$TTS"
+)
+
+if [[ "$TTS" == "kokoro" ]]; then
+  args+=(
+    --kokoro_tts_model_name "$KOKORO_MODEL"
+    --kokoro_tts_voice "$KOKORO_VOICE"
+    --kokoro_tts_lang_code "$KOKORO_LANG"
+    --kokoro_tts_speed "$KOKORO_SPEED"
+    --kokoro_tts_blocksize "$KOKORO_BLOCKSIZE"
+    --kokoro_tts_gen_spectral_denoise_floor "$KOKORO_DENOISE_FLOOR"
+  )
+else
+  args+=(
+    --vibevoice_tts_model_name "$VIBEVOICE_MODEL"
+    --vibevoice_tts_voice "$VIBEVOICE_VOICE"
+    --vibevoice_tts_max_tokens "$VIBEVOICE_MAX_TOKENS"
+    --vibevoice_tts_cfg_scale "$VIBEVOICE_CFG_SCALE"
+    --vibevoice_tts_gen_spectral_denoise_floor "$VIBEVOICE_DENOISE_FLOOR"
+  )
+fi
+
+args+=(
+  --model_name "$MODEL"
+  --responses_api_stream
+  --no_responses_api_disable_thinking
+  --init_chat_prompt "$PROMPT"
+  --stream_batch_sentences "$BATCH_SENTENCES"
+  --thresh "$VAD_THRESH"
+  --min_silence_ms "$VAD_MIN_SILENCE_MS"
+  --min_speech_ms "$VAD_MIN_SPEECH_MS"
+  --speech_pad_ms "$VAD_SPEECH_PAD_MS"
+  --short_segment_merge_ms "$VAD_SHORT_SEGMENT_MERGE_MS"
+  --parakeet_tdt_language "$PARAKEET_LANG"
   --enable_live_transcription
+)
+
+exec "$CHATBOT_BIN" "${args[@]}"

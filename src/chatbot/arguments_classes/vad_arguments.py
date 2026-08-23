@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 @dataclass
 class VADHandlerArguments:
     thresh: float = field(
-        default=0.55,
+        default=0.60,
         metadata={
             "help": "The threshold value for voice activity detection (VAD). Values typically range from 0 to 1, with higher values requiring higher confidence in speech detection."
         },
@@ -16,15 +16,15 @@ class VADHandlerArguments:
         },
     )
     min_silence_ms: int = field(
-        default=350,
+        default=400,
         metadata={
-            "help": "Minimum length of silence intervals to be used for segmenting speech. Measured in milliseconds. Default is 350 ms."
+            "help": "Minimum length of silence intervals to be used for segmenting speech. Measured in milliseconds. Default is 400 ms."
         },
     )
     min_speech_ms: int = field(
-        default=400,
+        default=600,
         metadata={
-            "help": "Minimum length of speech segments to be considered valid speech. Measured in milliseconds. Default is 400 ms."
+            "help": "Minimum length of speech segments to be considered valid speech. Measured in milliseconds. Default is 600 ms (softened barge-in: brief noises or the assistant's own echo won't interrupt a reply, but sustained speech still will)."
         },
     )
     min_speech_continuation_ms: int = field(

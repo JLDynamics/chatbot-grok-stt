@@ -4,18 +4,18 @@ A Mac-first live voice chatbot that runs its ears and voice locally, while a Res
 
 The retained path is intentionally small:
 
-`browser microphone → Parakeet MLX → Responses API → Sesame CSM-1B MLX → browser speakers`
+`browser microphone → Parakeet MLX → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → browser speakers`
 
 It keeps realtime WebSocket turn-taking, interruption/cancellation, partial transcripts, long-term memory, web tools, the Chrome page bridge, camera, coding-agent delegation, and explicit desktop control.
 
-The mic stays open while the assistant speaks (full-duplex barge-in). Echo control is the browser's AEC plus Silero VAD — we do not mute capture during TTS. Saved sidebar chats are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. CSM does not apply an AI watermark unless `silentcipher` is installed.
+The mic stays open while the assistant speaks (full-duplex barge-in). Echo control is the browser's AEC plus Silero VAD — we do not mute capture during TTS. Saved sidebar chats are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. VibeVoice runs locally without an AI watermark.
 
 ## Requirements
 
 - Apple Silicon Mac
 - Python 3.10 or newer
 - [uv](https://docs.astral.sh/uv/)
-- Node.js, for the optional coding agent
+- [Grok Build](https://x.ai/cli) (`grok` on `~/.local/bin`), for the optional coding agent
 - An OpenRouter key
 
 ## Install and run
@@ -27,9 +27,9 @@ npm install
 ./run-browser.sh
 ```
 
-Open `http://127.0.0.1:7860`, allow microphone access, and click the orb. The first launch may download the Parakeet and CSM model files.
+Open `http://127.0.0.1:7860`, allow microphone access, and click the orb. The first launch may download the Parakeet and TTS model files.
 
-The default model path is `openai/gpt-5.6-luna` through OpenRouter. Parakeet and Sesame CSM-1B run locally with MLX; the default CSM voice is `conversational_b`.
+The default model path is `meta/muse-spark-1.2-contributor` through OpenRouter. Parakeet STT and the TTS model run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language); set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
 
 ## Configuration
 
@@ -37,21 +37,30 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `MODEL` | `openai/gpt-5.6-luna` | OpenRouter Responses API model ID |
-| `CSM_MODEL` | `mlx-community/csm-1b-8bit` | CSM-1B MLX model repo |
-| `CSM_VOICE` | `conversational_b` | CSM voice prompt (`conversational_a`/`conversational_b`) |
-| `CSM_TEMP` | `0.55` | CSM sampling temperature; lower is steadier |
-| `CSM_BATCH_SENTENCES` | `3` | Sentences grouped per CSM generation; higher keeps voice continuity |
+| `TTS` | `kokoro` | TTS backend: `kokoro` (Kokoro-82M) or `vibevoice` (Microsoft VibeVoice) |
+| `MODEL` | `meta/muse-spark-1.2-contributor` | OpenRouter Responses API model ID |
+| `KOKORO_MODEL` | `mlx-community/Kokoro-82M-bf16` | Kokoro-82M MLX model repo |
+| `KOKORO_VOICE` | `bm_fable` | Kokoro voice (e.g. `bm_fable` British male, `af_heart` American female); auto-switches with the detected language |
+| `KOKORO_LANG` | `b` | Kokoro language code (`a`/`b`/`e`/`j`/`f`/`i`/`p`/`z`/`h`) |
+| `KOKORO_SPEED` | `1.0` | Kokoro speech-speed multiplier |
+| `VIBEVOICE_MODEL` | `mlx-community/VibeVoice-Realtime-0.5B-8bit` | VibeVoice MLX model repo (alternative backend) |
+| `VIBEVOICE_VOICE` | `en-Emma_woman` | VibeVoice voice from the repo (`*_voices/*.safetensors`) |
+| `VIBEVOICE_MAX_TOKENS` | `1024` | Safety ceiling on generated tokens (model stops on EOS) |
+| `VIBEVOICE_CFG_SCALE` | `1.5` | Classifier-free guidance; higher is more distinct but harsher |
+| `KOKORO_DENOISE_FLOOR` / `VIBEVOICE_DENOISE_FLOOR` | `0.04` | Spectral-denoiser suppression floor; lower removes more hiss (slight risk of a processed texture) |
 | `PORT` / `WEB_PORT` | `8766` / `7860` | Realtime and browser ports |
+| `VAD_THRESH` | `0.60` | VAD confidence threshold; higher = fewer false voice triggers |
+| `VAD_MIN_SPEECH_MS` | `600` | Sustained speech (ms) before a user turn / barge-in is confirmed. Raise to soften barge-in (so brief noises or the assistant's own echo don't cut a reply) |
+| `VAD_MIN_SILENCE_MS` | `400` | Silence (ms) before a spoken turn is considered finished |
 | `PROMPT` | concise voice prompt | Backend system prompt |
 | `STARTUP_GREETING` | empty | Optional greeting instruction on connection |
 | `TAVILY_API_KEY` / `SERPER_API_KEY` | empty | Enables the app's local search function |
 | `CODE_AGENT` | `on` | Set `off` to hide coding-agent delegation |
 | `CODE_AGENT_CWD` | home folder | Default working folder for coding tasks |
-| `CODE_AGENT_MODEL` | `openai/gpt-5.6-luna` | OpenRouter model for coding-agent delegation |
+| `CODE_AGENT_MODEL` | `grok-4.6` | Model for coding-agent delegation (via Grok Build) |
 | `DESKTOP_CONTROL` | `on` | Server-side kill switch for explicit Mac actions |
 | `CHATBOT_MEMORIES_PATH` | `~/.chatbot/memories.json` | Legacy JSON memory file, if used |
-| `CHATBOT_WATERMARK` | off | CSM watermarking is not installed (`silentcipher`); leave off unless you accept extra per-chunk latency |
+| `CHATBOT_WATERMARK` | off | AI-watermarking is disabled; VibeVoice runs without it |
 | `CHATBOT_DATA_DIR` | `~/.chatbot` | Saved chats, personal profile, and project notebooks |
 
 ### Search, fetch, and the Chrome bridge
@@ -107,7 +116,7 @@ screenshots remain limited to explicit control or visual requests.
 
 ## Optional tools
 
-- **Coding agent** runs the locally installed `pi` executable from this repository's Node dependencies.
+- **Coding agent** runs the locally installed [Grok Build](https://x.ai/cli) `grok` CLI (model `grok-4.6`), which also has the `desktop-harness` skill for Mac control.
 - **Desktop control** uses `~/.local/bin/desktop-harness` and requires macOS Accessibility permission for actions plus Screen Recording permission for screenshots. The server kill switch defaults on, but each browser starts with the tool off; enable it in **Tools → Desktop control**. It acts or captures only when explicitly requested. A screenshot can target the main display or a named visible app/window; sensitive sign-in/payment scopes remain blocked.
 - **Memory** uses an editable personal Markdown profile and saved conversations. The assistant can update it when you say “remember…” or “forget…”.
 
@@ -128,4 +137,4 @@ Work on a feature branch off `main`, open a pull request, and wait for review be
 
 ## License
 
-Apache-2.0. This project is derived from Hugging Face's original `chatbot` project; copyright notices are retained in [LICENSE](LICENSE).
+Apache-2.0. This project is a fork of Hugging Face's [`speech-to-speech`](https://github.com/huggingface/speech-to-speech) project. The upstream copyright notice is retained in [LICENSE](LICENSE) and [NOTICE](NOTICE), with the fork's copyright (Jack) added alongside.

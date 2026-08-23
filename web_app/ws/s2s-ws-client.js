@@ -75,7 +75,9 @@ import { SentAudioRecorder } from "./user-audio-recorder.js";
 // it via `audio.output.format`
 // because the server's pydantic validator rejects the whole `session.update`
 // as soon as a sub-field shape it doesn't know about appears.
-const OUTPUT_SAMPLE_RATE = 16000;
+// Playback sample rate. Matches the server's TTS output (24 kHz), so the
+// playback worklet only resamples 24 kHz -> AudioContext rate.
+const OUTPUT_SAMPLE_RATE = 24000;
 const MIC_CHUNK_MS = 40;
 
 export class S2sWsRealtimeClient extends EventTarget {
