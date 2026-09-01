@@ -79,6 +79,8 @@ import { SentAudioRecorder } from "./user-audio-recorder.js";
 // playback worklet only resamples 24 kHz -> AudioContext rate.
 const OUTPUT_SAMPLE_RATE = 24000;
 const MIC_CHUNK_MS = 40;
+/** Matches backend `chat_size` and README: text turns replayed on orb connect. */
+export const HISTORY_REPLAY_LIMIT = 20;
 
 export class S2sWsRealtimeClient extends EventTarget {
   /** @param {WsClientOptions} options */
@@ -904,13 +906,28 @@ export class S2sWsRealtimeClient extends EventTarget {
     });
   }
 
-  /** Replay saved user/assistant text into the live backend chat. */
+  /** Replay saved user/assistant text and compact tool summaries into the live backend chat. */
   _replayHistory() {
     const raw = this.options.historyMessages ?? [];
-    const textMsgs = raw.filter((m) =>
-      (m.role === "user" || m.role === "assistant") && typeof m.text === "string" && m.text.trim()
-    );
-    const tail = textMsgs.slice(-20);
+    /** @type {{role: "user" | "assistant", text: string}[]} */
+    const replayable = [];
+    for (const m of raw) {
+      const text = typeof m.text === "string" ? m.text.trim() : "";
+      if (!text) continue;
+      if (m.role === "user" || m.role === "assistant") {
+        replayable.push({ role: m.role, text });
+        continue;
+      }
+      if (m.role === "tool") {
+        const name = typeof m.name === "string" && m.name.trim() ? m.name.trim() : "tool";
+        const summary = text.length > 500 ? `${text.slice(0, 497)}...` : text;
+        replayable.push({
+          role: "assistant",
+          text: `[Earlier I used ${name}] ${summary}`,
+        });
+      }
+    }
+    const tail = replayable.slice(-HISTORY_REPLAY_LIMIT);
     for (const m of tail) {
       const type = m.role === "assistant" ? "output_text" : "input_text";
       this._send({
@@ -918,7 +935,7 @@ export class S2sWsRealtimeClient extends EventTarget {
         item: {
           type: "message",
           role: m.role,
-          content: [{ type, text: m.text.trim() }],
+          content: [{ type, text: m.text }],
         },
       });
     }

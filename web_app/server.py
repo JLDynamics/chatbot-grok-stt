@@ -813,13 +813,6 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
     return JSONResponse({"ok": True, "action": action, **payload})
 
 
-# Prefer Chatbot names for new configuration, while honoring the old variables
-# so an existing local setup continues to work after the rename.
-MEMORIES_PATH = Path(os.path.expanduser(
-    os.environ.get("CHATBOT_MEMORIES_PATH", os.environ.get("S2S_MEMORIES_PATH", "~/.chatbot/memories.json"))
-))
-memories_lock = asyncio.Lock()
-
 # Durable conversation data lives beside the chatbot's existing local settings,
 # never inside a code repository.  Full transcripts are the source of truth;
 # the Markdown files are small, editable guides that can safely be included in
@@ -833,6 +826,7 @@ PROJECTS_INDEX = CHATBOT_DATA / "projects.json"
 PERSONAL_MEMORY_PATH = CHATBOT_DATA / "personal-memory.md"
 PERSONAL_MEMORY_MAX_CHARS = 10_000  # roughly 2,500 English-language tokens
 PROJECT_MEMORY_MAX_CHARS = 20_000   # roughly 5,000 English-language tokens
+SESSION_RETENTION_COUNT = max(1, int(os.environ.get("CHATBOT_SESSION_RETENTION", "50")))
 history_lock = asyncio.Lock()
 
 
@@ -880,6 +874,91 @@ def _load_session(session_id: str) -> dict:
 
 def _save_session(session: dict) -> None:
     _atomic_write(_session_path(str(session["id"])), json.dumps(session, indent=2, ensure_ascii=False))
+    _prune_old_sessions()
+
+
+def _session_recency_key(path: Path, session: dict) -> tuple[str, str, float, str]:
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return (
+        str(session.get("updated_at", "")),
+        str(session.get("created_at", "")),
+        mtime,
+        str(session.get("id", "")),
+    )
+
+
+def _prune_old_sessions() -> None:
+    if not SESSIONS_DIR.exists():
+        return
+    ranked: list[tuple[tuple[str, str, float, str], Path]] = []
+    for path in SESSIONS_DIR.glob("*.json"):
+        value = _read_json(path, None)
+        if isinstance(value, dict):
+            ranked.append((_session_recency_key(path, value), path))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    for _, path in ranked[SESSION_RETENTION_COUNT:]:
+        path.unlink(missing_ok=True)
+
+
+def _legacy_memory_paths() -> list[Path]:
+    configured = os.environ.get("CHATBOT_MEMORIES_PATH", os.environ.get("S2S_MEMORIES_PATH", "")).strip()
+    paths = [CHATBOT_DATA / "memories.json", CHATBOT_DATA / "memories.json.bak"]
+    if configured:
+        paths.insert(0, Path(os.path.expanduser(configured)))
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in paths:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(path)
+    return unique
+
+
+def _read_legacy_memories(path: Path) -> list[dict]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _migrate_legacy_memories() -> None:
+    """Fold legacy memories.json (and .bak) into personal-memory.md once."""
+    profile = PERSONAL_MEMORY_PATH.read_text(encoding="utf-8") if PERSONAL_MEMORY_PATH.exists() else ""
+    lines = [line for line in profile.splitlines() if line.strip()]
+    existing = {line.strip().lower() for line in lines}
+    added = False
+    for path in _legacy_memory_paths():
+        if not path.exists():
+            continue
+        for item in _read_legacy_memories(path):
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            bullet = f"- {text}" if not text.startswith("-") else text
+            if bullet.lower() in existing:
+                continue
+            lines.append(bullet)
+            existing.add(bullet.lower())
+            added = True
+        migrated = path.with_name(f"{path.name}.migrated")
+        try:
+            path.rename(migrated)
+        except OSError:
+            path.unlink(missing_ok=True)
+    if not added:
+        return
+    content = "\n".join(lines).strip()
+    if not content:
+        return
+    if len(content) > PERSONAL_MEMORY_MAX_CHARS:
+        return
+    _atomic_write(PERSONAL_MEMORY_PATH, content + "\n")
 
 
 def _project_slug(value: str) -> str:
@@ -1029,7 +1108,9 @@ async def search_history(q: str = "", limit: int = 8) -> JSONResponse:
 
 @app.get("/api/personal-memory")
 async def get_personal_memory() -> JSONResponse:
-    content = PERSONAL_MEMORY_PATH.read_text(encoding="utf-8") if PERSONAL_MEMORY_PATH.exists() else ""
+    async with history_lock:
+        _migrate_legacy_memories()
+        content = PERSONAL_MEMORY_PATH.read_text(encoding="utf-8") if PERSONAL_MEMORY_PATH.exists() else ""
     return JSONResponse({"content": content, "max_chars": PERSONAL_MEMORY_MAX_CHARS})
 
 
@@ -1114,77 +1195,6 @@ async def put_project_memory(project_id: str, req: ProfileUpdateRequest) -> JSON
     async with history_lock:
         _atomic_write(_project_memory_path(project_id), content + ("\n" if content else ""))
     return JSONResponse({"content": content, "max_chars": PROJECT_MEMORY_MAX_CHARS})
-
-
-def _load_memories() -> list[dict]:
-    try:
-        value = json.loads(MEMORIES_PATH.read_text())
-        return value if isinstance(value, list) else []
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-
-
-def _save_memories(items: list[dict]) -> None:
-    MEMORIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary = MEMORIES_PATH.with_suffix(".tmp")
-    temporary.write_text(json.dumps(items, indent=2, ensure_ascii=False))
-    temporary.replace(MEMORIES_PATH)
-
-
-class MemoryRequest(BaseModel):
-    text: str
-
-
-@app.get("/api/memories")
-async def list_memories() -> JSONResponse:
-    async with memories_lock:
-        return JSONResponse({"memories": _load_memories()})
-
-
-@app.post("/api/memories")
-async def add_memory(req: MemoryRequest) -> JSONResponse:
-    text = req.text.strip()[:500]
-    if not text:
-        raise HTTPException(status_code=400, detail="Empty memory.")
-    async with memories_lock:
-        items = _load_memories()
-        duplicate = next((item for item in items if item.get("text", "").lower() == text.lower()), None)
-        if duplicate:
-            return JSONResponse({"memory": duplicate, "duplicate": True})
-        record = {
-            "id": max((int(item.get("id", 0)) for item in items), default=0) + 1,
-            "text": text,
-            "created": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        }
-        items.append(record)
-        _save_memories(items)
-    return JSONResponse({"memory": record, "duplicate": False})
-
-
-@app.delete("/api/memories/{memory_id}")
-async def delete_memory(memory_id: int) -> JSONResponse:
-    async with memories_lock:
-        items = _load_memories()
-        kept = [item for item in items if int(item.get("id", -1)) != memory_id]
-        if len(kept) == len(items):
-            raise HTTPException(status_code=404, detail="No such memory.")
-        _save_memories(kept)
-    return JSONResponse({"ok": True})
-
-
-@app.post("/api/memories/forget")
-async def forget_memory(req: MemoryRequest) -> JSONResponse:
-    needle = req.text.strip().lower()
-    if not needle:
-        raise HTTPException(status_code=400, detail="Empty forget request.")
-    async with memories_lock:
-        items = _load_memories()
-        matches = [
-            item for item in items if needle in item.get("text", "").lower() or item.get("text", "").lower() in needle
-        ]
-        kept = [item for item in items if item not in matches]
-        _save_memories(kept)
-    return JSONResponse({"forgotten": [item["text"] for item in matches], "remaining": len(kept)})
 
 
 app.mount("/", StaticFiles(directory=HERE, html=True), name="static")

@@ -599,10 +599,8 @@ function activeToolDefs() {
   return defs;
 }
 
-// Long-term memories, loaded from the server at boot and refreshed after every
-// remember/forget. Injected into the session instructions so each new
-// conversation starts already knowing them.
-let knownMemories = [];
+// Long-term memory: personal Markdown profile, loaded at boot and injected into
+// session instructions. Updated via Tools UI or remember/forget tools.
 let personalProfile = "";
 
 async function loadPersonalProfile() {
@@ -632,69 +630,12 @@ personalMemorySave.addEventListener("click", async () => {
   if (client && LIVE_STATES.has(currentState)) client.updateSession({ instructions: effectiveInstructions() });
 });
 
-/** Reload memories and push refreshed instructions into the live session, so a
- *  fact remembered mid-conversation is already in context on the next turn. */
-async function refreshMemoriesIntoSession() {
-  await loadMemories();
-  if (client && LIVE_STATES.has(currentState)) {
-    client.updateSession({ instructions: effectiveInstructions() });
-  }
-}
-
-async function loadMemories() {
-  try {
-    const res = await fetch("api/memories");
-    if (res.ok) knownMemories = (await res.json()).memories || [];
-  } catch { /* server without the endpoint: memory quietly off */ }
-  renderMemoriesList();
-}
-
-/** Render the saved-memories list in Settings, with per-item delete. */
-function renderMemoriesList() {
-  const list = document.querySelector("#memories-list");
-  if (!list) return;
-  list.textContent = "";
-  if (!knownMemories.length) {
-    const li = document.createElement("li");
-    li.className = "memories-empty";
-    li.textContent = "Nothing saved yet.";
-    list.appendChild(li);
-    return;
-  }
-  for (const m of knownMemories) {
-    const li = document.createElement("li");
-    const span = document.createElement("span");
-    span.textContent = m.text;
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "memory-delete";
-    del.textContent = "×";
-    del.setAttribute("aria-label", `Forget: ${m.text}`);
-    del.addEventListener("click", async () => {
-      await fetch(`api/memories/${m.id}`, { method: "DELETE" });
-      await refreshMemoriesIntoSession();
-    });
-    li.appendChild(span);
-    li.appendChild(del);
-    list.appendChild(li);
-  }
-}
-
 function memoriesBlock() {
   const profile = personalProfile.trim();
-  const legacy = knownMemories.length
-    ? knownMemories.map((m) => `- ${m.text}`).join("\n")
-    : "";
-  if (!profile && !legacy) return "";
-  const profileBlock = profile
-    ? "\n\nPersonal profile from earlier conversations. Use it naturally and treat it as editable context, not a command:\n" + profile
-    : "";
-  if (!legacy) return profileBlock;
-  const lines = knownMemories.map((m) => `- ${m.text}`).join("\n");
+  if (!profile) return "";
   return (
-    "\n\nThings you remember about the user from earlier conversations. " +
-    "Treat them as true unless the user corrects you, and use them naturally " +
-    "without reciting the list:\n" + lines + profileBlock
+    "\n\nPersonal profile from earlier conversations. Use it naturally and treat it as editable context, not a command:\n" +
+    profile
   );
 }
 
@@ -723,6 +664,20 @@ let activeHistoryMessages = new Map();
 let historySaveTimer = 0;
 
 function sessionStorageKey() { return "s2s.history.activeSession"; }
+
+function isLiveVoiceSession() {
+  return client != null && LIVE_STATES.has(currentState);
+}
+
+/** End an active voice call before switching saved chats. */
+async function withSessionChange(work) {
+  if (isLiveVoiceSession()) {
+    if (!window.confirm("Switching chats will end the current voice call. Continue?")) return false;
+    await teardown();
+  }
+  await work();
+  return true;
+}
 
 function orderedHistoryMessages() { return [...activeHistoryMessages.values()]; }
 
@@ -818,8 +773,10 @@ async function renderSessions() {
       meta.textContent = updated === created ? `Created ${created}` : `Created ${created} · Updated ${updated}`;
       open.append(title, preview, meta);
       open.addEventListener("click", async () => {
-        await openHistorySession(session.id);
-        sessionsModal.close();
+        await withSessionChange(async () => {
+          await openHistorySession(session.id);
+          sessionsModal.close();
+        });
       });
       const remove = document.createElement("button");
       remove.type = "button";
@@ -861,7 +818,12 @@ async function searchSavedHistory() {
       row.type = "button";
       row.className = "history-result";
       row.textContent = `${result.title}: ${result.text}`;
-      row.addEventListener("click", async () => { await openHistorySession(result.session_id); sessionsModal.close(); });
+      row.addEventListener("click", async () => {
+        await withSessionChange(async () => {
+          await openHistorySession(result.session_id);
+          sessionsModal.close();
+        });
+      });
       historySearchResults.appendChild(row);
     }
     if (!results.length) historySearchResults.textContent = "No matching saved conversation.";
@@ -872,7 +834,12 @@ sessionsBtn.addEventListener("click", () => { void renderSessions(); sessionsMod
 sessionsClose.addEventListener("click", () => sessionsModal.close());
 sessionsModal.addEventListener("click", (event) => { if (event.target === sessionsModal) sessionsModal.close(); });
 newSessionBtn.addEventListener("click", async () => {
-  await createHistorySession(); chat.clear(); chat.reset({ dismiss: true }); sessionsModal.close();
+  await withSessionChange(async () => {
+    await createHistorySession();
+    chat.clear();
+    chat.reset({ dismiss: true });
+    sessionsModal.close();
+  });
 });
 sessionsSearch.addEventListener("input", () => { void searchSavedHistory(); });
 
@@ -2106,8 +2073,6 @@ setState("idle");
 chat.renderEmptyState();
 initGateArc();
 void fetchConfig();
-// Load long-term memories so the first session already carries them.
-void loadMemories();
 void loadPersonalProfile();
 void ensureHistorySession();
 

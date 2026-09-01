@@ -20,8 +20,8 @@ class LanguageModelBaseArguments:
         metadata={"help": "The initial chat prompt to establish context for the language model."},
     )
     chat_size: int = field(
-        default=30,
-        metadata={"help": "Number of interactions assistant-user to keep for the chat."},
+        default=20,
+        metadata={"help": "Number of user turns to keep in the live voice chat (matches browser history replay)."},
     )
     stream_batch_sentences: int = field(
         default=3,

@@ -14,6 +14,7 @@ fi
 MODEL="${MODEL:-meta/muse-spark-1.2-contributor}"
 PORT="${PORT:-8766}"
 BATCH_SENTENCES="${BATCH_SENTENCES:-3}"
+CHAT_SIZE="${CHAT_SIZE:-20}"
 PROMPT="${PROMPT:-You are a concise, friendly voice assistant. Speak naturally without markdown or lists.}"
 VAD_THRESH="${VAD_THRESH:-0.60}"
 VAD_MIN_SILENCE_MS="${VAD_MIN_SILENCE_MS:-400}"
@@ -93,6 +94,7 @@ args+=(
   --no_responses_api_disable_thinking
   --init_chat_prompt "$PROMPT"
   --stream_batch_sentences "$BATCH_SENTENCES"
+  --chat_size "$CHAT_SIZE"
   --thresh "$VAD_THRESH"
   --min_silence_ms "$VAD_MIN_SILENCE_MS"
   --min_speech_ms "$VAD_MIN_SPEECH_MS"

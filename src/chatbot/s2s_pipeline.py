@@ -213,7 +213,7 @@ def _build_pipeline_unit(
     service = RealtimeService(
         text_prompt_queue=text_prompt,
         should_listen=should_listen,
-        chat_size=llm_config.config.get("chat_size", 30),
+        chat_size=llm_config.config.get("chat_size", 20),
         speculative_turns=speculative_turns,
         default_instructions=llm_config.config.get("init_chat_prompt"),
         turn_quality_gate=module_kwargs.turn_quality_gate,

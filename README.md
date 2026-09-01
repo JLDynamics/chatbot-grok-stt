@@ -59,9 +59,8 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `CODE_AGENT_CWD` | home folder | Default working folder for coding tasks |
 | `CODE_AGENT_MODEL` | `grok-4.6` | Model for coding-agent delegation (via Grok Build) |
 | `DESKTOP_CONTROL` | `on` | Server-side kill switch for explicit Mac actions |
-| `CHATBOT_MEMORIES_PATH` | `~/.chatbot/memories.json` | Legacy JSON memory file, if used |
-| `CHATBOT_WATERMARK` | off | AI-watermarking is disabled; VibeVoice runs without it |
 | `CHATBOT_DATA_DIR` | `~/.chatbot` | Saved chats, personal profile, and project notebooks |
+| `CHATBOT_SESSION_RETENTION` | `50` | Maximum saved conversations kept on disk |
 
 ### Search, fetch, and the Chrome bridge
 
