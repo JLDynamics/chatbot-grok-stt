@@ -1,6 +1,9 @@
 # Node dependencies (the pi coding agent lives here; restore with npm install)
 node_modules/
 
+# Verification proof artifacts (per-run screenshots and API captures)
+artifacts/verify-chatbot/runs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
