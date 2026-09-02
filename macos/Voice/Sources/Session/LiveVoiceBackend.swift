@@ -42,6 +42,10 @@ final class LiveVoiceBackend: VoiceBackend {
     private var activeResponseId = ""
     private var cancelledIds = Set<String>()
     private var lastOutputLevelAt = Date.distantPast
+    /// Personal memory profile + saved transcript, set by the controller
+    /// before start() so the live session opens with the same context as web.
+    var memoryProfile = ""
+    var historyMessages: [(role: String, text: String, name: String?)] = []
 
     init(
         url: URL,
@@ -54,11 +58,25 @@ final class LiveVoiceBackend: VoiceBackend {
         self.instructions = instructions
     }
 
+    func setHistory(_ messages: [(role: String, text: String, name: String?)]) {
+        historyMessages = messages
+    }
+
+    func refreshMemory() async {
+        await refreshInstructions()
+    }
+
     func start() async throws {
         await teardown(emitIdle: false)
         closed = false
         connection = .starting
         onState?(.connecting)
+
+        // Best-effort personal memory so the assistant knows the user like web.
+        // Never blocks voice: failure just means an empty profile this session.
+        if let profile = try? await ChatStore.shared.getPersonalMemory() {
+            memoryProfile = profile
+        }
 
         do {
             try await audio.start()
@@ -140,6 +158,7 @@ final class LiveVoiceBackend: VoiceBackend {
         cancelledIds.removeAll()
         muted = false
         micFramesSent = 0
+        micPending.removeAll(keepingCapacity: true)
         onInputLevel?(0)
         onOutputLevel?(0)
         if emitIdle { onState?(.idle) }
@@ -166,6 +185,10 @@ final class LiveVoiceBackend: VoiceBackend {
     }
 
     private var micFramesSent = 0
+    /// Batches tap buffers (~21ms) up to ~40ms per WS message, matching the
+    /// browser client's chunk size and halving MainActor/WS overhead.
+    private var micPending = [UInt8]()
+    private let micSendThreshold = 1280 // 40ms of 16kHz PCM16 mono
 
     private func appendMicPCM(_ rawBytes: [UInt8]) {
         guard connection == .ready, !muted, !closed else {
@@ -175,11 +198,15 @@ final class LiveVoiceBackend: VoiceBackend {
             return
         }
         let (bytes, _) = noiseGate.process(rawBytes)
+        micPending.append(contentsOf: bytes)
+        guard micPending.count >= micSendThreshold else { return }
+        let chunk = micPending
+        micPending.removeAll(keepingCapacity: true)
         micFramesSent += 1
         if micFramesSent % 25 == 1 {
-            NSLog("[LiveVoice] mic streaming frame #%d (bytes=%d)", micFramesSent, bytes.count)
+            NSLog("[LiveVoice] mic streaming frame #%d (bytes=%d)", micFramesSent, chunk.count)
         }
-        send(["type": "input_audio_buffer.append", "audio": Data(bytes).base64EncodedString()])
+        send(["type": "input_audio_buffer.append", "audio": Data(chunk).base64EncodedString()])
     }
 
     /// Receive off the MainActor. URLSession delivers on the session queue;
@@ -221,6 +248,7 @@ final class LiveVoiceBackend: VoiceBackend {
         switch type {
         case "session.created":
             sendSessionUpdate()
+            replayHistory()
             connection = .ready
             handshakeTimeout?.cancel()
             handshakeTimeout = nil
@@ -339,7 +367,8 @@ final class LiveVoiceBackend: VoiceBackend {
 
     private func sendSessionUpdate() {
         let tools = VoiceToolExecutor.shared.activeToolDefinitions()
-        let inst = VoiceToolExecutor.shared.effectiveInstructions(base: instructions)
+        let inst = VoiceToolExecutor.shared.effectiveInstructions(
+            base: instructions, memoryProfile: memoryProfile)
         var sess: [String: Any] = [
             "type": "realtime",
             "instructions": inst,
@@ -347,11 +376,51 @@ final class LiveVoiceBackend: VoiceBackend {
         ]
         if !tools.isEmpty {
             sess["tools"] = tools
+            sess["tool_choice"] = "auto"
         }
         send([
             "type": "session.update",
             "session": sess,
         ])
+    }
+
+    /// Push fresh instructions (e.g. after remember/forget changed memory).
+    private func refreshInstructions() async {
+        if let profile = try? await ChatStore.shared.getPersonalMemory() {
+            memoryProfile = profile
+        }
+        sendSessionUpdate()
+    }
+
+    /// Replay the saved transcript tail into the live conversation, mirroring
+    /// the web `_replayHistory` (last 20 user/assistant/tool messages).
+    private func replayHistory() {
+        var replayable: [(role: String, text: String)] = []
+        for m in historyMessages {
+            let text = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            if m.role == "user" || m.role == "assistant" {
+                replayable.append((m.role, text))
+            } else if m.role == "tool" {
+                let name = (m.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let shown = text.count > 500 ? String(text.prefix(497)) + "..." : text
+                replayable.append(("assistant", "[Earlier I used \(name.isEmpty ? "tool" : name)] \(shown)"))
+            }
+        }
+        for m in replayable.suffix(20) {
+            let type = m.role == "assistant" ? "output_text" : "input_text"
+            send([
+                "type": "conversation.item.create",
+                "item": [
+                    "type": "message",
+                    "role": m.role,
+                    "content": [["type": type, "text": m.text]],
+                ] as [String: Any],
+            ])
+        }
+        if !replayable.isEmpty {
+            NSLog("[LiveVoice] replayed %d saved message(s)", min(replayable.count, 20))
+        }
     }
 
     private func executeTool(name: String, argsJson: String, callId: String) {
@@ -363,6 +432,11 @@ final class LiveVoiceBackend: VoiceBackend {
             self.sendToolOutput(callId: callId, output: result.output)
             if let image = result.image {
                 self.sendUserImage(dataUrl: image)
+            }
+            // remember/forget rewrite the stored profile; push it into the
+            // live instructions like the web client does.
+            if name == "remember" || name == "forget" {
+                await self.refreshInstructions()
             }
             self.requestResponse()
             Task { @MainActor in
@@ -441,8 +515,12 @@ private final class PCMBridge: @unchecked Sendable {
         let chCount = Int(inFormat.channelCount)
         guard inFrames > 0, inFormat.sampleRate > 0, chCount > 0 else { return nil }
 
-        // Calibrated mic input gain (1.0 = unity; hardware/Apple AGC provides appropriate levels).
-        let gain: Float = 1.0
+        // Calibrated mic input gain. macOS input volume is often set low and
+        // browsers compensate with AGC; we get the raw tap, so apply a
+        // modest software boost (with hard clamping below). Override with:
+        //   defaults write com.jack.Voice voice.micGain -float 4.0
+        let configured = UserDefaults.standard.object(forKey: "voice.micGain") as? Double ?? 0
+        let gain: Float = configured > 0 ? Float(configured) : 3.0
         let ratio = micRate / inFormat.sampleRate
         let outFrames = max(1, Int((Double(inFrames) * ratio).rounded()))
         var pcm = [Int16](repeating: 0, count: outFrames)
