@@ -927,15 +927,30 @@ def _read_legacy_memories(path: Path) -> list[dict]:
     return value if isinstance(value, list) else []
 
 
+def _dedupe_profile_lines(content: str) -> str:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for line in lines:
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(line)
+    return "\n".join(unique)
+
+
 def _migrate_legacy_memories() -> None:
     """Fold legacy memories.json (and .bak) into personal-memory.md once."""
     profile = PERSONAL_MEMORY_PATH.read_text(encoding="utf-8") if PERSONAL_MEMORY_PATH.exists() else ""
     lines = [line for line in profile.splitlines() if line.strip()]
     existing = {line.strip().lower() for line in lines}
     added = False
+    pending_renames: list[Path] = []
     for path in _legacy_memory_paths():
         if not path.exists():
             continue
+        path_added = False
         for item in _read_legacy_memories(path):
             text = str(item.get("text", "")).strip()
             if not text:
@@ -946,19 +961,23 @@ def _migrate_legacy_memories() -> None:
             lines.append(bullet)
             existing.add(bullet.lower())
             added = True
-        migrated = path.with_name(f"{path.name}.migrated")
-        try:
-            path.rename(migrated)
-        except OSError:
-            path.unlink(missing_ok=True)
+            path_added = True
+        if path_added:
+            pending_renames.append(path)
     if not added:
         return
-    content = "\n".join(lines).strip()
+    content = _dedupe_profile_lines("\n".join(lines))
     if not content:
         return
     if len(content) > PERSONAL_MEMORY_MAX_CHARS:
         return
     _atomic_write(PERSONAL_MEMORY_PATH, content + "\n")
+    for path in pending_renames:
+        migrated = path.with_name(f"{path.name}.migrated")
+        try:
+            path.rename(migrated)
+        except OSError:
+            path.unlink(missing_ok=True)
 
 
 def _project_slug(value: str) -> str:
@@ -1116,7 +1135,9 @@ async def get_personal_memory() -> JSONResponse:
 
 @app.put("/api/personal-memory")
 async def put_personal_memory(req: ProfileUpdateRequest) -> JSONResponse:
-    content = req.content.strip()
+    async with history_lock:
+        _migrate_legacy_memories()
+        content = _dedupe_profile_lines(req.content.strip())
     if len(content) > PERSONAL_MEMORY_MAX_CHARS:
         raise HTTPException(status_code=400, detail="Personal memory is too long; consolidate it first.")
     async with history_lock:

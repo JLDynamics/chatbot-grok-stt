@@ -213,7 +213,7 @@ class RealtimeService:
         self,
         text_prompt_queue: Queue[TextPromptItem] | None = None,
         should_listen: ThreadingEvent | None = None,
-        chat_size: int = 10,
+        chat_size: int = 20,
         speculative_turns: SpeculativeTurnTracker | None = None,
         default_instructions: str | None = None,
         turn_quality_gate: bool = True,

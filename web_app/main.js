@@ -603,16 +603,26 @@ function activeToolDefs() {
 // session instructions. Updated via Tools UI or remember/forget tools.
 let personalProfile = "";
 
+function syncPersonalProfileUi(maxChars = 10_000) {
+  personalMemoryEditor.value = personalProfile;
+  personalMemoryCount.textContent = `${personalProfile.length.toLocaleString()} of ${maxChars.toLocaleString()} characters`;
+}
+
 async function loadPersonalProfile() {
   try {
     const res = await fetch("api/personal-memory");
     if (res.ok) {
       const profile = await res.json();
       personalProfile = profile.content || "";
-      personalMemoryEditor.value = personalProfile;
-      personalMemoryCount.textContent = `${personalProfile.length.toLocaleString()} of ${profile.max_chars.toLocaleString()} characters`;
+      syncPersonalProfileUi(profile.max_chars ?? 10_000);
     }
   } catch { /* the browser still works if an older server is running */ }
+}
+
+function profileHasFact(fact) {
+  const needle = fact.trim().toLowerCase();
+  if (!needle) return true;
+  return personalProfile.split("\n").some((line) => line.trim().toLowerCase().includes(needle));
 }
 
 personalMemoryEditor.addEventListener("input", () => {
@@ -624,8 +634,9 @@ personalMemorySave.addEventListener("click", async () => {
     body: JSON.stringify({ content: personalMemoryEditor.value }),
   });
   if (!res.ok) { personalMemoryCount.textContent = "Too long — make the profile more compact."; return; }
-  personalProfile = (await res.json()).content || "";
-  personalMemoryEditor.value = personalProfile;
+  const saved = await res.json();
+  personalProfile = saved.content || "";
+  syncPersonalProfileUi(saved.max_chars ?? 10_000);
   personalMemoryCount.textContent = `${personalProfile.length.toLocaleString()} characters saved`;
   if (client && LIVE_STATES.has(currentState)) client.updateSession({ instructions: effectiveInstructions() });
 });
@@ -674,6 +685,8 @@ async function withSessionChange(work) {
   if (isLiveVoiceSession()) {
     if (!window.confirm("Switching chats will end the current voice call. Continue?")) return false;
     await teardown();
+  } else {
+    await flushHistorySave();
   }
   await work();
   return true;
@@ -681,28 +694,50 @@ async function withSessionChange(work) {
 
 function orderedHistoryMessages() { return [...activeHistoryMessages.values()]; }
 
+/** Persist the active session immediately (used before switching chats or teardown). */
+async function flushHistorySave() {
+  window.clearTimeout(historySaveTimer);
+  historySaveTimer = 0;
+  if (!activeHistorySession) return;
+  const sessionId = activeHistorySession.id;
+  const messages = orderedHistoryMessages();
+  const firstUser = messages.find((message) => message.role === "user" && message.text);
+  const title = activeHistorySession.title === "New conversation" && firstUser
+    ? firstUser.text.replace(/\s+/g, " ").slice(0, 72) : activeHistorySession.title;
+  try {
+    const res = await fetch(`api/sessions/${sessionId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, messages }),
+    });
+    if (res.ok && activeHistorySession?.id === sessionId) {
+      activeHistorySession = (await res.json()).session;
+    }
+  } catch (err) { console.warn("[history] could not save session", err); }
+}
+
 function scheduleHistorySave() {
   if (!activeHistorySession) return;
   window.clearTimeout(historySaveTimer);
-  historySaveTimer = window.setTimeout(async () => {
-    try {
-      const messages = orderedHistoryMessages();
-      const firstUser = messages.find((message) => message.role === "user" && message.text);
-      const title = activeHistorySession.title === "New conversation" && firstUser
-        ? firstUser.text.replace(/\s+/g, " ").slice(0, 72) : activeHistorySession.title;
-      const res = await fetch(`api/sessions/${activeHistorySession.id}`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, messages }),
-      });
-      if (res.ok) activeHistorySession = (await res.json()).session;
-    } catch (err) { console.warn("[history] could not save session", err); }
-  }, 500);
+  historySaveTimer = window.setTimeout(() => { void flushHistorySave(); }, 500);
 }
 
 function recordHistoryTranscript(message) {
+  if (message.partial) return;
   const text = String(message.text || "").trim();
   if (!text) return;
   activeHistoryMessages.set(`${message.role}:${message.key}`, { role: message.role, text });
+  scheduleHistorySave();
+}
+
+function recordHistoryAssistantFinished(detail) {
+  if (detail.status !== "cancelled" || !detail.responseId) return;
+  const key = `assistant:${detail.responseId}`;
+  const text = String(detail.transcript || activeHistoryMessages.get(key)?.text || "").trim();
+  if (!text) {
+    activeHistoryMessages.delete(key);
+  } else {
+    activeHistoryMessages.set(key, { role: "assistant", text: `${text} [interrupted]` });
+  }
   scheduleHistorySave();
 }
 
@@ -712,6 +747,7 @@ function recordHistoryTool(message) {
 }
 
 async function createHistorySession(title = "New conversation") {
+  await flushHistorySave();
   const res = await fetch("api/sessions", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }),
   });
@@ -723,6 +759,7 @@ async function createHistorySession(title = "New conversation") {
 }
 
 async function openHistorySession(id) {
+  await flushHistorySave();
   const res = await fetch(`api/sessions/${id}`);
   if (!res.ok) throw new Error("Could not open that conversation.");
   const session = (await res.json()).session;
@@ -748,6 +785,7 @@ const chat = new ChatView({
   },
   onTranscript: recordHistoryTranscript,
   onToolResult: recordHistoryTool,
+  onAssistantFinished: recordHistoryAssistantFinished,
 });
 
 async function renderSessions() {
@@ -1095,7 +1133,7 @@ const desktopControlUi = bindDesktopControlToggle({
   },
 });
 
-toolsBtn.addEventListener("click", () => { syncToolsUi(); toolsModal.showModal(); });
+toolsBtn.addEventListener("click", () => { void loadPersonalProfile(); syncToolsUi(); toolsModal.showModal(); });
 toolsClose.addEventListener("click", () => toolsModal.close());
 toolsModal.addEventListener("click", (e) => {
   if (e.target === toolsModal) toolsModal.close();
@@ -1442,6 +1480,11 @@ async function runTool(name, argsJson, callId) {
         result.output = "No fact provided.";
       } else {
         const line = `- ${fact.replace(/^[-*]\s*/, "")}`;
+        if (profileHasFact(fact)) {
+          result.output = "That is already in the personal profile.";
+          client.sendToolOutput(callId, result.output);
+          return;
+        }
         const next = [personalProfile.trim(), line].filter(Boolean).join("\n");
         const res = await fetch("api/personal-memory", {
           method: "PUT",
@@ -1449,7 +1492,9 @@ async function runTool(name, argsJson, callId) {
           body: JSON.stringify({ content: next }),
         });
         if (res.ok) {
-          personalProfile = (await res.json()).content || next;
+          const saved = await res.json();
+          personalProfile = saved.content || next;
+          syncPersonalProfileUi(saved.max_chars ?? 10_000);
           result.output = "Saved to the personal profile.";
           if (client && LIVE_STATES.has(currentState)) client.updateSession({ instructions: effectiveInstructions() });
         } else {
@@ -1510,15 +1555,22 @@ async function runTool(name, argsJson, callId) {
     } else if (name === "forget") {
       const memory = typeof args.memory === "string" ? args.memory.trim() : "";
       const needle = memory.toLowerCase();
+      if (needle.length < 3) {
+        result.output = "Provide at least three characters so forget does not remove unrelated profile lines.";
+        client.sendToolOutput(callId, result.output);
+        return;
+      }
       const lines = personalProfile.split("\n");
-      const kept = lines.filter((line) => !needle || !line.toLowerCase().includes(needle));
+      const kept = lines.filter((line) => !line.toLowerCase().includes(needle));
       const res = await fetch("api/personal-memory", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: kept.join("\n").trim() }),
       });
       if (res.ok) {
-        personalProfile = (await res.json()).content || "";
+        const saved = await res.json();
+        personalProfile = saved.content || "";
+        syncPersonalProfileUi(saved.max_chars ?? 10_000);
         result.output = kept.length === lines.length ? "No matching personal memory found." : "Removed it from the personal profile.";
         if (client && LIVE_STATES.has(currentState)) client.updateSession({ instructions: effectiveInstructions() });
       } else {
@@ -1902,7 +1954,7 @@ async function doStart(audioContext = null) {
   // Resolve the target before touching mic/audio so configuration errors fail fast.
   const target = connectionTarget();
 
-  chat.reset();
+  chat.renderSavedMessages(orderedHistoryMessages());
   setState("connecting");
   setCaption("Asking for mic…", "muted");
 
@@ -2035,6 +2087,7 @@ function onClientStatus(status) {
 }
 
 async function teardown() {
+  await flushHistorySave();
   chat.reset({ dismiss: true });
   if (client) {
     try {

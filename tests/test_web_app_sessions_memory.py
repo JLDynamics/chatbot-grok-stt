@@ -31,6 +31,24 @@ def test_personal_memory_round_trip(isolated_client):
     assert "Likes tea" in body["content"]
 
 
+def test_personal_memory_dedupes_duplicate_lines(isolated_client):
+    isolated_client.put("/api/personal-memory", json={"content": "- Likes tea\n- likes tea\n- Coffee"})
+    body = isolated_client.get("/api/personal-memory").json()
+    lines = [line.strip().lower() for line in body["content"].splitlines() if line.strip()]
+    assert lines.count("- likes tea") == 1
+    assert "- coffee" in lines
+
+
+def test_legacy_migration_skips_rename_when_profile_too_long(isolated_client, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    legacy = data / "memories.json"
+    legacy.write_text(json.dumps([{"id": 1, "text": "This legacy fact cannot fit.", "created": "2026-08-12"}]))
+    monkeypatch.setattr(server, "PERSONAL_MEMORY_MAX_CHARS", 20)
+    isolated_client.get("/api/personal-memory")
+    assert legacy.exists()
+    assert not legacy.with_name("memories.json.migrated").exists()
+
+
 def test_legacy_memories_migrate_into_profile(isolated_client, tmp_path):
     data = tmp_path / "data"
     legacy = data / "memories.json"

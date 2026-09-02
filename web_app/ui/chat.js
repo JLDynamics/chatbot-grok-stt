@@ -25,7 +25,7 @@ const EMPTY_STATE_HTML = `<div id="chat-empty" class="chat-empty">${CHAT_BUBBLE_
 
 export class ChatView {
   /**
-   * @param {{ onUserAudioPlaybackChange?: (playing: boolean) => void, onTranscript?: (message: {role: string, text: string, key: string, partial: boolean}) => void, onToolResult?: (message: {role: string, text: string, name: string}) => void }} [options]
+   * @param {{ onUserAudioPlaybackChange?: (playing: boolean) => void, onTranscript?: (message: {role: string, text: string, key: string, partial: boolean}) => void, onToolResult?: (message: {role: string, text: string, name: string}) => void, onAssistantFinished?: (detail: { responseId: string, status: string, transcript?: string }) => void }} [options]
    */
   constructor(options = {}) {
     /** @type {HTMLButtonElement} */
@@ -54,6 +54,7 @@ export class ChatView {
     this._onUserAudioPlaybackChange = options.onUserAudioPlaybackChange ?? (() => {});
     this._onTranscriptSaved = options.onTranscript ?? (() => {});
     this._onToolSaved = options.onToolResult ?? (() => {});
+    this._onAssistantFinished = options.onAssistantFinished ?? (() => {});
     /** @type {HTMLElement | null} */
     this._activeUserBubble = null;
     this._activeUserItemId = "";
@@ -535,7 +536,7 @@ export class ChatView {
         this._updateHistMsg(entry.hist, d.text, false);
         this._bumpDismiss(entry.bubble);
       }
-      this._onTranscriptSaved({ role: "assistant", text: d.text, key: rid, partial: false });
+      this._onTranscriptSaved({ role: "assistant", text: d.text, key: rid, partial: d.partial });
       this._markUnread();
     }
   }
@@ -571,10 +572,12 @@ export class ChatView {
         this._updateHistMsg(hist, transcript, false);
       }
       if (hist) this._markHistInterrupted(hist);
+      this._onAssistantFinished({ responseId, status, transcript });
       this._asstByResp.delete(responseId);
       return;
     }
 
+    this._onAssistantFinished({ responseId, status, transcript });
     // Any other terminal close (completed / failed / incomplete / …): just
     // release the map entry. The bubble already auto-dismisses on its timer and
     // the history row persists as the conversation log. Crucially we do NOT
