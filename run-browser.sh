@@ -62,6 +62,7 @@ echo "Open http://localhost:$WEB_PORT and click the orb."
 echo "Ctrl+C stops both processes."
 CHATBOT_VOICE_URL="ws://localhost:$PORT/v1/realtime" \
   STARTUP_GREETING="${STARTUP_GREETING:-}" \
+  WEB_PORT="$WEB_PORT" \
   uv run uvicorn --app-dir web_app server:app --host 127.0.0.1 --port "$WEB_PORT" \
   2>&1 | tee "$WEB_LOG" &
 web_pid=$!

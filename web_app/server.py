@@ -43,6 +43,7 @@ MAX_RESULTS = 5
 FETCH_MAX_BYTES = 2_000_000
 FETCH_MAX_CHARS = 20_000
 FETCH_TIMEOUT_S = 15.0
+WEB_PORT = int(os.environ.get("WEB_PORT", os.environ.get("PORT_WEB", "7860")))
 
 
 class BrowserPage(BaseModel):
@@ -79,7 +80,7 @@ def _validate_browser_page(page: BrowserPage) -> None:
     host = (parsed.hostname or "").lower()
     if parsed.scheme not in {"http", "https"} or not host:
         raise HTTPException(status_code=400, detail="Only HTTP(S) pages are accepted.")
-    if host in {"127.0.0.1", "localhost"} and parsed.port == 7860:
+    if host in {"127.0.0.1", "localhost"} and parsed.port == WEB_PORT:
         raise HTTPException(status_code=400, detail="The chatbot page cannot bridge itself.")
     public, reason = _is_public_url(page.url)
     if not public:
@@ -213,12 +214,13 @@ async def browser_bridge_status() -> JSONResponse:
     """Return bridge freshness/version metadata without exposing page text."""
     entry = _fresh_browser_page_entry()
     if not entry:
-        return JSONResponse({"connected": False, "expected_version": "0.4.1"})
+        return JSONResponse({"connected": False, "expected_version": "0.4.1", "web_port": WEB_PORT})
     page, age_s = entry
     return JSONResponse(
         {
             "connected": True,
             "expected_version": "0.4.1",
+            "web_port": WEB_PORT,
             "bridge_version": page.bridge_version or "legacy",
             "age_ms": round(age_s * 1000),
             "content_type": page.content_type,
@@ -238,6 +240,7 @@ def config() -> dict:
         "startupGreeting": STARTUP_GREETING,
         "codeAgent": CODE_AGENT_ENABLED,
         "desktopControl": _desktop_control_available(),
+        "webPort": WEB_PORT,
     }
 
 
@@ -765,8 +768,8 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
     app_name = req.app.strip() if req.app else None
     if app_name and (len(app_name) > 120 or any(ord(char) < 32 for char in app_name)):
         raise HTTPException(status_code=400, detail="The app or window name is invalid.")
-    sensitive_scope = app_name if action == "screenshot" else None
-    if action in {"click", "type", "key", "hotkey", "screenshot"} and await _screen_scope_looks_sensitive(
+    sensitive_scope = app_name if action in {"screenshot", "scroll", "drag"} else None
+    if action in {"click", "type", "key", "hotkey", "scroll", "drag", "screenshot"} and await _screen_scope_looks_sensitive(
         sensitive_scope
     ):
         raise HTTPException(status_code=451, detail="Desktop control is blocked on sign-in and payment windows.")
@@ -775,7 +778,7 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
         return JSONResponse({"ok": True, "action": action, **captured})
     text = req.text or ""
     if action == "scroll":
-        amount = req.amount if req.amount else 15
+        amount = req.amount if req.amount else 5
         expression = ACTIONS[action].format(dy=-abs(amount) if amount >= 0 else abs(amount))
     elif action == "drag":
         coords = req.coords or []

@@ -63,6 +63,7 @@ fi
 echo "Starting web app on port $WEB_PORT..." >&2
 log_file="$STATE_DIR/web.log"
 CHATBOT_VOICE_URL="ws://127.0.0.1:$VOICE_PORT/v1/realtime" \
+  WEB_PORT="$WEB_PORT" \
   detach uv run uvicorn --app-dir web_app server:app --host 127.0.0.1 --port "$WEB_PORT"
 
 for _ in $(seq 1 60); do

@@ -400,8 +400,8 @@ function loadTools() {
       localStorage.setItem(STORAGE_KEYS.camDefaultReset, "1");
       if (raw.camera_snapshot) raw.camera_snapshot = false;
     }
-    // Earlier versions stored Pi as off by default. Turn it on once for the
-    // new default, while preserving any choice the user makes from now on.
+    // Earlier versions stored the coding agent as off by default. Turn it on once
+    // for the new default, while preserving any choice the user makes from now on.
     if (!localStorage.getItem(STORAGE_KEYS.codeDefaultReset)) {
       localStorage.setItem(STORAGE_KEYS.codeDefaultReset, "1");
       raw.code_agent = true;
@@ -409,7 +409,7 @@ function loadTools() {
     return {
       web_search: raw.web_search ?? true,
       camera_snapshot: raw.camera_snapshot ?? false,
-      // Pi is available by default; Jack can turn it off from Tools at any time.
+      // Grok is available by default; turn it off from Tools at any time.
       code_agent: raw.code_agent ?? true,
       // Off by default: reads whatever window is in front of you.
       desktop_control: readDesktopControlPreference(raw),
@@ -497,6 +497,8 @@ const toolReadSwitch = $("#tool-read");
 const toolWebRow = $("#tool-web-row");
 /** @type {HTMLElement} */
 const toolWebHint = $("#tool-web-hint");
+/** @type {HTMLElement} */
+const toolCodeRow = $("#tool-code-row");
 const toolCodeHint = $("#tool-code-hint");
 /** @type {HTMLElement} */
 /** @type {HTMLElement} */
@@ -567,6 +569,8 @@ let toolsEnabled = loadTools();
 let serverSearchKey = false;
 // True only when the server enables Desktop control and can find its harness.
 let serverDesktopControlAvailable = false;
+// True only when the server enables the Grok coding agent.
+let serverCodeAgentAvailable = true;
 // A user-supplied key (fallback when the deploy has none). localStorage only.
 let userSearchKey = localStorage.getItem(STORAGE_KEYS.searchKey) || "";
 /** @type {MediaStream | null} */
@@ -583,10 +587,11 @@ function searchAvailable() {
 function activeToolDefs() {
   const defs = [];
   if (toolsEnabled.web_search && searchAvailable()) defs.push(TOOL_DEFS.web_search);
+  if (toolsEnabled.camera_snapshot) defs.push(TOOL_DEFS.camera_snapshot);
   defs.push(TOOL_DEFS.web_fetch);
   defs.push(TOOL_DEFS.inspect_current_context);
   defs.push(TOOL_DEFS.read_article);
-  if (toolsEnabled.code_agent) defs.push(TOOL_DEFS.code_agent);
+  if (toolsEnabled.code_agent && serverCodeAgentAvailable) defs.push(TOOL_DEFS.code_agent);
   addDesktopControlTool(
     defs,
     TOOL_DEFS.control_screen,
@@ -1098,10 +1103,15 @@ function syncToolsUi() {
   toolWebSwitch.checked = toolsEnabled.web_search && avail;
   toolWebSwitch.disabled = !avail;
   toolWebRow.classList.toggle("disabled", !avail);
-  toolCodeSwitch.checked = toolsEnabled.code_agent;
-  toolCodeHint.textContent = toolsEnabled.code_agent
-    ? "On. Pi can handle coding and project tasks when you ask."
-    : "Off. Turn this back on when you want Pi available for project work.";
+  const codeAvail = serverCodeAgentAvailable;
+  toolCodeSwitch.checked = toolsEnabled.code_agent && codeAvail;
+  toolCodeSwitch.disabled = !codeAvail;
+  toolCodeRow.classList.toggle("disabled", !codeAvail);
+  toolCodeHint.textContent = !codeAvail
+    ? "Unavailable. The server has the coding agent turned off."
+    : toolsEnabled.code_agent
+      ? "On. Grok can handle coding and project tasks when you ask."
+      : "Off. Turn this back on when you want Grok available for project work.";
   desktopControlUi.sync();
 
   if (serverSearchKey) {
@@ -1150,6 +1160,10 @@ toolWebSwitch.addEventListener("change", () => {
 });
 
 toolCodeSwitch.addEventListener("change", () => {
+  if (toolCodeSwitch.checked && !serverCodeAgentAvailable) {
+    toolCodeSwitch.checked = false;
+    return;
+  }
   toolsEnabled.code_agent = toolCodeSwitch.checked;
   saveTools();
   pushToolsToSession();
@@ -1171,16 +1185,9 @@ searchKeyInput.addEventListener("input", () => {
     toolWebSwitch.checked = false;
     saveTools();
     pushToolsToSession();
-  }
-  // ...and gaining one re-enables it. Without this the two directions are
-  // asymmetric: loading the page with no key force-saves web_search:false, so
-  // pasting a key afterwards leaves the tool silently off and the assistant
-  // keeps saying it cannot search — with no visible reason why.
-  if (avail && !toolsEnabled.web_search) {
-    toolsEnabled.web_search = true;
-    toolWebSwitch.checked = true;
-    saveTools();
-    pushToolsToSession();
+  } else {
+    toolWebSwitch.checked = toolsEnabled.web_search && avail;
+    if (avail && toolsEnabled.web_search) pushToolsToSession();
   }
   toolWebHint.textContent = userSearchKey
     ? "Using your key — stored in this browser only."
@@ -1466,7 +1473,8 @@ async function runTool(name, argsJson, callId) {
               `missed. Do not tell the user it worked. Read the screen to see what is ` +
               `actually there, then try a different label or approach.`;
         } else {
-          result.output = `Did ${j.action}.` + (j.output ? ` ${j.output}` : "");
+          const detail = j.result || j.output;
+          result.output = `Did ${j.action}.` + (detail ? ` ${detail}` : "");
         }
       } else {
         let detail = String(res.status);
@@ -1627,12 +1635,15 @@ async function execWebSearch(query) {
 /** Learn server config (search key + connection target), then refresh the UI. */
 async function fetchConfig() {
   const previousDesktopAvailability = serverDesktopControlAvailable;
+  const previousSearchAvailability = searchAvailable();
+  const previousCodeAgentAvailability = serverCodeAgentAvailable;
   try {
     const res = await fetch("api/config");
     if (res.ok) {
       const json = await res.json();
       serverSearchKey = !!json.search;
       serverDesktopControlAvailable = !!json.desktopControl;
+      serverCodeAgentAvailable = json.codeAgent !== false;
       pinnedUrl = (json.chatbotUrl || json.s2sUrl || "").trim();
       startupGreeting = typeof json.startupGreeting === "string"
         ? json.startupGreeting.trim()
@@ -1644,7 +1655,11 @@ async function fetchConfig() {
   }
   if (DEBUG) console.debug(`[ui] config: pinnedUrl=${pinnedUrl}`);
   syncToolsUi();
-  if (previousDesktopAvailability !== serverDesktopControlAvailable) pushToolsToSession();
+  const toolsChanged =
+    previousDesktopAvailability !== serverDesktopControlAvailable ||
+    previousSearchAvailability !== searchAvailable() ||
+    previousCodeAgentAvailability !== serverCodeAgentAvailable;
+  if (toolsChanged) pushToolsToSession();
   syncConnectionUi();
 }
 

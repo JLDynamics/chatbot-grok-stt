@@ -28,6 +28,8 @@ def test_config_exposes_retained_browser_capabilities(monkeypatch, tmp_path):
     assert data["s2sUrl"].endswith("/v1/realtime")
     assert data["allowDirect"] is False
     assert data["desktopControl"] is True
+    assert data["codeAgent"] is True
+    assert data["webPort"] == server.WEB_PORT
 
     monkeypatch.setattr(server, "DESKTOP_CONTROL_ENABLED", False)
     assert client.get("/api/config").json()["desktopControl"] is False
@@ -487,11 +489,13 @@ def test_context_preflight_routes_without_page_text_or_screenshot(monkeypatch):
 
     main = (WEB_APP_DIR / "main.js").read_text()
     assert "no additional approval was required" in main
-    assert "Do not ask the user for approval and do not fall back to a screenshot" in main
+    assert "do not ask for approval and do not offer or call" in main
+    assert "a screenshot as a fallback" in main
 
     async def notes_context():
         return {"available": True, "sensitive": False, "app": "Notes", "window_title": "Shopping list"}
 
+    server.browser_pages.clear()
     monkeypatch.setattr(server, "_desktop_frontmost_context", notes_context)
     other_app = client.post("/api/context/preflight", json={"include_desktop": True}).json()
     assert other_app["route_hint"] == "control_screen_screenshot"
@@ -619,3 +623,131 @@ def test_chrome_bridge_rejects_private_network_pages():
     )
     assert response.status_code == 400
     assert "private or loopback" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_search_requires_key_and_returns_serper_results(monkeypatch):
+    monkeypatch.setattr(server, "SERPER_KEY", "")
+    monkeypatch.setattr(server, "TAVILY_KEY", "")
+    assert client.post("/api/search", json={"query": "chatbot"}).status_code == 503
+
+    monkeypatch.setattr(server, "SERPER_KEY", "serper-test")
+    response = httpx.Response(
+        200,
+        json={
+            "organic": [
+                {"title": "Example", "snippet": "A snippet", "link": "https://example.com"},
+            ],
+            "answerBox": {"answer": "42"},
+        },
+        request=httpx.Request("POST", server.SERPER_URL),
+    )
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def post(self, url, headers=None, json=None):
+            assert url == server.SERPER_URL
+            assert headers["X-API-KEY"] == "serper-test"
+            assert json["q"] == "latest news"
+            return response
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+    body = client.post("/api/search", json={"query": "latest news"}).json()
+    assert body["answer"] == "42"
+    assert body["results"][0]["url"] == "https://example.com"
+
+
+@pytest.mark.asyncio
+async def test_search_prefers_user_tavily_key(monkeypatch):
+    monkeypatch.setattr(server, "SERPER_KEY", "server-serper")
+    monkeypatch.setattr(server, "TAVILY_KEY", "")
+    response = httpx.Response(
+        200,
+        json={"answer": "from tavily", "results": [{"title": "T", "content": "C", "url": "https://t.test"}]},
+        request=httpx.Request("POST", server.TAVILY_URL),
+    )
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def post(self, url, headers=None, json=None):
+            assert url == server.TAVILY_URL
+            assert headers["Authorization"] == "Bearer tvly-user"
+            return response
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+    body = client.post("/api/search", json={"query": "weather", "key": "tvly-user"}).json()
+    assert body["answer"] == "from tavily"
+    assert body["results"][0]["snippet"].startswith("C")
+
+
+def test_code_agent_disabled_when_turned_off(monkeypatch):
+    monkeypatch.setattr(server, "CODE_AGENT_ENABLED", False)
+    response = client.post("/api/code", json={"task": "say hi"})
+    assert response.status_code == 503
+    assert "turned off" in response.json()["detail"]
+
+
+def test_code_agent_requires_task_and_grok(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "CODE_AGENT_ENABLED", True)
+    assert client.post("/api/code", json={"task": "  "}).status_code == 400
+
+    grok = tmp_path / "grok"
+    grok.write_text('#!/bin/sh\necho \'{"text":"done"}\'\n')
+    grok.chmod(0o700)
+    monkeypatch.setattr(server, "GROK_BIN", grok)
+
+    body = client.post("/api/code", json={"task": "build it"}).json()
+    assert body["ok"] is True
+    assert body["output"] == "done"
+
+
+def test_desktop_scroll_blocks_sensitive_scope(monkeypatch, tmp_path):
+    _enable_desktop_control(monkeypatch, tmp_path)
+
+    async def sensitive_scope(_app=None):
+        return "password"
+
+    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", sensitive_scope)
+    response = client.post("/api/desktop/act", json={"action": "scroll", "amount": 5})
+    assert response.status_code == 451
+
+    response = client.post(
+        "/api/desktop/act",
+        json={"action": "drag", "coords": [1, 2, 3, 4]},
+    )
+    assert response.status_code == 451
+
+
+def test_desktop_scroll_defaults_to_five_lines(monkeypatch, tmp_path):
+    _enable_desktop_control(monkeypatch, tmp_path)
+
+    async def safe_scope(_app=None):
+        return None
+
+    captured: list[str] = []
+
+    async def fake_harness(script, _timeout):
+        captured.append(script)
+        return 0, json.dumps({"ok": True, "result": "ok", "changed": [], "verified": False})
+
+    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", safe_scope)
+    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    response = client.post("/api/desktop/act", json={"action": "scroll"})
+    assert response.status_code == 200
+    assert "scroll(dy=-5)" in captured[0]
