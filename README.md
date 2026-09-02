@@ -118,7 +118,7 @@ screenshots remain limited to explicit control or visual requests.
 ## Optional tools
 
 - **Coding agent** runs the locally installed [Grok Build](https://x.ai/cli) `grok` CLI (model `grok-4.6`), which also has the `desktop-harness` skill for Mac control.
-- **Desktop control** uses `~/.local/bin/desktop-harness` and requires macOS Accessibility permission for actions plus Screen Recording permission for screenshots. The server kill switch defaults on, but each browser starts with the tool off; enable it in **Tools → Desktop control**. It acts or captures only when explicitly requested. A screenshot can target the main display or a named visible app/window; sensitive sign-in/payment scopes remain blocked.
+- **Desktop control** uses `~/.local/bin/desktop-harness` and requires macOS Accessibility permission for actions plus Screen Recording permission for screenshots. The server kill switch defaults on, and each browser starts with the tool on when desktop-harness is available; disable it in **Tools → Desktop control** if you prefer. It acts or captures only when explicitly requested. A screenshot can target the main display or a named visible app/window; sensitive sign-in/payment scopes remain blocked.
 - **Memory** uses an editable personal Markdown profile and saved conversations. The assistant can update it when you say “remember…” or “forget…”.
 
 ## Development

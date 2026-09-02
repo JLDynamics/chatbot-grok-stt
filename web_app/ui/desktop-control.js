@@ -6,7 +6,7 @@
  * @param {Record<string, unknown>} stored
  */
 export function readDesktopControlPreference(stored) {
-  return Boolean(stored.desktop_control ?? stored.read_screen ?? false);
+  return Boolean(stored.desktop_control ?? stored.read_screen ?? true);
 }
 
 /** @param {boolean} preferred @param {boolean} serverAvailable */

@@ -65,7 +65,7 @@ const binding = bindDesktopControlToggle({
   },
 });
 
-if (input.checked || activeNames().length) throw new Error("fresh state must start disabled");
+if (!input.checked || !activeNames().length) throw new Error("fresh state must start enabled");
 input.checked = true;
 input.dispatchEvent(new Event("change"));
 if (!input.checked) throw new Error("checkbox did not remain enabled");

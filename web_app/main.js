@@ -108,6 +108,7 @@ const STORAGE_KEYS = {
   // Marks that the one-time camera_snapshot reset in loadTools() has run.
   camDefaultReset: "s2s.ws.camDefaultReset",
   codeDefaultReset: "s2s.ws.codeDefaultReset",
+  desktopDefaultReset: "s2s.ws.desktopDefaultReset",
   searchKey: "s2s.ws.searchKey",
   noiseGate: "s2s.ws.noiseGate",
   audioInputId: "s2s.audio.inputId",
@@ -406,16 +407,21 @@ function loadTools() {
       localStorage.setItem(STORAGE_KEYS.codeDefaultReset, "1");
       raw.code_agent = true;
     }
+    // Earlier builds defaulted desktop control off. Turn it on once, then respect
+    // the user's choice from Tools afterward.
+    if (!localStorage.getItem(STORAGE_KEYS.desktopDefaultReset)) {
+      localStorage.setItem(STORAGE_KEYS.desktopDefaultReset, "1");
+      raw.desktop_control = true;
+    }
     return {
       web_search: raw.web_search ?? true,
       camera_snapshot: raw.camera_snapshot ?? false,
       // Grok is available by default; turn it off from Tools at any time.
       code_agent: raw.code_agent ?? true,
-      // Off by default: reads whatever window is in front of you.
       desktop_control: readDesktopControlPreference(raw),
     };
   } catch {
-    return { web_search: true, camera_snapshot: false, code_agent: true, desktop_control: false };
+    return { web_search: true, camera_snapshot: false, code_agent: true, desktop_control: true };
   }
 }
 
