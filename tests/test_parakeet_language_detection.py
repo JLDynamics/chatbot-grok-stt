@@ -63,7 +63,7 @@ def test_detect_language_from_short_english_text_uses_lingua_successfully(text):
     assert handler._detect_language_from_text(text) == "en"
 
 
-def test_detect_language_from_long_norwegian_text_maps_nb_to_no():
+def test_detect_language_from_long_norwegian_text_stays_within_english_model():
     if not parakeet_tdt_handler.LINGUA_AVAILABLE:
         pytest.skip("lingua-language-detector is not installed")
 
@@ -74,4 +74,5 @@ def test_detect_language_from_long_norwegian_text_maps_nb_to_no():
         "i et realistisk avsnitt med vanlige ord og tegn."
     )
 
-    assert handler._detect_language_from_text(text) == "no"
+    # English-only STT never reports a non-English language code.
+    assert handler._detect_language_from_text(text) in {None, "en"}

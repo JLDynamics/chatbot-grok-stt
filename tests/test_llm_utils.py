@@ -67,7 +67,7 @@ def test_parakeet_default_stt_is_fully_covered():
     """Explicit guard for the default backend, independent of the parametrized sweep."""
     parakeet = importlib.import_module("chatbot.STT.parakeet_tdt_handler")
 
-    assert len(parakeet.SUPPORTED_LANGUAGES) == 25
+    assert len(parakeet.SUPPORTED_LANGUAGES) == 1
     assert set(parakeet.SUPPORTED_LANGUAGES) <= set(WHISPER_LANGUAGE_TO_LLM_LANGUAGE)
 
 

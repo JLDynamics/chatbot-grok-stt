@@ -29,7 +29,7 @@ npm install
 
 Open `http://127.0.0.1:7860`, allow microphone access, and click the orb. The first launch may download the Parakeet and TTS model files.
 
-The default model path is `meta/muse-spark-1.2-contributor` through OpenRouter. Parakeet STT and the TTS model run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language); set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
+The default model path is `meta/muse-spark-1.2-contributor` through OpenRouter. **Parakeet TDT 1.1B** STT and the TTS model run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language); set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
 
 ## Configuration
 
@@ -49,6 +49,8 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `VIBEVOICE_CFG_SCALE` | `1.5` | Classifier-free guidance; higher is more distinct but harsher |
 | `KOKORO_DENOISE_FLOOR` / `VIBEVOICE_DENOISE_FLOOR` | `0.04` | Spectral-denoiser suppression floor; lower removes more hiss (slight risk of a processed texture) |
 | `PORT` / `WEB_PORT` | `8766` / `7860` | Realtime and browser ports |
+| `PARAKEET_MODEL` | `mlx-community/parakeet-tdt-1.1b` | MLX Parakeet STT model (English) |
+| `PARAKEET_LANG` | `en` | Parakeet language hint |
 | `VAD_THRESH` | `0.60` | VAD confidence threshold; higher = fewer false voice triggers |
 | `VAD_MIN_SPEECH_MS` | `600` | Sustained speech (ms) before a user turn / barge-in is confirmed. Raise to soften barge-in (so brief noises or the assistant's own echo don't cut a reply) |
 | `VAD_MIN_SILENCE_MS` | `400` | Silence (ms) before a spoken turn is considered finished |

@@ -44,7 +44,7 @@ WHISPER_LANGUAGE_TO_LLM_LANGUAGE = {
     "pl": "polish",
     "it": "italian",
     "nl": "dutch",
-    # The remaining languages Parakeet TDT v3 (the default STT) detects and reports.
+    # The languages Parakeet TDT 1.1B (the default STT) is configured to report.
     "ru": "russian",
     "uk": "ukrainian",
     "cs": "czech",

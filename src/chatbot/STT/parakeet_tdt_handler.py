@@ -1,9 +1,9 @@
 """
 Parakeet TDT Speech-to-Text Handler
 
-Uses mlx-audio with mlx-community/parakeet-tdt-0.6b-v3 on Apple Silicon.
+Uses mlx-audio with mlx-community/parakeet-tdt-1.1b on Apple Silicon.
 
-Model supports 25 European languages with automatic language detection.
+The 1.1B model transcribes English speech (lowercase alphabet).
 """
 
 from __future__ import annotations
@@ -33,33 +33,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 console = Console()
 
-# Parakeet TDT v3 supports 25 European languages
+# Parakeet TDT 1.1B is trained for English transcription.
 SUPPORTED_LANGUAGES = [
     "en",
-    "de",
-    "fr",
-    "es",
-    "it",
-    "pt",
-    "nl",
-    "pl",
-    "ru",
-    "uk",
-    "cs",
-    "sk",
-    "hu",
-    "ro",
-    "bg",
-    "hr",
-    "sl",
-    "sr",
-    "da",
-    "no",
-    "sv",
-    "fi",
-    "et",
-    "lv",
-    "lt",
 ]
 
 # Lingua uses "nb" (Bokmål) for Norwegian instead of "no"
@@ -88,13 +64,12 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
     """
     Handles Speech-to-Text using NVIDIA Parakeet TDT model.
 
-    Parakeet TDT 0.6B v3 is a 600M parameter multilingual ASR model
-    supporting 25 European languages with automatic language detection.
+    Parakeet TDT 1.1B is a ~1.1B-parameter English ASR model.
     """
 
     def setup(
         self,
-        model_name: str = "mlx-community/parakeet-tdt-0.6b-v3",
+        model_name: str = "mlx-community/parakeet-tdt-1.1b",
         language: Optional[str] = None,
         gen_kwargs: dict[str, Any] = {},
         enable_live_transcription: bool = False,
@@ -349,7 +324,10 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
 
         code = detected.iso_code_639_1.name.lower()
         # Map back lingua-specific codes to our supported codes
-        return {v: k for k, v in _LINGUA_CODE_MAP.items()}.get(code, code)
+        code = {v: k for k, v in _LINGUA_CODE_MAP.items()}.get(code, code)
+        if code not in SUPPORTED_LANGUAGES:
+            return None
+        return code
 
     @contextmanager
     def _compute_lock_context(self, handler_name: str, timeout: float) -> Iterator[bool]:

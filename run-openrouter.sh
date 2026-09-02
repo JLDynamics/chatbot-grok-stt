@@ -21,6 +21,7 @@ VAD_MIN_SILENCE_MS="${VAD_MIN_SILENCE_MS:-400}"
 VAD_MIN_SPEECH_MS="${VAD_MIN_SPEECH_MS:-600}"
 VAD_SPEECH_PAD_MS="${VAD_SPEECH_PAD_MS:-500}"
 VAD_SHORT_SEGMENT_MERGE_MS="${VAD_SHORT_SEGMENT_MERGE_MS:-400}"
+PARAKEET_MODEL="${PARAKEET_MODEL:-mlx-community/parakeet-tdt-1.1b}"
 PARAKEET_LANG="${PARAKEET_LANG:-en}"
 
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
@@ -100,6 +101,7 @@ args+=(
   --min_speech_ms "$VAD_MIN_SPEECH_MS"
   --speech_pad_ms "$VAD_SPEECH_PAD_MS"
   --short_segment_merge_ms "$VAD_SHORT_SEGMENT_MERGE_MS"
+  --parakeet_tdt_model_name "$PARAKEET_MODEL"
   --parakeet_tdt_language "$PARAKEET_LANG"
   --enable_live_transcription
 )
