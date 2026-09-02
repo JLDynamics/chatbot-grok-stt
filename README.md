@@ -54,7 +54,7 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `VAD_MIN_SILENCE_MS` | `400` | Silence (ms) before a spoken turn is considered finished |
 | `PROMPT` | concise voice prompt | Backend system prompt |
 | `STARTUP_GREETING` | empty | Optional greeting instruction on connection |
-| `TAVILY_API_KEY` / `SERPER_API_KEY` | empty | Enables the app's local search function |
+| `TINYFISH_API_KEY` / `TAVILY_API_KEY` / `SERPER_API_KEY` | empty | Enables local web search; TinyFish also powers page fetch |
 | `CODE_AGENT` | `on` | Set `off` to hide coding-agent delegation |
 | `CODE_AGENT_CWD` | home folder | Default working folder for coding tasks |
 | `CODE_AGENT_MODEL` | `grok-4.6` | Model for coding-agent delegation (via Grok Build) |
@@ -66,7 +66,7 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 
 These solve different jobs:
 
-- **Local web search**: Tavily (or Serper) returns result titles, short snippets, and URLs to the OpenRouter model when a search key is configured.
+- **Local web search**: TinyFish (preferred), Tavily, or Serper returns result titles, short snippets, and URLs to the OpenRouter model when a search key is configured. Page fetch uses TinyFish when its key is set.
 - **Web fetch**: reads the bounded text of one known public HTTP(S) URL. It does not discover pages, and it refuses localhost/private-network addresses.
 - **Chrome page bridge**: reads bounded, reader-style main text from the visible public webpage, news story, documentation, blog post, dedicated X long-form Article, or individual X status post, including pages that a normal fetch cannot access. It is read-only and excludes X replies/timelines.
 

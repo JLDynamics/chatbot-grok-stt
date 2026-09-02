@@ -629,6 +629,7 @@ def test_chrome_bridge_rejects_private_network_pages():
 async def test_search_requires_key_and_returns_serper_results(monkeypatch):
     monkeypatch.setattr(server, "SERPER_KEY", "")
     monkeypatch.setattr(server, "TAVILY_KEY", "")
+    monkeypatch.setattr(server, "TINYFISH_KEY", "")
     assert client.post("/api/search", json={"query": "chatbot"}).status_code == 503
 
     monkeypatch.setattr(server, "SERPER_KEY", "serper-test")
@@ -663,6 +664,95 @@ async def test_search_requires_key_and_returns_serper_results(monkeypatch):
     body = client.post("/api/search", json={"query": "latest news"}).json()
     assert body["answer"] == "42"
     assert body["results"][0]["url"] == "https://example.com"
+
+
+@pytest.mark.asyncio
+async def test_search_prefers_tinyfish_when_configured(monkeypatch):
+    monkeypatch.setattr(server, "TINYFISH_KEY", "sk-tinyfish-test")
+    monkeypatch.setattr(server, "SERPER_KEY", "server-serper")
+    monkeypatch.setattr(server, "TAVILY_KEY", "")
+    response = httpx.Response(
+        200,
+        json={
+            "query": "chatbot",
+            "results": [
+                {
+                    "position": 1,
+                    "site_name": "example.com",
+                    "snippet": "Tiny result",
+                    "title": "Example",
+                    "url": "https://example.com",
+                }
+            ],
+            "total_results": 1,
+            "page": 0,
+        },
+        request=httpx.Request("GET", server.TINYFISH_SEARCH_URL),
+    )
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def get(self, url, params=None, headers=None):
+            assert url == server.TINYFISH_SEARCH_URL
+            assert headers["X-API-Key"] == "sk-tinyfish-test"
+            assert params["query"] == "weather"
+            return response
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+    body = client.post("/api/search", json={"query": "weather"}).json()
+    assert body["results"][0]["url"] == "https://example.com"
+    assert body["answer"] is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_uses_tinyfish_when_configured(monkeypatch):
+    monkeypatch.setattr(server, "TINYFISH_KEY", "sk-tinyfish-test")
+    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
+    response = httpx.Response(
+        200,
+        json={
+            "results": [
+                {
+                    "url": "https://example.com",
+                    "final_url": "https://example.com",
+                    "title": "Example Domain",
+                    "text": "Example readable text.",
+                    "format": "markdown",
+                }
+            ],
+            "errors": [],
+        },
+        request=httpx.Request("POST", server.TINYFISH_FETCH_URL),
+    )
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def post(self, url, headers=None, json=None):
+            assert url == server.TINYFISH_FETCH_URL
+            assert headers["X-API-Key"] == "sk-tinyfish-test"
+            assert json == {"urls": ["https://example.com"], "format": "markdown"}
+            return response
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+    body = client.post("/api/fetch", json={"url": "https://example.com"}).json()
+    assert body["title"] == "Example Domain"
+    assert body["text"] == "Example readable text."
 
 
 @pytest.mark.asyncio

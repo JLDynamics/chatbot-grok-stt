@@ -10,12 +10,14 @@ if [[ -f "$CHATBOT_ENV" ]]; then
   saved_openrouter="${OPENROUTER_API_KEY:-}"
   saved_tavily="${TAVILY_API_KEY:-}"
   saved_serper="${SERPER_API_KEY:-}"
+  saved_tinyfish="${TINYFISH_API_KEY:-}"
   # shellcheck disable=SC1090
   source "$CHATBOT_ENV"
   [[ -n "$saved_openrouter" ]] && OPENROUTER_API_KEY="$saved_openrouter"
   [[ -n "$saved_tavily" ]] && TAVILY_API_KEY="$saved_tavily"
   [[ -n "$saved_serper" ]] && SERPER_API_KEY="$saved_serper"
-  export OPENROUTER_API_KEY TAVILY_API_KEY SERPER_API_KEY
+  [[ -n "$saved_tinyfish" ]] && TINYFISH_API_KEY="$saved_tinyfish"
+  export OPENROUTER_API_KEY TAVILY_API_KEY SERPER_API_KEY TINYFISH_API_KEY
 fi
 
 PORT="${PORT:-8766}"

@@ -565,7 +565,7 @@ let startupGreeting = "";
 
 // ── Tool state ──────────────────────────────────────────────────────────────
 let toolsEnabled = loadTools();
-// Whether the server holds a Tavily or Serper key (learned from /api/config on load).
+// Whether the server holds a TinyFish, Tavily, or Serper key (learned from /api/config on load).
 let serverSearchKey = false;
 // True only when the server enables Desktop control and can find its harness.
 let serverDesktopControlAvailable = false;
@@ -1123,10 +1123,10 @@ function syncToolsUi() {
   } else {
     searchKeyInput.disabled = false;
     searchKeyInput.value = userSearchKey;
-    searchKeyInput.placeholder = "Paste a Serper or Tavily key to enable web search";
+    searchKeyInput.placeholder = "Paste a TinyFish, Serper, or Tavily key to enable web search";
     toolWebHint.textContent = userSearchKey
       ? "Using your key — stored in this browser only."
-      : "No server key configured. Add your own Serper or Tavily key (tvly-…) to enable local web search.";
+      : "No server key configured. Add your own TinyFish (sk-tinyfish-…), Serper, or Tavily (tvly-…) key to enable local web search.";
   }
 }
 
@@ -1191,7 +1191,7 @@ searchKeyInput.addEventListener("input", () => {
   }
   toolWebHint.textContent = userSearchKey
     ? "Using your key — stored in this browser only."
-    : "No server key configured. Add your own Serper or Tavily key (tvly-…) to enable web search.";
+    : "No server key configured. Add your own TinyFish (sk-tinyfish-…), Serper, or Tavily (tvly-…) key to enable local web search.";
 });
 
 // ── Camera ──────────────────────────────────────────────────────────────────

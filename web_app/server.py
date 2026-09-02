@@ -37,8 +37,11 @@ CHATBOT_VOICE_URL = os.environ.get(
 STARTUP_GREETING = os.environ.get("STARTUP_GREETING", "").strip()
 SERPER_KEY = os.environ.get("SERPER_API_KEY", "").strip()
 TAVILY_KEY = os.environ.get("TAVILY_API_KEY", "").strip()
+TINYFISH_KEY = os.environ.get("TINYFISH_API_KEY", "").strip()
 SERPER_URL = "https://google.serper.dev/search"
 TAVILY_URL = "https://api.tavily.com/search"
+TINYFISH_SEARCH_URL = "https://api.search.tinyfish.ai/"
+TINYFISH_FETCH_URL = "https://api.fetch.tinyfish.ai"
 MAX_RESULTS = 5
 FETCH_MAX_BYTES = 2_000_000
 FETCH_MAX_CHARS = 20_000
@@ -232,7 +235,7 @@ async def browser_bridge_status() -> JSONResponse:
 @app.get("/api/config")
 def config() -> dict:
     return {
-        "search": bool(SERPER_KEY or TAVILY_KEY),
+        "search": bool(TINYFISH_KEY or SERPER_KEY or TAVILY_KEY),
         "allowDirect": False,
         "chatbotUrl": CHATBOT_VOICE_URL,
         # Legacy field retained briefly so an older browser tab can still connect.
@@ -256,49 +259,126 @@ def _clean_key(value: str | None) -> str:
     return key.split()[0] if key.split() else ""
 
 
+def _resolve_search_key(user_key: str) -> str:
+    return user_key or TINYFISH_KEY or SERPER_KEY or TAVILY_KEY
+
+
+def _search_provider(key: str) -> str:
+    if key.startswith("tvly-"):
+        return "tavily"
+    if key.startswith("sk-tinyfish-"):
+        return "tinyfish"
+    return "serper"
+
+
+async def _tinyfish_search(client: httpx.AsyncClient, query: str, key: str) -> dict:
+    response = await client.get(
+        TINYFISH_SEARCH_URL,
+        params={"query": query},
+        headers={"X-API-Key": key},
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Search provider error ({response.status_code}).")
+    data = response.json()
+    results = [
+        {
+            "title": item.get("title", ""),
+            "snippet": (item.get("snippet") or "")[:300],
+            "url": item.get("url", ""),
+        }
+        for item in (data.get("results") or [])[:MAX_RESULTS]
+    ]
+    return {"query": query, "answer": None, "results": results}
+
+
+async def _tavily_search(client: httpx.AsyncClient, query: str, key: str) -> dict:
+    response = await client.post(
+        TAVILY_URL,
+        headers={"Authorization": f"Bearer {key}"},
+        json={"query": query, "max_results": MAX_RESULTS, "include_answer": True},
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Search provider error ({response.status_code}).")
+    data = response.json()
+    results = [
+        {"title": item.get("title", ""), "snippet": (item.get("content") or "")[:300], "url": item.get("url", "")}
+        for item in (data.get("results") or [])[:MAX_RESULTS]
+    ]
+    return {"query": query, "answer": data.get("answer") or None, "results": results}
+
+
+async def _serper_search(client: httpx.AsyncClient, query: str, key: str) -> dict:
+    response = await client.post(
+        SERPER_URL,
+        headers={"X-API-KEY": key},
+        json={"q": query, "num": MAX_RESULTS},
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Search provider error ({response.status_code}).")
+    data = response.json()
+    results = [
+        {"title": item.get("title", ""), "snippet": item.get("snippet", ""), "url": item.get("link", "")}
+        for item in (data.get("organic") or [])[:MAX_RESULTS]
+    ]
+    answer_box = data.get("answerBox") or {}
+    answer = answer_box.get("answer") or answer_box.get("snippet")
+    if not answer:
+        answer = (data.get("knowledgeGraph") or {}).get("description")
+    return {"query": query, "answer": answer, "results": results}
+
+
+async def _tinyfish_fetch(client: httpx.AsyncClient, url: str, key: str) -> dict:
+    response = await client.post(
+        TINYFISH_FETCH_URL,
+        headers={"X-API-Key": key, "Content-Type": "application/json"},
+        json={"urls": [url], "format": "markdown"},
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Fetch provider error ({response.status_code}).")
+    data = response.json()
+    errors = data.get("errors") or []
+    if errors:
+        message = errors[0].get("message") or errors[0].get("error") or "Could not fetch that page."
+        raise HTTPException(status_code=502, detail=str(message))
+    results = data.get("results") or []
+    if not results:
+        raise HTTPException(status_code=502, detail="Fetch provider returned no content.")
+    page = results[0]
+    text = (page.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=502, detail="That page had no readable text.")
+    truncated = len(text) > FETCH_MAX_CHARS
+    return {
+        "url": page.get("final_url") or page.get("url") or url,
+        "title": page.get("title"),
+        "text": text[:FETCH_MAX_CHARS],
+        "truncated": truncated,
+    }
+
+
 @app.post("/api/search")
 async def search(req: SearchRequest) -> JSONResponse:
     query = req.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Empty query.")
-    user_key = _clean_key(req.key)
-    key = user_key or SERPER_KEY or TAVILY_KEY
+    key = _resolve_search_key(_clean_key(req.key))
     if not key:
         raise HTTPException(status_code=503, detail="Search is not configured.")
-    tavily = key.startswith("tvly-")
-    if tavily:
-        url = TAVILY_URL
-        headers = {"Authorization": f"Bearer {key}"}
-        body = {"query": query, "max_results": MAX_RESULTS, "include_answer": True}
-    else:
-        url = SERPER_URL
-        headers = {"X-API-KEY": key}
-        body = {"q": query, "num": MAX_RESULTS}
+    provider = _search_provider(key)
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
-            response = await client.post(url, headers=headers, json=body)
+            if provider == "tinyfish":
+                payload = await _tinyfish_search(client, query, key)
+            elif provider == "tavily":
+                payload = await _tavily_search(client, query, key)
+            else:
+                payload = await _serper_search(client, query, key)
+    except HTTPException:
+        raise
     except httpx.RequestError as exc:
         logger.warning("Search provider unavailable: %r", exc)
         raise HTTPException(status_code=502, detail="Search provider unreachable.") from exc
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Search provider error ({response.status_code}).")
-    data = response.json()
-    if tavily:
-        results = [
-            {"title": item.get("title", ""), "snippet": (item.get("content") or "")[:300], "url": item.get("url", "")}
-            for item in (data.get("results") or [])[:MAX_RESULTS]
-        ]
-        answer = data.get("answer") or None
-    else:
-        results = [
-            {"title": item.get("title", ""), "snippet": item.get("snippet", ""), "url": item.get("link", "")}
-            for item in (data.get("organic") or [])[:MAX_RESULTS]
-        ]
-        answer_box = data.get("answerBox") or {}
-        answer = answer_box.get("answer") or answer_box.get("snippet")
-        if not answer:
-            answer = (data.get("knowledgeGraph") or {}).get("description")
-    return JSONResponse({"query": query, "answer": answer, "results": results})
+    return JSONResponse(payload)
 
 
 class _TextExtractor(HTMLParser):
@@ -394,7 +474,7 @@ class FetchRequest(BaseModel):
 
 @app.post("/api/fetch")
 async def fetch_page(req: FetchRequest) -> JSONResponse:
-    """Fetch one public text page; web search only discovers URLs and snippets."""
+    """Fetch one public text page; prefers TinyFish when configured."""
     url = req.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="No URL given.")
@@ -403,6 +483,14 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
     allowed, reason = _is_public_url(url)
     if not allowed:
         raise HTTPException(status_code=400, detail=reason)
+    if TINYFISH_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_S) as client:
+                return JSONResponse(await _tinyfish_fetch(client, url, TINYFISH_KEY))
+        except HTTPException:
+            raise
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail="Could not reach the fetch provider.") from exc
     try:
         async with httpx.AsyncClient(
             timeout=FETCH_TIMEOUT_S,
