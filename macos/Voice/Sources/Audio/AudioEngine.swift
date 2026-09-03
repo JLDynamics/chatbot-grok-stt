@@ -92,14 +92,17 @@ final class AudioEngine {
 
         let input = engine.inputNode
         let inChannels = input.inputFormat(forBus: 0).channelCount
-        // Voice Processing IO (hardware AEC) defaults ON: without it the
-        // speaker output re-enters the mic and the server transcribes our own
-        // replies as new user turns (echo loop). Disable only deliberately:
-        //   defaults write com.jack.Voice voice.enableVPIO -bool false
-        // The flag lives in the app container when opened as .app and in the
-        // main domain for a direct binary launch; defaulting to true keeps
-        // both working. Unsupported hardware falls back below to no-VPIO.
-        let enableVPIO = (UserDefaults.standard.object(forKey: "voice.enableVPIO") as? Bool) ?? true
+        // Voice Processing IO (hardware AEC) defaults OFF: on this Mac's
+        // built-in mic it engages but the tap turns 9-channel, and averaging
+        // dilutes the mic ~10dB (borderline VAD, misheard words), while plain
+        // input is a clean 1-channel tap with perfect transcripts. Speaker
+        // echo is instead contained by software ducking + hangover in the tap
+        // (see isPlaying). Opt in per-machine only after verifying levels:
+        //   defaults write com.jack.Voice voice.enableVPIO -bool true
+        // NOTE: `defaults` targets the sandbox container for open-.app
+        // launches and the main domain for direct-binary runs; the in-code
+        // default below is what keeps both paths consistent.
+        let enableVPIO = (UserDefaults.standard.object(forKey: "voice.enableVPIO") as? Bool) ?? false
 
         if enableVPIO && inChannels <= 2 {
             do {
