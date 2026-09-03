@@ -120,9 +120,28 @@ final class AudioEngine {
         do {
             try engine.start()
         } catch {
-            NSLog("[AudioEngine] start failed: \(error.localizedDescription)")
-            shouldBeRunning = false
-            throw AudioError.engineFailed
+            // Some input chains (e.g. this Mac's built-in mic/speakers)
+            // accept the voice-processing flag but fail engine start with
+            // -10875. Fall back to plain input + software ducking rather
+            // than leaving the session dead.
+            if voiceProcessingEnabled {
+                NSLog("[AudioEngine] VPIO start failed (%@); retrying without voice processing", error.localizedDescription)
+                voiceProcessingEnabled = false
+                try? input.setVoiceProcessingEnabled(false)
+                wireIO(format: nil)
+                engine.prepare()
+                do {
+                    try engine.start()
+                } catch {
+                    NSLog("[AudioEngine] start failed: \(error.localizedDescription)")
+                    shouldBeRunning = false
+                    throw AudioError.engineFailed
+                }
+            } else {
+                NSLog("[AudioEngine] start failed: \(error.localizedDescription)")
+                shouldBeRunning = false
+                throw AudioError.engineFailed
+            }
         }
 
         if !player.isPlaying { player.play() }
@@ -162,28 +181,27 @@ final class AudioEngine {
     private var activePlaybackBuffers = 0
     private let playbackLock = NSLock()
     private var lastPlayAt = Date.distantPast
+    /// Speaker/room tail after the final buffer. Without hardware AEC the
+    /// mic must stay ducked through this tail or our own reply loops back
+    /// into the server VAD as a new user turn (echo loop).
+    private let playbackHangover: TimeInterval = 0.4
 
     var isPlaying: Bool {
         playbackLock.lock()
         let count = activePlaybackBuffers
         let sincePlay = Date().timeIntervalSince(lastPlayAt)
-        playbackLock.unlock()
-        // Completion blocks can be lost on engine restart/stop, which would
-        // otherwise stick the counter >0 forever and permanently duck the mic
-        // (second utterance goes silent while levels still animate).
-        // Buffers are short; anything older than 2s is stale.
-        guard count > 0 else { return false }
-        if sincePlay > 2.0 {
-            playbackLock.lock()
-            // Re-check under lock before clearing a potentially fresh play().
-            if Date().timeIntervalSince(lastPlayAt) > 2.0 {
-                activePlaybackBuffers = 0
-            }
-            let fresh = activePlaybackBuffers > 0
-            playbackLock.unlock()
-            return fresh
+        var live = count > 0
+        if live, sincePlay > 2.0 {
+            // Completion blocks can be lost on engine restart/stop, which
+            // would otherwise stick the counter >0 forever and permanently
+            // duck the mic (utterances go silent while levels still animate).
+            // Buffers are short; anything older than 2s is stale.
+            activePlaybackBuffers = 0
+            live = false
         }
-        return true
+        playbackLock.unlock()
+        if live { return true }
+        return sincePlay < playbackHangover
     }
 
     func play(_ buffer: AVAudioPCMBuffer) {
