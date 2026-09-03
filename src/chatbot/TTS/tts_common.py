@@ -61,35 +61,51 @@ class SpectralDenoiser:
             return np.asarray(chunk, dtype=np.float32)
         self._in = np.concatenate([self._in, np.asarray(chunk, dtype=np.float32)])
         out = np.zeros(0, dtype=np.float32)
-        while len(self._in) >= self.frame + self.hop:
+        while len(self._in) >= self.frame:
             yf = self._process_frame(self._in[: self.frame])
-            self._acc = np.concatenate([self._acc, np.zeros(self.frame, dtype=np.float32)])
-            self._wacc = np.concatenate([self._wacc, np.zeros(self.frame, dtype=np.float32)])
+            self._in = self._in[self.hop :]
+            self._pad_acc()
             self._acc[: self.frame] += yf
             self._wacc[: self.frame] += self._win * self._win
-            emit = self._acc[: self.hop].copy()
-            denom = self._wacc[: self.hop].copy()
-            out = np.concatenate([out, emit / np.where(denom > 1e-8, denom, 1.0)])
-            self._acc = self._acc[self.hop :]
-            self._wacc = self._wacc[self.hop :]
-            self._in = self._in[self.hop :]
+            out = np.concatenate([out, self._emit_hop()])
         return out
 
     def flush(self) -> np.ndarray:
         if not self.enabled:
             return np.zeros(0, dtype=np.float32)
+        out = np.zeros(0, dtype=np.float32)
         while len(self._in) > 0:
             fr = self._in[: self.frame]
             if len(fr) < self.frame:
                 fr = np.pad(fr, (0, self.frame - len(fr)))
             yf = self._process_frame(fr)
-            self._acc = np.concatenate([self._acc, np.zeros(self.frame, dtype=np.float32)])
-            self._wacc = np.concatenate([self._wacc, np.zeros(self.frame, dtype=np.float32)])
+            self._in = self._in[self.hop :] if len(self._in) > self.hop else np.zeros(0, dtype=np.float32)
+            self._pad_acc()
             self._acc[: self.frame] += yf
             self._wacc[: self.frame] += self._win * self._win
-            self._in = self._in[self.hop :] if len(self._in) > self.hop else np.zeros(0, dtype=np.float32)
-        denom = np.where(self._wacc > 1e-8, self._wacc, 1.0)
-        return self._acc / denom
+            out = np.concatenate([out, self._emit_hop()])
+        # Drain the overlap tail left by the final frames (real signal).
+        while len(self._acc) > 0:
+            out = np.concatenate([out, self._emit_hop()])
+        return out
+
+    def _pad_acc(self) -> None:
+        # NOTE: extend by hop, not frame. Extending by frame while shifting by
+        # hop grows the accumulator 3x beyond the signal, and dumping it in
+        # flush() used to stretch every reply ~4x (22s of audio for 5s of
+        # speech), keeping the mic ducked long after the words ended.
+        if len(self._acc) < self.frame:
+            pad = self.frame - len(self._acc)
+            self._acc = np.concatenate([self._acc, np.zeros(pad, dtype=np.float32)])
+            self._wacc = np.concatenate([self._wacc, np.zeros(pad, dtype=np.float32)])
+
+    def _emit_hop(self) -> np.ndarray:
+        n = min(self.hop, len(self._acc))
+        emit = self._acc[:n].copy()
+        denom = self._wacc[:n].copy()
+        self._acc = self._acc[n:]
+        self._wacc = self._wacc[n:]
+        return emit / np.where(denom > 1e-8, denom, 1.0)
 
 
 class TTSNoiseGate:

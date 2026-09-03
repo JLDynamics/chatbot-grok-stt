@@ -32,7 +32,7 @@ protocol VoiceBackend: AnyObject {
     var onInputLevel: ((Float) -> Void)? { get set }        // 0...1, ~30 Hz
     var onOutputLevel: ((Float) -> Void)? { get set }       // 0...1, ~30 Hz
     var onUserPartial: ((String) -> Void)? { get set }      // interim transcript
-    var onUserFinal: ((String) -> Void)? { get set }
+    var onUserFinal: ((String, String?) -> Void)? { get set } // final transcript + server item id (stable across pause-merged segments)
     var onAgentDelta: ((String) -> Void)? { get set }       // streamed reply text
     var onAgentDone: (() -> Void)? { get set }
     var onToolActive: ((String) -> Void)? { get set }
@@ -84,6 +84,7 @@ final class SessionController: ObservableObject {
     private var activeSessionId: String?
     private var messages: [ChatMessage] = []
     private var pendingAgentText = ""
+    private var lastUserItemId: String?
     private var saveTask: Task<Void, Never>?
     private var dirty = false
     private static let lastSessionKey = "chat.sessionId"
@@ -119,11 +120,10 @@ final class SessionController: ObservableObject {
 
         backend.onUserPartial = { [weak self] text in self?.interim = text }
 
-        backend.onUserFinal = { [weak self] text in
+        backend.onUserFinal = { [weak self] text, itemId in
             guard let self else { return }
             self.interim = nil
-            self.append(Turn(speaker: .you, text: text))
-            self.recordUser(text)
+            self.upsertUserTurn(text: text, itemId: itemId)
         }
 
         // Deltas stream into a single agent turn rather than appending rows.
@@ -366,6 +366,7 @@ final class SessionController: ObservableObject {
         interim = nil
         agentTurnOpen = false
         pendingAgentText = ""
+        lastUserItemId = nil
     }
 
     private func restoreLastSession() async {
@@ -385,6 +386,27 @@ final class SessionController: ObservableObject {
         }
         dirty = true
         scheduleSave()
+    }
+
+    /// Merge pause-split finals: the server reuses one item id across
+    /// reopened segments of a single turn, so a matching id updates the
+    /// existing bubble instead of appending a duplicate.
+    private func upsertUserTurn(text: String, itemId: String?) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        if let itemId, itemId == lastUserItemId,
+           let last = turns.last, last.speaker == .you {
+            turns[turns.count - 1].text = t
+            if let idx = messages.lastIndex(where: { $0.role == "user" }) {
+                messages[idx].text = t
+            }
+            dirty = true
+            scheduleSave()
+            return
+        }
+        lastUserItemId = itemId
+        append(Turn(speaker: .you, text: t))
+        recordUser(t)
     }
 
     private func recordAssistant(_ text: String) {

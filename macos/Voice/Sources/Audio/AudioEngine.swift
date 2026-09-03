@@ -15,6 +15,7 @@ final class AudioEngine {
     private var lastLevelSent = Date.distantPast
     private(set) var voiceProcessingEnabled = false
     private var ioFormat: AVAudioFormat?
+    private var watchdog: Timer?
 
     var playbackFormat: AVAudioFormat {
         ioFormat
@@ -48,6 +49,7 @@ final class AudioEngine {
     }
 
     deinit {
+        watchdog?.invalidate()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -62,6 +64,9 @@ final class AudioEngine {
 
     private func restartEngine() {
         guard shouldBeRunning, !engine.isRunning else { return }
+        playbackLock.lock()
+        activePlaybackBuffers = 0
+        playbackLock.unlock()
 
         wireIO(format: nil)
         engine.prepare()
@@ -161,19 +166,41 @@ final class AudioEngine {
             inFmt.channelCount,
             voiceProcessingEnabled ? 1 : 0
         )
+        armWatchdog()
     }
 
     func stop() {
         shouldBeRunning = false
+        disarmWatchdog()
         if tapped {
             engine.inputNode.removeTap(onBus: 0)
             tapped = false
         }
         player.stop()
+        playbackLock.lock()
         activePlaybackBuffers = 0
+        playbackLock.unlock()
         engine.stop()
         ioFormat = nil
         DispatchQueue.main.async { [weak self] in self?.onInputLevel?(0) }
+    }
+
+    /// The engine can die silently (no configuration notice), leaving the tap
+    /// dead while the session looks connected. Poll cheaply and restart.
+    private func armWatchdog() {
+        disarmWatchdog()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let self, self.shouldBeRunning else { return }
+            if !self.engine.isRunning {
+                NSLog("[AudioEngine] watchdog: engine stopped unexpectedly; restarting")
+                self.restartEngine()
+            }
+        }
+    }
+
+    private func disarmWatchdog() {
+        watchdog?.invalidate()
+        watchdog = nil
     }
 
     func setMuted(_ muted: Bool) {
@@ -187,24 +214,16 @@ final class AudioEngine {
     /// Speaker/room tail after the final buffer. Without hardware AEC the
     /// mic must stay ducked through this tail or our own reply loops back
     /// into the server VAD as a new user turn (echo loop).
-    private let playbackHangover: TimeInterval = 0.4
+    private let playbackHangover: TimeInterval = 0.9
 
     var isPlaying: Bool {
         playbackLock.lock()
-        let count = activePlaybackBuffers
-        let sincePlay = Date().timeIntervalSince(lastPlayAt)
-        var live = count > 0
-        if live, sincePlay > 2.0 {
-            // Completion blocks can be lost on engine restart/stop, which
-            // would otherwise stick the counter >0 forever and permanently
-            // duck the mic (utterances go silent while levels still animate).
-            // Buffers are short; anything older than 2s is stale.
-            activePlaybackBuffers = 0
-            live = false
-        }
-        playbackLock.unlock()
-        if live { return true }
-        return sincePlay < playbackHangover
+        defer { playbackLock.unlock() }
+        // No time-based reset: replies run 15s+ and every abandonment path
+        // (stop/clearPlayback/restartEngine) zeroes the counter explicitly.
+        // A time guard unducks the mic mid-reply and re-creates the echo loop.
+        if activePlaybackBuffers > 0 { return true }
+        return Date().timeIntervalSince(lastPlayAt) < playbackHangover
     }
 
     func play(_ buffer: AVAudioPCMBuffer) {

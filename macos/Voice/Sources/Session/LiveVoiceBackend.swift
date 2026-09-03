@@ -10,7 +10,7 @@ final class LiveVoiceBackend: VoiceBackend {
     var onInputLevel: ((Float) -> Void)?
     var onOutputLevel: ((Float) -> Void)?
     var onUserPartial: ((String) -> Void)?
-    var onUserFinal: ((String) -> Void)?
+    var onUserFinal: ((String, String?) -> Void)?
     var onAgentDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
     var onToolActive: ((String) -> Void)?
@@ -276,7 +276,7 @@ final class LiveVoiceBackend: VoiceBackend {
 
         case "conversation.item.input_audio_transcription.completed":
             if let transcript = json["transcript"] as? String, !transcript.isEmpty {
-                onUserFinal?(transcript)
+                onUserFinal?(transcript, json["item_id"] as? String)
             }
 
         case "response.audio_transcript.delta", "response.output_audio_transcript.delta":
