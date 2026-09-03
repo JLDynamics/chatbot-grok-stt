@@ -98,9 +98,9 @@ class VADHandlerArguments:
         },
     )
     smart_turn_incomplete_delay_ms: int = field(
-        default=600,
+        default=2000,
         metadata={
-            "help": "Delay STT and LLM processing after Smart Turn reports an incomplete turn, allowing resumed speech to invalidate the revision before expensive work begins. This delay runs within smart_turn_max_wait_ms. Default is 600 ms."
+            "help": "Delay STT and LLM processing after Smart Turn reports an incomplete turn, allowing resumed speech to invalidate the revision before expensive work begins. This delay runs within smart_turn_max_wait_ms; matching it means one generation per turn instead of a cancelled speculative one per pause. Default is 2000 ms."
         },
     )
     smart_turn_cpu_count: int = field(
