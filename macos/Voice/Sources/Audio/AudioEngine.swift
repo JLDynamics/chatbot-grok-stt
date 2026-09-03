@@ -92,7 +92,14 @@ final class AudioEngine {
 
         let input = engine.inputNode
         let inChannels = input.inputFormat(forBus: 0).channelCount
-        let enableVPIO = UserDefaults.standard.bool(forKey: "voice.enableVPIO")
+        // Voice Processing IO (hardware AEC) defaults ON: without it the
+        // speaker output re-enters the mic and the server transcribes our own
+        // replies as new user turns (echo loop). Disable only deliberately:
+        //   defaults write com.jack.Voice voice.enableVPIO -bool false
+        // The flag lives in the app container when opened as .app and in the
+        // main domain for a direct binary launch; defaulting to true keeps
+        // both working. Unsupported hardware falls back below to no-VPIO.
+        let enableVPIO = (UserDefaults.standard.object(forKey: "voice.enableVPIO") as? Bool) ?? true
 
         if enableVPIO && inChannels <= 2 {
             do {
