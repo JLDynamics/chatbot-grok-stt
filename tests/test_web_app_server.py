@@ -224,7 +224,7 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
     assert "periodInMinutes: 0.5" in background
     assert "CLEAR_ENDPOINT" in background
     assert manifest["permissions"] == ["storage", "alarms"]
-    assert manifest["version"] == "0.4.1"
+    assert manifest["version"] == "0.4.2"
     assert "sendResponse({ ok: true, enabled: true, preserved: true })" in background
     assert "function extractXPost()" in content
     assert "x_primary_post_end" in content
@@ -325,13 +325,13 @@ globalThis.fetch = async (url) => {
       ok: false,
       status: 503,
       text: async () => "unavailable",
-      json: async () => ({ expected_version: "0.4.1" }),
+      json: async () => ({ expected_version: "0.4.2" }),
     };
   }
   return {
     ok: true,
     text: async () => "",
-    json: async () => ({ expected_version: "0.4.1" }),
+    json: async () => ({ expected_version: "0.4.2" }),
   };
 };
 eval(readFileSync("web_app/chrome_article_bridge/background.js", "utf8"));
@@ -431,6 +431,38 @@ removeListener(99);
 await wait();
 if (stored.chatbotPageBridgeSession || badgeText !== "") {
   throw new Error("closing the Chatbot tab did not end the bridge session");
+}
+
+// Native-app mode: no receiver tab exists, so the toolbar click enables the
+// same session without one. Publishing, the health alarm (server still
+// enforced), and server-stop detection must all keep working.
+receiverExists = false;
+activeReceiver = false;
+clickListener({ id: 17, active: true, windowId: 3 });
+await wait();
+if (!stored.chatbotPageBridgeSession?.enabled || badgeText !== "✓") {
+  throw new Error("toolbar click did not enable native mode without a receiver tab");
+}
+if (stored.chatbotPageBridgeSession.native !== true) {
+  throw new Error("native-mode session was not flagged as native");
+}
+const nativePublished = await call({
+  type: "publish-page",
+  page: { text: "Native mode page text" },
+});
+if (!nativePublished.ok || badgeText !== "✓") {
+  throw new Error("native-mode session did not publish page text");
+}
+alarmListener({ name: "chatbotPageBridgeHealth" });
+await wait();
+if (!stored.chatbotPageBridgeSession?.enabled || badgeText !== "✓") {
+  throw new Error("health alarm wrongly ended native mode with no receiver tab");
+}
+serverAvailable = false;
+alarmListener({ name: "chatbotPageBridgeHealth" });
+await wait();
+if (stored.chatbotPageBridgeSession || badgeText !== "!") {
+  throw new Error("health alarm did not detect server stop in native mode");
 }
 """
     subprocess.run(
@@ -558,7 +590,7 @@ def test_chrome_bridge_validates_generic_and_x_page_boundaries(monkeypatch):
     assert page["comments_excluded"] is True
 
     x_post = {
-        "bridge_version": "0.4.1",
+        "bridge_version": "0.4.2",
         "tab_id": "654",
         "url": "https://x.com/example/status/987654321",
         "article_id": "987654321",
@@ -573,15 +605,15 @@ def test_chrome_bridge_validates_generic_and_x_page_boundaries(monkeypatch):
     }
     stored_post = client.post("/api/browser/page", headers={"X-Chatbot-Bridge": "page-v1"}, json=x_post)
     assert stored_post.status_code == 200
-    assert stored_post.json()["bridge_version"] == "0.4.1"
+    assert stored_post.json()["bridge_version"] == "0.4.2"
     post = client.post("/api/browser/read").json()
     assert post["content_type"] == "x_post"
     assert post["text"] == "One primary public X post."
     assert post["comments_excluded"] is True
     status = client.get("/api/browser/status").json()
     assert status["connected"] is True
-    assert status["expected_version"] == "0.4.1"
-    assert status["bridge_version"] == "0.4.1"
+    assert status["expected_version"] == "0.4.2"
+    assert status["bridge_version"] == "0.4.2"
     assert status["content_type"] == "x_post"
 
     invalid_post = {**x_post, "comments_excluded": False}

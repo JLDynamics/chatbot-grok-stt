@@ -6,7 +6,7 @@ const RECEIVER_PATTERN = 'http://127.0.0.1:7860/*';
 const RECEIVER_ORIGIN = 'http://127.0.0.1:7860';
 const SESSION_KEY = 'chatbotPageBridgeSession';
 const HEALTH_ALARM = 'chatbotPageBridgeHealth';
-const BRIDGE_VERSION = '0.4.1';
+const BRIDGE_VERSION = '0.4.2';
 
 const STATUS_TITLES = {
   ready: 'Page Bridge is enabled; this page text is ready for Chatbot',
@@ -22,8 +22,8 @@ async function getSession() {
   const stored = await chrome.storage.session.get(SESSION_KEY);
   const session = stored?.[SESSION_KEY];
   return session?.enabled
-    ? { enabled: true, receiverTabId: session.receiverTabId || null }
-    : { enabled: false, receiverTabId: null };
+    ? { enabled: true, receiverTabId: session.receiverTabId || null, native: session.native === true }
+    : { enabled: false, receiverTabId: null, native: false };
 }
 
 async function saveSession(session) {
@@ -142,18 +142,19 @@ async function enableSession(tab) {
   try {
     await receiverIsAvailable();
     const receiverTab = await findReceiverTab();
-    if (!receiverTab?.id) {
-      throw new Error('Open the Chatbot page at 127.0.0.1:7860 first.');
-    }
-    await saveSession({ enabled: true, receiverTabId: receiverTab.id });
+    // Native-app mode: the macOS Voice panel has no receiver tab, so enable
+    // on explicit toolbar click without one. The health alarm still enforces
+    // receiver reachability; only the receiver-tab scoping is skipped.
+    const native = !receiverTab?.id;
+    await saveSession({ enabled: true, receiverTabId: receiverTab?.id || null, native });
     await startHealthAlarm();
-    await setStatus(tab?.id, tab?.id === receiverTab.id ? 'receiver' : 'ready');
-    if (tab?.id && tab.id !== receiverTab.id) {
+    await setStatus(tab?.id, tab?.id != null && tab.id === receiverTab?.id ? 'receiver' : 'ready');
+    if (tab?.id && tab.id !== receiverTab?.id) {
       chrome.tabs.sendMessage(tab.id, { type: 'publish-now' }, () => {
         if (chrome.runtime.lastError) void setStatus(tab.id, 'unsupported');
       });
     }
-    return { ok: true };
+    return { ok: true, native };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     await disableSession(detail.slice(0, 160), true);
@@ -180,6 +181,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // The receiver content script reports every 30 seconds. That doubles
         // as a bounded, best-effort heartbeat for detecting a stopped server.
         if (message.state === 'receiver') await receiverIsAvailable();
+        // Adopt receiver scoping if the web page appears after a native-mode
+        // (toolbar) enable, so closing it ends the session as usual.
+        if (message.state === 'receiver' && session.native && tabId) {
+          await saveSession({ enabled: true, receiverTabId: tabId, native: false });
+          session.native = false;
+          session.receiverTabId = tabId;
+        }
         if (
           ['blocked', 'no-content', 'unsupported'].includes(message.state) &&
           await senderIsCurrent(sender)
@@ -303,7 +311,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     if (!session.enabled) return;
     try {
       const receiverTab = await findReceiverTab();
-      if (!receiverTab || receiverTab.id !== session.receiverTabId) {
+      // Native-mode sessions have no receiver tab to track; the
+      // receiverIsAvailable check below still ends them if the server stops.
+      if (!session.native && (!receiverTab || receiverTab.id !== session.receiverTabId)) {
         await disableSession('Chatbot Page Bridge stopped because the Chatbot tab was closed');
         return;
       }

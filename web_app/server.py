@@ -217,12 +217,12 @@ async def browser_bridge_status() -> JSONResponse:
     """Return bridge freshness/version metadata without exposing page text."""
     entry = _fresh_browser_page_entry()
     if not entry:
-        return JSONResponse({"connected": False, "expected_version": "0.4.1", "web_port": WEB_PORT})
+        return JSONResponse({"connected": False, "expected_version": "0.4.2", "web_port": WEB_PORT})
     page, age_s = entry
     return JSONResponse(
         {
             "connected": True,
-            "expected_version": "0.4.1",
+            "expected_version": "0.4.2",
             "web_port": WEB_PORT,
             "bridge_version": page.bridge_version or "legacy",
             "age_ms": round(age_s * 1000),

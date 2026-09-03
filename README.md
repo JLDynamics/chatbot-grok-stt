@@ -87,7 +87,9 @@ The extension is part of the live product at [`web_app/chrome_article_bridge`](w
 If an older unpacked copy still points to the deleted `demo/chrome_article_bridge`
 folder, remove it and load the `web_app` path above. When bridge code changes,
 use the extension card's **Reload** button and then reload the article tab.
-The current card version is **0.4.1**. Reloading the extension invalidates the
+The current card version is **0.4.2**. If you use the native macOS Voice app
+instead of the chatbot browser tab, open the article and click the bridge
+toolbar icon once to enable it (no chatbot tab needed). Reloading the extension invalidates the
 old script already inside open tabs, so the article/X tab reload is required.
 
 The enabled state survives page reloads, tab changes, and switching to another

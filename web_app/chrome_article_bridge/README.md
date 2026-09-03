@@ -9,21 +9,24 @@ This Manifest V3 extension gives the local chatbot bounded, read-only main text 
 3. Select **Load unpacked** and choose this `chrome_article_bridge` folder.
 4. Open or reload the chatbot at `http://127.0.0.1:7860`. The bridge detects the
    receiver and enables itself automatically; the green check means the session
-   is active.
+   is active. Using the native macOS Voice app instead (no chatbot tab open)?
+   Open the public page, then click the bridge toolbar icon once to enable the
+   same session without a receiver tab.
 5. Open or reload the public page you want the chatbot to read. No extension
    click is required.
 
 If Chrome already has an older unpacked copy from the former `demo/` folder,
 remove that broken entry and load `web_app/chrome_article_bridge` instead. After
 source updates, click **Reload** on the extension card and reload the article tab.
-The expected version is **0.4.1**. Reloading the extension invalidates the old
+The expected version is **0.4.2**. Reloading the extension invalidates the old
 content script already inside open tabs, so the page reload is required.
 
 The toolbar badge is a session switch:
 
 - green `✓`: the bridge remains enabled across reloads, tab switches, and app focus changes
 - red `!`: the local chatbot is not reachable on port 7860
-- no badge: the chatbot receiver tab is not open
+- no badge: the chatbot receiver tab is not open (open it, or click the toolbar
+  icon once to enable without it when using the native macOS app)
 
 The icon title explains whether the current page is ready, blocked, unsupported,
 or has no bounded main text. Those page states do not turn off the green session

@@ -337,7 +337,8 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             return VoiceToolResult(
                 output: "The read-only Chrome page bridge is unavailable. " +
                     "Make sure Google Chrome is open, the Chatbot Page Bridge extension is loaded, " +
-                    "and reload the webpage you want to read."
+                    "and reload the webpage you want to read. Without a chatbot browser tab open, " +
+                    "click the bridge toolbar icon once on the page first to enable it."
             )
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
