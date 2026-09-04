@@ -3,6 +3,7 @@ from __future__ import annotations
 # ruff: noqa: I001
 
 import logging
+from collections import deque
 from queue import Empty, Queue
 from threading import Event
 from time import perf_counter
@@ -43,7 +44,10 @@ class BaseHandler(Generic[InT, OutT]):
         self.queue_out = queue_out
         self.pipeline_index: int | None = None
         self.setup(*setup_args, **setup_kwargs)
-        self._times: list[float] = []
+        # Only the most recent duration is ever read (``last_time``), but this
+        # grows once per emitted output — tens of times a second for TTS blocks
+        # — so it is bounded rather than kept for the life of the process.
+        self._times: deque[float] = deque(maxlen=64)
 
     def setup(self, *arg: Any, **kwargs: Any) -> None:
         pass
