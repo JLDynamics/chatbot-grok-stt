@@ -17,7 +17,7 @@ final class MockVoiceBackend: VoiceBackend {
     var onAgentDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
     var onToolActive: ((String) -> Void)?
-    var onToolDone: ((String) -> Void)?
+    var onToolDone: ((String, String) -> Void)?
 
     private struct Exchange {
         let said: String

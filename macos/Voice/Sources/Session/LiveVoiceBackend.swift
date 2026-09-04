@@ -14,7 +14,7 @@ final class LiveVoiceBackend: VoiceBackend {
     var onAgentDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
     var onToolActive: ((String) -> Void)?
-    var onToolDone: ((String) -> Void)?
+    var onToolDone: ((String, String) -> Void)?
 
     private enum Connection {
         case idle
@@ -448,8 +448,9 @@ final class LiveVoiceBackend: VoiceBackend {
                 await self.refreshInstructions()
             }
             self.requestResponse()
+            let summary = result.output
             Task { @MainActor in
-                self.onToolDone?(name)
+                self.onToolDone?(name, summary)
             }
         }
     }

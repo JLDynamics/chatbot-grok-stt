@@ -53,6 +53,23 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         "to reach content: a consent banner, cookie wall, or login form in the way is something " +
         "you describe and hand back to the user, not something you dismiss for them. Never pass " +
         "off a screenshot of a paywall teaser as the article itself. " +
+        "AN EXPLICIT INSTRUCTION WINS. If the user names a method — 'use the desktop " +
+        "harness', 'use click and scroll', 'take a screenshot', 'search the web for it' — do " +
+        "that, immediately, on this turn. Do not answer with what you would normally prefer, do " +
+        "not restate the routing rules back to them, and do not say you will do it 'if' they are " +
+        "asking: they already asked. Routing order is your default, not a veto over a direct " +
+        "request. " +
+        "READING A LONG PAGE FROM THE SCREEN. control_screen screenshot returns one screenful, " +
+        "and control_screen scroll returns no picture at all, so scrolling alone shows you " +
+        "nothing. To read past the first screen, alternate: screenshot, then scroll, then " +
+        "screenshot again, repeating while new text keeps appearing, up to about six rounds, and " +
+        "assemble what you read across them. Stop when the text repeats or you reach the end. " +
+        "NEVER CLAIM AN ACTION YOU DID NOT TAKE. Only say you scrolled, captured, read, or found " +
+        "something after the matching tool call has actually returned it. If a call failed or " +
+        "returned nothing useful, say exactly that and what you are trying next. Never explain a " +
+        "missing result by saying it happened in the background or that the user could not see " +
+        "it. If you have run out of methods, say plainly which ones you tried and what you need " +
+        "from the user. " +
         "If intent is still genuinely ambiguous after all this, ask one concise " +
         "content-versus-visual question and do not frame it as permission."
 

@@ -36,7 +36,9 @@ protocol VoiceBackend: AnyObject {
     var onAgentDelta: ((String) -> Void)? { get set }       // streamed reply text
     var onAgentDone: (() -> Void)? { get set }
     var onToolActive: ((String) -> Void)? { get set }
-    var onToolDone: ((String) -> Void)? { get set }
+    /// (tool name, short result summary) — the summary is recorded in the
+    /// transcript so later turns can see what a tool actually returned.
+    var onToolDone: ((String, String) -> Void)? { get set }
 
     func start() async throws
     func stop() async
@@ -163,8 +165,13 @@ final class SessionController: ObservableObject {
             }
             self?.activeTool = desc
         }
-        backend.onToolDone = { [weak self] _ in
+        backend.onToolDone = { [weak self] name, summary in
             self?.activeTool = nil
+            // replayHistory already renders a "tool" turn as "[Earlier I used
+            // X] ..." but nothing ever wrote one, so the model's own history
+            // showed it narrating actions with no record of the result. That
+            // gap is what let it describe work it had not managed to do.
+            self?.recordTool(name: name, summary: summary)
         }
     }
 
@@ -457,6 +464,19 @@ final class SessionController: ObservableObject {
         let newWords = Set(b.split(separator: " "))
         let overlap = oldWords.filter { newWords.contains($0) }.count
         return Double(overlap) / Double(oldWords.count) >= 0.6
+    }
+
+    /// Append a tool result to the transcript so it survives into later turns.
+    private func recordTool(name: String, summary: String) {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        // Keep transcripts lean: a fetch can return 20k characters and the
+        // replay only shows the first 500 anyway.
+        let capped = trimmed.count > 2000 ? String(trimmed.prefix(1997)) + "..." : trimmed
+        userTurnOpen = false
+        messages.append(ChatMessage(role: "tool", text: capped, name: name))
+        dirty = true
+        scheduleSave()
     }
 
     private func recordAssistant(_ text: String) {
