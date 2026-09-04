@@ -203,10 +203,22 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         return self._current_turn_id, self._current_turn_revision
 
     def _speech_buffer_duration_ms(self) -> float:
+        # This is polled once per audio chunk, so prefer the iterator's running
+        # total over materialising and re-summing the whole chunk list.
+        counter = getattr(self.iterator, "speech_buffer_samples", None)
+        if counter is not None:
+            return counter() / self.sample_rate * 1000
         if not hasattr(self.iterator, "speech_buffer"):
             return 0.0
         buffer_samples = sum(len(t) for t in self.iterator.speech_buffer())
         return buffer_samples / self.sample_rate * 1000
+
+    def _segment_buffer_duration_ms(self) -> float:
+        """Duration of the active speech buffer, excluding the pre-speech prefix."""
+        counter = getattr(self.iterator, "buffer_samples", None)
+        if counter is not None:
+            return counter() / self.sample_rate * 1000
+        return sum(len(t) for t in self.iterator.buffer) / self.sample_rate * 1000
 
     def _current_active_speech_duration_ms(self) -> float:
         active_speech_samples = getattr(self.iterator, "active_speech_samples", 0)
@@ -557,8 +569,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         # Deferred speech_started: only emit once active VAD speech reaches the valid speech threshold.
         is_triggered_now = self.iterator.triggered
         if is_triggered_now and not self._speech_started_emitted:
-            segment_samples = sum(len(t) for t in self.iterator.buffer)
-            segment_duration_ms = segment_samples / self.sample_rate * 1000
             active_speech_duration_ms = self._current_active_speech_duration_ms()
             speech_buffer_duration_ms = self._speech_buffer_duration_ms()
             start_ms = max(0, self._audio_ms - int(speech_buffer_duration_ms))
@@ -576,7 +586,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                     "Speech started (confirmed, active=%.0fms, min=%.0fms, segment=%.0fms, turn=%s rev=%s)",
                     effective_active_speech_duration_ms,
                     active_speech_min_ms,
-                    segment_duration_ms,
+                    self._segment_buffer_duration_ms(),
                     turn_id,
                     turn_revision,
                 )

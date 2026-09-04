@@ -39,18 +39,68 @@ class SpectralDenoiser:
         self.noise_pct = float(noise_pct)
         self.lookback = max(1, int(lookback))
         self._win = np.hanning(frame).astype(np.float32)
+        # Overlap-add weights are the squared window; it never changes.
+        self._win2 = self._win * self._win
         self._in = np.zeros(0, dtype=np.float32)
-        self._maghist: deque[np.ndarray] = deque(maxlen=self.lookback)
+        # Recent per-bin magnitudes as a ``(bins, lookback)`` ring buffer. Bins
+        # are rows so the noise percentile partitions along a contiguous axis,
+        # and no per-frame copy of the history is needed.
+        self._hist: np.ndarray | None = None
+        self._hist_pos = 0
+        self._hist_len = 0
         self._acc = np.zeros(0, dtype=np.float32)
         self._wacc = np.zeros(0, dtype=np.float32)
+
+    def _remember_magnitude(self, mag: np.ndarray) -> None:
+        # Match the magnitude dtype exactly: rfft on float32 audio yields
+        # complex64, and widening the history here would silently promote the
+        # noise estimate (and the gain derived from it) to float64.
+        if self._hist is None or self._hist.shape != (mag.shape[0], self.lookback) or self._hist.dtype != mag.dtype:
+            self._hist = np.empty((mag.shape[0], self.lookback), dtype=mag.dtype)
+            self._hist_pos = 0
+            self._hist_len = 0
+        self._hist[:, self._hist_pos] = mag
+        self._hist_pos = (self._hist_pos + 1) % self.lookback
+        self._hist_len = min(self._hist_len + 1, self.lookback)
+
+    def _noise_estimate(self) -> np.ndarray:
+        """``np.percentile(history, noise_pct, axis=frames)`` on the ring buffer.
+
+        Percentiles ignore row order, so the rotated ring buffer gives the same
+        answer as the chronological history; this selects the two bracketing
+        order statistics directly instead of running the general percentile
+        machinery on a freshly stacked copy every frame.
+        """
+        assert self._hist is not None
+        n = self._hist_len
+        hist = self._hist if n == self.lookback else self._hist[:, :n]
+        if n == 1:
+            return hist[:, 0].copy()
+        virtual_index = (self.noise_pct / 100.0) * (n - 1)
+        lower = int(np.floor(virtual_index))
+        upper = min(lower + 1, n - 1)
+        frac = virtual_index - lower
+        # A full sort of each short, contiguous lookback row beats a partial
+        # selection here: introselect's per-row setup costs more than sorting
+        # ~24 values outright.
+        ordered = np.sort(hist, axis=-1)
+        if lower == upper or frac == 0.0:
+            return ordered[:, lower].copy()
+        low_value = ordered[:, lower]
+        high_value = ordered[:, upper]
+        span = high_value - low_value
+        # Mirrors numpy's linear interpolation, which anchors on whichever end
+        # is nearer so the result stays exact at the bracketing samples.
+        if frac < 0.5:
+            return low_value + span * frac
+        return high_value - span * (1.0 - frac)
 
     def _process_frame(self, frame: np.ndarray) -> np.ndarray:
         spec = np.fft.rfft(frame * self._win)
         mag = np.abs(spec)
         phase = np.angle(spec)
-        self._maghist.append(mag.copy())
-        hist = np.array(self._maghist)
-        noise = np.percentile(hist, self.noise_pct, axis=0)
+        self._remember_magnitude(mag)
+        noise = self._noise_estimate()
         p = mag * mag
         nn = noise * noise
         gain = np.clip((p - nn) / (p + 1e-12), self.floor, 1.0)
@@ -67,7 +117,7 @@ class SpectralDenoiser:
             self._in = self._in[self.hop :]
             self._pad_acc()
             self._acc[: self.frame] += yf
-            self._wacc[: self.frame] += self._win * self._win
+            self._wacc[: self.frame] += self._win2
             parts.append(self._emit_hop())
         if not parts:
             return np.zeros(0, dtype=np.float32)
@@ -85,7 +135,7 @@ class SpectralDenoiser:
             self._in = self._in[self.hop :] if len(self._in) > self.hop else np.zeros(0, dtype=np.float32)
             self._pad_acc()
             self._acc[: self.frame] += yf
-            self._wacc[: self.frame] += self._win * self._win
+            self._wacc[: self.frame] += self._win2
             parts.append(self._emit_hop())
         # Drain the overlap tail left by the final frames (real signal).
         while len(self._acc) > 0:
@@ -106,11 +156,12 @@ class SpectralDenoiser:
 
     def _emit_hop(self) -> np.ndarray:
         n = min(self.hop, len(self._acc))
-        emit = self._acc[:n].copy()
-        denom = self._wacc[:n].copy()
+        # The division allocates the result, so the accumulator slices can stay
+        # views: nothing aliases ``_acc``/``_wacc`` once this returns.
+        emit = self._acc[:n] / np.where(self._wacc[:n] > 1e-8, self._wacc[:n], 1.0)
         self._acc = self._acc[n:]
         self._wacc = self._wacc[n:]
-        return emit / np.where(denom > 1e-8, denom, 1.0)
+        return emit
 
 
 class TTSNoiseGate:

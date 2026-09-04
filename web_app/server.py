@@ -1013,8 +1013,14 @@ def _session_recency_key(path: Path, session: dict) -> tuple[str, str, float, st
 def _prune_old_sessions() -> None:
     if not SESSIONS_DIR.exists():
         return
+    paths = list(SESSIONS_DIR.glob("*.json"))
+    # Ranking has to parse every stored session, and this runs on each save.
+    # At or under the cap nothing is prunable (unreadable files are skipped, so
+    # the ranked list is never longer than this), so skip the reads entirely.
+    if len(paths) <= SESSION_RETENTION_COUNT:
+        return
     ranked: list[tuple[tuple[str, str, float, str], Path]] = []
-    for path in SESSIONS_DIR.glob("*.json"):
+    for path in paths:
         value = _read_json(path, None)
         if isinstance(value, dict):
             ranked.append((_session_recency_key(path, value), path))

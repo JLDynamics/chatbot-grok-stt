@@ -47,3 +47,29 @@ def test_output_tracks_input_content():
     n = min(len(sig), len(out))
     corr = float(np.corrcoef(sig[4096:n], out[4096:n])[0, 1])
     assert corr > 0.97
+
+
+def test_noise_estimate_matches_numpy_percentile():
+    # The denoiser keeps its magnitude history in a ring buffer and selects the
+    # order statistics directly. That must stay identical to the percentile it
+    # replaced, at every fill level and for any configured percentile.
+    rng = np.random.default_rng(5)
+    for noise_pct in (10.0, 5.0, 50.0, 75.0, 90.0):
+        for lookback in (1, 3, 24, 31):
+            denoiser = SpectralDenoiser(noise_pct=noise_pct, lookback=lookback)
+            history = []
+            for _ in range(lookback + 5):
+                mag = (rng.random(65) * 0.4).astype(np.float32)
+                history.append(mag)
+                denoiser._remember_magnitude(mag)
+                expected = np.percentile(np.array(history[-lookback:]), noise_pct, axis=0)
+                assert np.array_equal(denoiser._noise_estimate(), expected)
+
+
+def test_noise_history_preserves_magnitude_dtype():
+    # rfft on float32 audio yields complex64 magnitudes; widening the history
+    # would silently promote the noise estimate and the gain derived from it.
+    denoiser = SpectralDenoiser()
+    denoiser.process(np.zeros(4096, dtype=np.float32))
+    assert denoiser._hist is not None
+    assert denoiser._hist.dtype == np.float32

@@ -41,6 +41,11 @@ class VADIterator:
         self.is_speaking = False
         self.buffer: list[torch.Tensor] = []
         self.prefix_buffer: list[torch.Tensor] = []
+        # Running sample totals for ``buffer``/``prefix_buffer``. Callers poll
+        # the speech-buffer duration once per audio chunk, so re-summing the
+        # growing chunk list there made a long utterance cost O(n^2).
+        self._buffer_samples = 0
+        self._prefix_samples = 0
         self.active_speech_samples = 0
         self.last_utterance_active_speech_samples = 0
         self._pre_speech_buffer: deque[torch.Tensor] = deque()
@@ -60,6 +65,8 @@ class VADIterator:
         self.current_sample = 0
         self.buffer = []
         self.prefix_buffer = []
+        self._buffer_samples = 0
+        self._prefix_samples = 0
         self.active_speech_samples = 0
         self.last_utterance_active_speech_samples = 0
         self._pre_speech_buffer.clear()
@@ -107,6 +114,14 @@ class VADIterator:
     def speech_buffer(self) -> list[torch.Tensor]:
         return self._speech_buffer()
 
+    def speech_buffer_samples(self) -> int:
+        """Total samples ``speech_buffer()`` would return, without building it."""
+        return self._prefix_samples + self._buffer_samples
+
+    def buffer_samples(self) -> int:
+        """Total samples held in ``buffer`` (excluding the pre-speech prefix)."""
+        return self._buffer_samples
+
     @torch.no_grad()
     def __call__(self, x: torch.Tensor) -> list[torch.Tensor] | None:
         """
@@ -131,9 +146,11 @@ class VADIterator:
         if (speech_prob >= self.threshold) and not self.triggered:
             self.triggered = True
             self.prefix_buffer = list(self._pre_speech_buffer)
+            self._prefix_samples = sum(self._num_samples(chunk) for chunk in self.prefix_buffer)
             self._pre_speech_buffer.clear()
             self._pre_speech_samples = 0
             self.buffer.append(x)
+            self._buffer_samples = window_size_samples
             self.active_speech_samples = window_size_samples
             self.last_utterance_active_speech_samples = 0
             return None
@@ -144,6 +161,7 @@ class VADIterator:
 
         if self.triggered:
             self.buffer.append(x)
+            self._buffer_samples += window_size_samples
             if speech_prob >= self.threshold - 0.15:
                 self.active_speech_samples += window_size_samples
                 if self.temp_end:
@@ -165,6 +183,8 @@ class VADIterator:
                 self.active_speech_samples = 0
                 self.buffer = []
                 self.prefix_buffer = []
+                self._buffer_samples = 0
+                self._prefix_samples = 0
                 return spoken_utterance
 
         return None

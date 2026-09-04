@@ -196,3 +196,43 @@ def test_active_speech_samples_include_hysteresis_band_and_exclude_trailing_sile
     assert iterator.last_utterance_active_speech_samples == 1024
     assert iterator.active_speech_samples == 0
     assert len(spoken_utterance) > 2
+
+
+def test_sample_counters_track_the_buffers_they_summarize() -> None:
+    # The handler polls these totals once per audio chunk instead of re-summing
+    # the chunk lists, so they must stay exactly in step through trigger,
+    # continuation and end-of-speech resets.
+    probs = [0.1, 0.1, 0.9, 0.9, 0.9, 0.2, 0.1, 0.1, 0.1, 0.1, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1]
+    iterator = VADIterator(
+        model=_FakeVADModel(probs),
+        threshold=0.5,
+        sampling_rate=16000,
+        min_silence_duration_ms=100,
+        speech_pad_ms=30,
+    )
+
+    saw_speech = False
+    for _ in probs:
+        iterator(torch.ones(512))
+        assert iterator.speech_buffer_samples() == sum(len(t) for t in iterator.speech_buffer())
+        assert iterator.buffer_samples() == sum(len(t) for t in iterator.buffer)
+        saw_speech = saw_speech or bool(iterator.buffer)
+
+    assert saw_speech
+
+
+def test_reset_states_clears_sample_counters() -> None:
+    iterator = VADIterator(
+        model=_FakeVADModel([0.9, 0.9]),
+        threshold=0.5,
+        sampling_rate=16000,
+        min_silence_duration_ms=100,
+        speech_pad_ms=0,
+    )
+    iterator(torch.ones(512))
+    iterator(torch.ones(512))
+    assert iterator.speech_buffer_samples() > 0
+
+    iterator.reset_states()
+    assert iterator.speech_buffer_samples() == 0
+    assert iterator.buffer_samples() == 0
