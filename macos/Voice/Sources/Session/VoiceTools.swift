@@ -44,6 +44,39 @@ public final class VoiceToolExecutor: @unchecked Sendable {
 
     private let baseURL = LocalService.sidecarAPI
 
+    /// Per-tool URLSessions. `URLSession.shared` defaults to a 60s request
+    /// timeout, which is *shorter* than the sidecar's own budget for the slow
+    /// tools: the coding agent runs up to `CODE_AGENT_TIMEOUT_S` (300s) and a
+    /// desktop action up to 45s. With the shared session a long coding task
+    /// reported failure to the user while the server kept working. Each client
+    /// timeout now sits outside the server's, so the server's own error is what
+    /// the model sees.
+    private static func session(timeout: TimeInterval) -> URLSession {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = timeout
+        cfg.timeoutIntervalForResource = timeout + 30
+        return URLSession(configuration: cfg)
+    }
+
+    /// Search, fetch, bridge read, preflight — all bounded well under a minute
+    /// server-side (`FETCH_TIMEOUT_S` 15s, search 12s).
+    private let quickSession = session(timeout: 30)
+    /// `/api/desktop/act` — the harness is capped at 45s server-side.
+    private let desktopSession = session(timeout: 75)
+    /// `/api/code` — `CODE_AGENT_TIMEOUT_S` defaults to 300s.
+    private let codeAgentSession = session(timeout: 360)
+
+    /// Surface the sidecar's own `detail` instead of a bare status code.
+    /// The endpoints build specific, actionable messages ("That is not a
+    /// readable page (application/pdf)", "Search is not configured") and the
+    /// model needs them to decide which rung of the fallback chain to try next.
+    private func errorDetail(_ data: Data, _ response: URLResponse?) -> String {
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"]
+        if let text = detail as? String, !text.isEmpty { return text }
+        return "status \(code)"
+    }
+
     // Tool toggles in UserDefaults
     public var webSearchEnabled: Bool {
         get { UserDefaults.standard.object(forKey: "tools.web_search") as? Bool ?? true }
@@ -282,9 +315,9 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["query": query])
 
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await quickSession.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-            return VoiceToolResult(output: "Search request failed.")
+            return VoiceToolResult(output: "Web search failed: \(errorDetail(data, res))")
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return VoiceToolResult(output: "Invalid search response.")
@@ -314,10 +347,9 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["url": stringURL])
 
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await quickSession.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-            let code = (res as? HTTPURLResponse)?.statusCode ?? 0
-            return VoiceToolResult(output: "Could not fetch web page: status \(code)")
+            return VoiceToolResult(output: "web_fetch could not read that page: \(errorDetail(data, res))")
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return VoiceToolResult(output: "Invalid fetch response.")
@@ -332,7 +364,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
 
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await quickSession.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             return VoiceToolResult(
                 output: "The read-only Chrome page bridge is unavailable. " +
@@ -356,12 +388,9 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: args)
 
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await desktopSession.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-            let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
-            let code = (res as? HTTPURLResponse)?.statusCode ?? 0
-            let errorMsg = detail ?? "status \(code)"
-            return VoiceToolResult(output: "Desktop control failed: \(errorMsg)")
+            return VoiceToolResult(output: "Desktop control failed: \(errorDetail(data, res))")
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return VoiceToolResult(output: "Invalid desktop response.")
@@ -392,9 +421,9 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["task": task])
 
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await codeAgentSession.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-            return VoiceToolResult(output: "Coding agent request failed.")
+            return VoiceToolResult(output: "Coding agent request failed: \(errorDetail(data, res))")
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return VoiceToolResult(output: "Invalid coding agent response.")
@@ -410,7 +439,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["include_desktop": desktopControlEnabled])
 
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await quickSession.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             return VoiceToolResult(output: "{\"route_hint\":\"ask\",\"error\":\"preflight_failed\"}")
         }
@@ -477,7 +506,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
 
     public func checkChromeBridgeStatus() async -> Bool {
         let url = baseURL.appendingPathComponent("browser/status")
-        guard let (data, res) = try? await URLSession.shared.data(from: url),
+        guard let (data, res) = try? await quickSession.data(from: url),
               let http = res as? HTTPURLResponse, http.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return false }
