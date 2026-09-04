@@ -492,6 +492,12 @@ final class SessionController: ObservableObject {
         saveTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled else { return }
+            // Detach before flushing. flushSave cancels any pending debounce so
+            // a direct save supersedes it — but reached from here, saveTask *is*
+            // this task, so it cancelled itself and took the in-flight PATCH
+            // down with it. Every debounced save failed with "cancelled"; only
+            // the direct calls on session switch or stop ever landed.
+            self?.saveTask = nil
             await self?.flushSave()
         }
     }

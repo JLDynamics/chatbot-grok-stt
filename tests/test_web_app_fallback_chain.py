@@ -229,3 +229,19 @@ def test_scroll_without_a_target_does_not_steal_focus(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_run_harness", fake_harness)
     assert client.post("/api/desktop/act", json={"action": "scroll", "amount": 3}).status_code == 200
     assert "open_app(app)" not in seen["script"]
+
+
+def test_debounced_save_detaches_before_flushing():
+    """The debounced save must not cancel the task it is running inside.
+
+    flushSave() cancels saveTask so a direct save supersedes a pending
+    debounce. Reached from the debounce, though, saveTask *is* that task, so it
+    cancelled itself and URLSession aborted the in-flight PATCH: every
+    debounced save failed with "cancelled" and only session-switch or stop ever
+    persisted the transcript.
+    """
+    session = (VOICE_SOURCES / "VoiceSession.swift").read_text()
+    schedule = session[session.index("private func scheduleSave"):]
+    schedule = schedule[: schedule.index("func flushSave")]
+    assert "self?.saveTask = nil" in schedule, "debounce must detach before flushing"
+    assert schedule.index("self?.saveTask = nil") < schedule.index("await self?.flushSave()")
