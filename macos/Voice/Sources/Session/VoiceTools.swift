@@ -74,6 +74,17 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"]
         if let text = detail as? String, !text.isEmpty { return text }
+        // Some endpoints answer with a structured detail (the bridge read
+        // returns reason/message/url so the caller can pick a next step).
+        // Pass the whole object through rather than flattening it to a status
+        // code, which would throw away the very fields it exists to carry.
+        if let object = detail as? [String: Any], !object.isEmpty {
+            if let encoded = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+               let text = String(data: encoded, encoding: .utf8) {
+                return text
+            }
+            if let message = object["message"] as? String, !message.isEmpty { return message }
+        }
         return "status \(code)"
     }
 

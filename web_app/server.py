@@ -79,7 +79,14 @@ BROWSER_PAGE_MIN_CHARS = 200
 BROWSER_PAGE_MAX_CHARS = 60_000
 BROWSER_PAGE_MAX_ENTRIES = 50
 BROWSER_PAGE_MAX_BODY_BYTES = 100_000
+# How long a tab's *address* stays known after its text has expired. The text
+# is the sensitive payload and keeps the short TTL above; remembering only
+# where the user was lets a failed bridge read name the page so the caller can
+# fall back to fetching it. Cleared by /api/browser/hide and /api/browser/clear.
+BROWSER_URL_TTL_S = 1800.0
 browser_pages: dict[str, tuple[float, BrowserPage]] = {}
+# tab key -> (seen_at, url, title). Never holds page text.
+last_seen_pages: dict[str, tuple[float, str, str]] = {}
 
 
 class BrowserPageHide(BaseModel):
@@ -145,10 +152,15 @@ def _store_browser_page(page: BrowserPage) -> dict:
         for key, (_, cached) in list(browser_pages.items()):
             if not cached.tab_id:
                 browser_pages.pop(key, None)
-    browser_pages[page.tab_id or page.article_id.strip() or page.url] = (time.monotonic(), page)
+    key = page.tab_id or page.article_id.strip() or page.url
+    browser_pages[key] = (time.monotonic(), page)
+    last_seen_pages[key] = (time.monotonic(), page.url, page.title)
     while len(browser_pages) > BROWSER_PAGE_MAX_ENTRIES:
         oldest = min(browser_pages, key=lambda key: browser_pages[key][0])
         browser_pages.pop(oldest, None)
+    while len(last_seen_pages) > BROWSER_PAGE_MAX_ENTRIES:
+        oldest = min(last_seen_pages, key=lambda key: last_seen_pages[key][0])
+        last_seen_pages.pop(oldest, None)
     return {
         "ok": True,
         "chars": len(page.text),
@@ -158,6 +170,18 @@ def _store_browser_page(page: BrowserPage) -> dict:
         "boundary": page.boundary,
         "bridge_version": page.bridge_version,
     }
+
+
+def _last_seen_page(now: float | None = None) -> tuple[str, str] | None:
+    """Most recent (url, title) still inside BROWSER_URL_TTL_S, text aside."""
+    now = time.monotonic() if now is None else now
+    for key, (seen_at, _url, _title) in list(last_seen_pages.items()):
+        if now - seen_at > BROWSER_URL_TTL_S:
+            last_seen_pages.pop(key, None)
+    if not last_seen_pages:
+        return None
+    _seen_at, url, title = max(last_seen_pages.values(), key=lambda item: item[0])
+    return url, title
 
 
 def _fresh_browser_page(now: float | None = None) -> BrowserPage | None:
@@ -199,6 +223,9 @@ async def hide_browser_page(request: Request) -> dict:
     if not re.fullmatch(r"[1-9][0-9]{0,19}", hidden.tab_id):
         raise HTTPException(status_code=400, detail="The browser tab identifier is invalid.")
     removed = browser_pages.pop(hidden.tab_id, None) is not None
+    # "This tab is no longer visible" must forget the address too, otherwise
+    # hiding a page would still leave it nameable.
+    last_seen_pages.pop(hidden.tab_id, None)
     return {"ok": True, "removed": removed}
 
 
@@ -209,15 +236,46 @@ async def clear_browser_pages(request: Request) -> dict:
         raise HTTPException(status_code=403, detail="Missing browser bridge header.")
     removed = len(browser_pages)
     browser_pages.clear()
+    last_seen_pages.clear()
     return {"ok": True, "removed": removed}
 
 
 @app.post("/api/browser/read")
 async def read_browser_page() -> JSONResponse:
-    """Return the fresh, read-only page supplied by the Chrome extension."""
+    """Return the fresh, read-only page supplied by the Chrome extension.
+
+    A miss returns 503 with a machine-readable ``reason`` and, when the tab's
+    address is still remembered, the ``url``. Callers need both to choose a
+    fallback: "never enabled" and "expired" want different advice, and only a
+    known URL makes fetching the page an option.
+    """
     page = _fresh_browser_page()
     if page is None:
-        raise HTTPException(status_code=503, detail="Open or reload the Chrome page and try again.")
+        known = _last_seen_page()
+        if known is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "reason": "bridge_never_enabled",
+                    "message": (
+                        "No page has been shared from Chrome. Click the Chatbot Page Bridge "
+                        "toolbar icon once on the tab you want read."
+                    ),
+                },
+            )
+        url, title = known
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "reason": "bridge_expired",
+                "message": (
+                    "The shared copy of that page has expired. Click the Chatbot Page Bridge "
+                    "toolbar icon once to refresh it."
+                ),
+                "url": url,
+                "title": title,
+            },
+        )
     return JSONResponse(
         {
             "method": "text",
@@ -343,6 +401,42 @@ async def _serper_search(client: httpx.AsyncClient, query: str, key: str) -> dic
     return {"query": query, "answer": answer, "results": results}
 
 
+# Statuses a site returns when it is refusing an anonymous reader rather than
+# failing: unauthorized, payment required, forbidden, rate limited.
+GATED_STATUS_CODES = {401, 402, 403, 429}
+# Only used to qualify an already-suspiciously-short page, never on its own.
+GATED_TEXT_MARKERS = (
+    "subscribe to continue",
+    "subscribers only",
+    "create a free account",
+    "sign in to read",
+    "log in to continue",
+    "this content is for subscribers",
+    "enable javascript",
+    "verify you are human",
+    "checking your browser",
+)
+GATED_TEXT_MAX_CHARS = 900
+
+
+def _looks_gated(status_code: int, text: str) -> str | None:
+    """Why this page looks withheld rather than read, or None.
+
+    Deliberately conservative: a status code is trustworthy on its own, but
+    prose markers only count on a page too short to be the real article. A
+    false positive sends the caller up the fallback chain for no reason.
+    """
+    if status_code in GATED_STATUS_CODES:
+        return f"http_{status_code}"
+    stripped = text.strip()
+    if len(stripped) <= GATED_TEXT_MAX_CHARS:
+        lowered = stripped.lower()
+        for marker in GATED_TEXT_MARKERS:
+            if marker in lowered:
+                return "paywall_or_interstitial"
+    return None
+
+
 async def _tinyfish_fetch(client: httpx.AsyncClient, url: str, key: str) -> dict:
     response = await client.post(
         TINYFISH_FETCH_URL,
@@ -364,11 +458,16 @@ async def _tinyfish_fetch(client: httpx.AsyncClient, url: str, key: str) -> dict
     if not text:
         raise HTTPException(status_code=502, detail="That page had no readable text.")
     truncated = len(text) > FETCH_MAX_CHARS
+    # The provider already returned 200, so only the text markers can apply.
+    # Both fetch paths must report this field or the caller cannot rely on it.
+    gated_reason = _looks_gated(200, text)
     return {
         "url": page.get("final_url") or page.get("url") or url,
         "title": page.get("title"),
         "text": text[:FETCH_MAX_CHARS],
         "truncated": truncated,
+        "gated": gated_reason is not None,
+        "gated_reason": gated_reason,
     }
 
 
@@ -549,12 +648,15 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
             detail=f"That is not a readable page ({content_type or 'unknown type'}).",
         )
     truncated = len(text) > FETCH_MAX_CHARS
+    gated_reason = _looks_gated(response.status_code, text)
     return JSONResponse(
         {
             "url": str(response.url),
             "title": title,
             "text": text[:FETCH_MAX_CHARS],
             "truncated": truncated,
+            "gated": gated_reason is not None,
+            "gated_reason": gated_reason,
         }
     )
 
