@@ -231,7 +231,12 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
     assert "periodInMinutes: 0.5" in background
     assert "reinjectContentScript" in background
     assert "chrome.scripting?.executeScript" in background
-    assert manifest["permissions"] == ["storage", "alarms", "scripting"]
+    # activeTab is what makes reinjectContentScript actually work: executeScript
+    # on an article tab needs it (or a host permission for every site), and
+    # without it the toolbar click could not revive a tab orphaned by an
+    # extension reload -- the click appeared to do nothing at all.
+    assert manifest["permissions"] == ["storage", "alarms", "scripting", "activeTab"]
+    assert "http://127.0.0.1:7860/*" in manifest["host_permissions"]
     assert manifest["version"] == "0.4.3"
     assert "sendResponse({ ok: true, enabled: true, preserved: true })" in background
     assert "function extractXPost()" in content

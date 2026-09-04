@@ -67,7 +67,12 @@ async function reinjectContentScript(tabId) {
   try {
     await chrome.scripting?.executeScript?.({ target: { tabId }, files: ['content.js'] });
     return true;
-  } catch {
+  } catch (error) {
+    // Needs activeTab (granted by the toolbar click) or a host permission for
+    // the page. Without one this always threw and the bare catch hid it, so a
+    // tab orphaned by an extension reload could never be revived: the click
+    // looked like it did nothing and no page was ever published.
+    console.warn('[bridge] content script reinjection failed:', error);
     return false;
   }
 }
