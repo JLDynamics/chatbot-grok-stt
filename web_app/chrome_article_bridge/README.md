@@ -4,52 +4,40 @@ This Manifest V3 extension gives the local chatbot bounded, read-only main text 
 
 ## Install
 
-1. Start the chatbot on `http://127.0.0.1:7860`.
+1. Start the sidecar (`./run-browser.sh`) so `http://127.0.0.1:7860` answers.
 2. Open `chrome://extensions` and enable **Developer mode**.
 3. Select **Load unpacked** and choose this `chrome_article_bridge` folder.
-4. Open or reload the chatbot at `http://127.0.0.1:7860`. The bridge detects the
-   receiver and enables itself automatically; the green check means the session
-   is active. Using the native macOS Voice app instead (no chatbot tab open)?
-   Open the public page, then click the bridge toolbar icon once to enable the
-   same session without a receiver tab.
-5. Open or reload the public page you want the chatbot to read. No extension
-   click is required.
+4. Open the public page you want the chatbot to read, then click the bridge
+   toolbar icon once. The green check means the session is active. If the
+   extension was just reloaded, the click also replaces the stale script
+   inside the open tab, so no page reload is needed.
 
 If Chrome already has an older unpacked copy from the former `demo/` folder,
 remove that broken entry and load `web_app/chrome_article_bridge` instead. After
-source updates, click **Reload** on the extension card and reload the article tab.
-The expected version is **0.4.2**. Reloading the extension invalidates the old
-content script already inside open tabs, so the page reload is required.
-
+source updates, click **Reload** on the extension card and then click the bridge
+toolbar icon once on the article tab; the click re-injects the new content
+script without a page reload.
+The expected version is **0.4.3**. A page reload also works and is never wrong.
 The toolbar badge is a session switch:
 
 - green `✓`: the bridge remains enabled across reloads, tab switches, and app focus changes
-- red `!`: the local chatbot is not reachable on port 7860
-- no badge: the chatbot receiver tab is not open (open it, or click the toolbar
-  icon once to enable without it when using the native macOS app)
+- red `!`: the local sidecar is not reachable on port 7860
+- no badge: click the toolbar icon once on the page to enable the session
 
 The icon title explains whether the current page is ready, blocked, unsupported,
 or has no bounded main text. Those page states do not turn off the green session
 switch. A blocked, sensitive, unsupported, or unreadable current page clears any
 older cached page text so it cannot be read accidentally.
 
-The extension automatically republishes whenever a tab becomes visible. When
-you switch directly from a readable page to the chatbot tab, it preserves that
-page for the server's five-minute TTL so `read_article` can consume it. Switching
-to another webpage removes the old page immediately. Main-content changes and a
-30-second heartbeat keep the visible page fresh. Clicking the icon only retries
-the receiver connection or republishes the visible page; it does not disable an
-active chatbot session.
+The extension automatically republishes whenever a tab becomes visible, and a
+30-second heartbeat keeps the visible page fresh. Clicking the icon enables the
+session (or retries the sidecar connection / republishes the visible page); it
+does not disable an active session.
 
-The enabled setting uses Chrome's browser-session storage, so refreshing either
-the article or chatbot page does not lose it. Opening the exact local receiver
-root address (`/` or `/index.html`) activates it; unrelated localhost pages and
-other paths do not. Closing or navigating
-the chatbot tab away, or ending the Chrome session, disables it and clears cached
-text. The extension cannot receive an instant process-shutdown event from the
-local server; instead it checks the receiver at startup, when the receiver opens,
-on page delivery, and with a metadata-only 30-second extension health alarm. A
-failed check ends the session and shows the red badge.
+The enabled setting uses Chrome's session storage, so reloading the article
+does not lose it. The extension checks the sidecar at startup, on page
+delivery, and with a metadata-only 30-second health alarm. A failed check ends
+the session and shows the red badge.
 
 ## What to ask the chatbot
 

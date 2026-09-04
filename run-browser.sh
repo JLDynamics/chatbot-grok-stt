@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the local realtime backend and browser product together.
+# Start the local realtime backend and the API sidecar for the native macOS app.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,9 +60,8 @@ if [[ -z "$(listener "$PORT")" ]]; then
   exit 1
 fi
 
-echo "Open http://localhost:$WEB_PORT and click the orb."
+echo "Sidecar on http://localhost:$WEB_PORT (API only, no browser UI). Voice backend on port $PORT."
 echo "Ctrl+C stops both processes."
-CHATBOT_VOICE_URL="ws://localhost:$PORT/v1/realtime" \
   STARTUP_GREETING="${STARTUP_GREETING:-}" \
   WEB_PORT="$WEB_PORT" \
   uv run uvicorn --app-dir web_app server:app --host 127.0.0.1 --port "$WEB_PORT" \

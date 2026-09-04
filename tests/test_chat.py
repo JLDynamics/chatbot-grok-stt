@@ -29,11 +29,8 @@ from openai.types.realtime.realtime_conversation_item_user_message import (
 )
 from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 
-from chatbot.LLM.chat import (
-    AUDIO_INPUT_HISTORY_PLACEHOLDER,
-    Chat,
-    ChatItemError,
-    CompactionResult,
+from chatbot.LLM.chat import AUDIO_INPUT_HISTORY_PLACEHOLDER, Chat, ChatItemError, CompactionResult
+from chatbot.LLM.chat_factories import (
     build_active_chat,
     make_assistant_message,
     make_system_message,

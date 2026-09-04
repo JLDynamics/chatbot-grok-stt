@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,7 +19,13 @@ spec.loader.exec_module(server)
 client = TestClient(server.app)
 
 
-def test_config_exposes_retained_browser_capabilities(monkeypatch, tmp_path):
+def _voice_tools_text() -> str:
+    """Native tool definitions with Swift string-continuation joins removed."""
+    swift = (ROOT / "macos" / "Voice" / "Sources" / "Session" / "VoiceTools.swift").read_text()
+    return re.sub(r'"\s*\+\s*"', "", swift)
+
+
+def test_config_exposes_retained_sidecar_capabilities(monkeypatch, tmp_path):
     harness = tmp_path / "desktop-harness"
     harness.write_text("#!/bin/sh\n")
     harness.chmod(0o700)
@@ -205,7 +212,7 @@ def test_chrome_bridge_clear_ends_session_and_discards_all_cached_pages(monkeypa
 def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_screenshots():
     content = (WEB_APP_DIR / "chrome_article_bridge" / "content.js").read_text()
     background = (WEB_APP_DIR / "chrome_article_bridge" / "background.js").read_text()
-    main = (WEB_APP_DIR / "main.js").read_text()
+    swift = _voice_tools_text()
     manifest = json.loads((WEB_APP_DIR / "chrome_article_bridge" / "manifest.json").read_text())
 
     assert "document.addEventListener('visibilitychange', handleVisibilityChange)" in content
@@ -222,9 +229,10 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
     assert "chrome.tabs.onActivated" in background
     assert "chrome.alarms.onAlarm" in background
     assert "periodInMinutes: 0.5" in background
-    assert "CLEAR_ENDPOINT" in background
-    assert manifest["permissions"] == ["storage", "alarms"]
-    assert manifest["version"] == "0.4.2"
+    assert "reinjectContentScript" in background
+    assert "chrome.scripting?.executeScript" in background
+    assert manifest["permissions"] == ["storage", "alarms", "scripting"]
+    assert manifest["version"] == "0.4.3"
     assert "sendResponse({ ok: true, enabled: true, preserved: true })" in background
     assert "function extractXPost()" in content
     assert "x_primary_post_end" in content
@@ -247,18 +255,17 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
         "An explicit 'take a screenshot'",
     )
     for example in routing_examples:
-        assert example in main
-    assert "no page body and no screenshot" in main
-    assert "do not ask for approval and do not offer or call" in main
-    assert "content-versus-visual question" in main
-    assert "After preflight, call the chosen content tool immediately without another spoken update" in main
-    assert "Do not use read_article for generic visual " in main
-    assert "screen requests." in main
-    assert 'name: "inspect_current_context"' in main
-    assert "Do not call it for an explicit " in main
-    assert "X-post text request; call read_article directly" in main
-    assert 'fetch("api/context/preflight"' in main
-    assert "base + TOOL_USE_HINT + TOOL_INTENT_ROUTING" in main
+        assert example in swift
+    assert "no page body and no screenshot" in swift
+    assert "do not ask for approval and do not offer or call" in swift
+    assert "content-versus-visual question" in swift
+    assert "After preflight, call the chosen content tool immediately without another spoken update" in swift
+    assert "must not use read_article" in swift
+    assert '"name": "inspect_current_context"' in swift
+    assert "Do not call it for an explicit " in swift
+    assert "X-post text request; call read_article directly" in swift
+    assert '"context/preflight"' in swift
+    assert "base + Self.toolUseHint + Self.toolIntentRouting" in swift
 
 
 def test_chrome_bridge_session_persists_until_disabled_or_receiver_closes():
@@ -325,13 +332,13 @@ globalThis.fetch = async (url) => {
       ok: false,
       status: 503,
       text: async () => "unavailable",
-      json: async () => ({ expected_version: "0.4.2" }),
+      json: async () => ({ expected_version: "0.4.3" }),
     };
   }
   return {
     ok: true,
     text: async () => "",
-    json: async () => ({ expected_version: "0.4.2" }),
+    json: async () => ({ expected_version: "0.4.3" }),
   };
 };
 eval(readFileSync("web_app/chrome_article_bridge/background.js", "utf8"));
@@ -473,12 +480,81 @@ if (stored.chatbotPageBridgeSession || badgeText !== "!") {
     )
 
 
-def test_expected_websocket_response_race_is_not_logged_as_server_error():
-    source = (WEB_APP_DIR / "ws" / "s2s-ws-client.js").read_text()
-    handled = source.index('err?.type === "conversation_already_has_active_response"')
-    recovered = source.index("response-create race recovered", handled)
-    unexpected_log = source.index("[ws] server error (", recovered)
-    assert handled < recovered < unexpected_log
+def test_bridge_toolbar_click_reinjects_stale_content_script():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required")
+    script = r"""
+import { readFileSync } from "node:fs";
+
+let clickListener;
+let stored = {};
+const injected = [];
+globalThis.chrome = {
+  action: {
+    setBadgeText: async () => {},
+    setBadgeBackgroundColor: async () => {},
+    setTitle: async () => {},
+    onClicked: { addListener(fn) { clickListener = fn; } },
+  },
+  runtime: { lastError: null, onMessage: { addListener() {} } },
+  scripting: {
+    executeScript: async (details) => { injected.push(details); },
+  },
+  alarms: {
+    create: async () => {},
+    clear: async () => true,
+    onAlarm: { addListener() {} },
+  },
+  storage: {
+    session: {
+      get: async (key) => ({ [key]: stored[key] }),
+      set: async (value) => { stored = { ...stored, ...value }; },
+      remove: async (key) => { delete stored[key]; },
+    },
+  },
+  tabs: {
+    sendMessage(_tabId, _message, callback) { callback?.(); },
+    query: async () => [],
+    onRemoved: { addListener() {} },
+    onActivated: { addListener() {} },
+    onUpdated: { addListener() {} },
+  },
+  windows: { getLastFocused: async () => ({ id: 3 }) },
+};
+globalThis.fetch = async () => ({
+  ok: true,
+  text: async () => "",
+  json: async () => ({ expected_version: "0.4.3" }),
+});
+eval(readFileSync("web_app/chrome_article_bridge/background.js", "utf8"));
+
+const wait = () => new Promise((resolve) => setTimeout(resolve, 20));
+await wait();
+clickListener({ id: 17, active: true, windowId: 3 });
+await wait();
+if (injected.length !== 1) {
+  throw new Error("toolbar click did not re-inject the content script");
+}
+if (injected[0].target?.tabId !== 17 || !injected[0].files?.includes("content.js")) {
+  throw new Error("re-inject targeted the wrong tab or file");
+}
+if (!stored.chatbotPageBridgeSession?.enabled) {
+  throw new Error("toolbar click did not enable the session after re-inject");
+}
+"""
+    subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        cwd=ROOT,
+        check=True,
+        timeout=5,
+    )
+
+
+def test_native_client_ignores_server_error_events_instead_of_failing():
+    swift = (ROOT / "macos" / "Voice" / "Sources" / "Session" / "LiveVoiceBackend.swift").read_text()
+    assert 'case "error":' in swift
+    assert "server events like turn_ignored are not" in swift
 
 
 def test_context_preflight_routes_without_page_text_or_screenshot(monkeypatch):
@@ -519,10 +595,10 @@ def test_context_preflight_routes_without_page_text_or_screenshot(monkeypatch):
     }
     assert "Private body" not in json.dumps(chrome)
 
-    main = (WEB_APP_DIR / "main.js").read_text()
-    assert "no additional approval was required" in main
-    assert "do not ask for approval and do not offer or call" in main
-    assert "a screenshot as a fallback" in main
+    swift = _voice_tools_text()
+    assert "without asking for approval or confirmation" in swift
+    assert "do not ask for approval and do not offer or call" in swift
+    assert "a screenshot as a fallback" in swift
 
     async def notes_context():
         return {"available": True, "sensitive": False, "app": "Notes", "window_title": "Shopping list"}
@@ -590,7 +666,7 @@ def test_chrome_bridge_validates_generic_and_x_page_boundaries(monkeypatch):
     assert page["comments_excluded"] is True
 
     x_post = {
-        "bridge_version": "0.4.2",
+        "bridge_version": "0.4.3",
         "tab_id": "654",
         "url": "https://x.com/example/status/987654321",
         "article_id": "987654321",
@@ -605,15 +681,15 @@ def test_chrome_bridge_validates_generic_and_x_page_boundaries(monkeypatch):
     }
     stored_post = client.post("/api/browser/page", headers={"X-Chatbot-Bridge": "page-v1"}, json=x_post)
     assert stored_post.status_code == 200
-    assert stored_post.json()["bridge_version"] == "0.4.2"
+    assert stored_post.json()["bridge_version"] == "0.4.3"
     post = client.post("/api/browser/read").json()
     assert post["content_type"] == "x_post"
     assert post["text"] == "One primary public X post."
     assert post["comments_excluded"] is True
     status = client.get("/api/browser/status").json()
     assert status["connected"] is True
-    assert status["expected_version"] == "0.4.2"
-    assert status["bridge_version"] == "0.4.2"
+    assert status["expected_version"] == "0.4.3"
+    assert status["bridge_version"] == "0.4.3"
     assert status["content_type"] == "x_post"
 
     invalid_post = {**x_post, "comments_excluded": False}

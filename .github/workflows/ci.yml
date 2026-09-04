@@ -24,8 +24,6 @@ jobs:
         run: uv run mypy src/
       - name: Tests
         run: uv run pytest tests/ -q
-      - name: Browser JavaScript syntax
-        run: node --check web_app/main.js && node --check web_app/ws/s2s-ws-client.js
 
   package:
     runs-on: macos-14

@@ -1,8 +1,8 @@
 import AVFoundation
 import Foundation
 
-/// Realtime WebSocket backend for the Chatbot voice server.
-/// Protocol matches `web_app/ws/s2s-ws-client.js`.
+/// Realtime WebSocket backend for the Chatbot voice server
+/// (`ws://127.0.0.1:8766/v1/realtime`).
 @MainActor
 final class LiveVoiceBackend: VoiceBackend {
 
@@ -434,7 +434,7 @@ final class LiveVoiceBackend: VoiceBackend {
                 self.sendUserImage(dataUrl: image)
             }
             // remember/forget rewrite the stored profile; push it into the
-            // live instructions like the web client does.
+            // live instructions to keep them in context.
             if name == "remember" || name == "forget" {
                 await self.refreshInstructions()
             }

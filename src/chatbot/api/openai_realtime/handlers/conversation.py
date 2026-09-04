@@ -15,7 +15,8 @@ from openai.types.realtime.conversation_item_input_audio_transcription_completed
 )
 
 from chatbot.api.openai_realtime.handlers.base import RealtimeBaseHandler
-from chatbot.LLM.chat import ChatItemError, add_supported_item
+from chatbot.LLM.chat import ChatItemError
+from chatbot.LLM.chat_factories import add_supported_item
 from chatbot.pipeline.events import PartialTranscriptionEvent, TranscriptionCompletedEvent
 
 if TYPE_CHECKING:

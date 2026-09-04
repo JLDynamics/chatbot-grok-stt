@@ -135,10 +135,13 @@ class SmartProgressiveStreamingHandler:
                 self.fixed_sentences.extend(new_fixed_sentences)
                 self.fixed_end_time = new_fixed_end_time
 
-                # Re-transcribe from new fixed point
-                window_start_samples = int(self.fixed_end_time * self.sample_rate)
-                audio_window = audio[window_start_samples:]
-                result = self._decode_window(audio_window)
+                # Re-transcribe from the new fixed point, unless it did not
+                # move (re-decoding identical input reproduces identical output).
+                new_start = int(self.fixed_end_time * self.sample_rate)
+                if new_start != window_start_samples:
+                    window_start_samples = new_start
+                    audio_window = audio[window_start_samples:]
+                    result = self._decode_window(audio_window)
 
         # Build output
         fixed_text = " ".join(self.fixed_sentences)

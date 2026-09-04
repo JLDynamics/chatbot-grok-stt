@@ -1,4 +1,4 @@
-"""Local browser UI and the retained search, memory, code, and desktop tools."""
+"""Local API sidecar for the native macOS app: search, memory, sessions, code, and desktop tools."""
 
 from __future__ import annotations
 
@@ -9,26 +9,23 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
-import subprocess
 import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
 app = FastAPI()
-logger = logging.getLogger("chatbot.browser")
+logger = logging.getLogger("chatbot.sidecar")
 logger.setLevel(logging.INFO)
 
 CHATBOT_VOICE_URL = os.environ.get(
@@ -46,7 +43,18 @@ MAX_RESULTS = 5
 FETCH_MAX_BYTES = 2_000_000
 FETCH_MAX_CHARS = 20_000
 FETCH_TIMEOUT_S = 15.0
-WEB_PORT = int(os.environ.get("WEB_PORT", os.environ.get("PORT_WEB", "7860")))
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a numeric env knob without letting garbage kill the sidecar at import."""
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid %s; using %s", name, default)
+        return default
+
+
+WEB_PORT = int(_env_float("WEB_PORT", _env_float("PORT_WEB", 7860.0)))
 
 
 class BrowserPage(BaseModel):
@@ -69,6 +77,8 @@ class BrowserPage(BaseModel):
 BROWSER_PAGE_TTL_S = 300.0
 BROWSER_PAGE_MIN_CHARS = 200
 BROWSER_PAGE_MAX_CHARS = 60_000
+BROWSER_PAGE_MAX_ENTRIES = 50
+BROWSER_PAGE_MAX_BODY_BYTES = 100_000
 browser_pages: dict[str, tuple[float, BrowserPage]] = {}
 
 
@@ -136,6 +146,9 @@ def _store_browser_page(page: BrowserPage) -> dict:
             if not cached.tab_id:
                 browser_pages.pop(key, None)
     browser_pages[page.tab_id or page.article_id.strip() or page.url] = (time.monotonic(), page)
+    while len(browser_pages) > BROWSER_PAGE_MAX_ENTRIES:
+        oldest = min(browser_pages, key=lambda key: browser_pages[key][0])
+        browser_pages.pop(oldest, None)
     return {
         "ok": True,
         "chars": len(page.text),
@@ -167,8 +180,11 @@ def _fresh_browser_page_entry(now: float | None = None) -> tuple[BrowserPage, fl
 async def browser_page(request: Request) -> dict:
     if request.headers.get("x-chatbot-bridge") != "page-v1":
         raise HTTPException(status_code=403, detail="Missing browser bridge header.")
-    content_length = int(request.headers.get("content-length") or 0)
-    if content_length > 100_000:
+    try:
+        content_length = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="The browser payload size is invalid.")
+    if content_length <= 0 or content_length > BROWSER_PAGE_MAX_BODY_BYTES:
         raise HTTPException(status_code=413, detail="The browser payload is too large.")
     page = BrowserPage.model_validate(await request.json())
     return _store_browser_page(page)
@@ -217,12 +233,12 @@ async def browser_bridge_status() -> JSONResponse:
     """Return bridge freshness/version metadata without exposing page text."""
     entry = _fresh_browser_page_entry()
     if not entry:
-        return JSONResponse({"connected": False, "expected_version": "0.4.2", "web_port": WEB_PORT})
+        return JSONResponse({"connected": False, "expected_version": "0.4.3", "web_port": WEB_PORT})
     page, age_s = entry
     return JSONResponse(
         {
             "connected": True,
-            "expected_version": "0.4.2",
+            "expected_version": "0.4.3",
             "web_port": WEB_PORT,
             "bridge_version": page.bridge_version or "legacy",
             "age_ms": round(age_s * 1000),
@@ -237,8 +253,7 @@ def config() -> dict:
     return {
         "search": bool(TINYFISH_KEY or SERPER_KEY or TAVILY_KEY),
         "allowDirect": False,
-        "chatbotUrl": CHATBOT_VOICE_URL,
-        # Legacy field retained briefly so an older browser tab can still connect.
+        # Kept for the verify harness and older clients.
         "s2sUrl": CHATBOT_VOICE_URL,
         "startupGreeting": STARTUP_GREETING,
         "codeAgent": CODE_AGENT_ENABLED,
@@ -463,7 +478,7 @@ def _is_public_url(url: str) -> tuple[bool, str]:
             ip = ipaddress.ip_address(address[4][0])
         except ValueError:
             continue
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
             return False, "Refusing to fetch a private or loopback address."
     return True, ""
 
@@ -480,7 +495,7 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
         raise HTTPException(status_code=400, detail="No URL given.")
     if "://" not in url:
         url = "https://" + url
-    allowed, reason = _is_public_url(url)
+    allowed, reason = await asyncio.to_thread(_is_public_url, url)
     if not allowed:
         raise HTTPException(status_code=400, detail=reason)
     if TINYFISH_KEY:
@@ -494,14 +509,27 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
     try:
         async with httpx.AsyncClient(
             timeout=FETCH_TIMEOUT_S,
-            follow_redirects=True,
+            follow_redirects=False,
             headers={"User-Agent": "Mozilla/5.0 (compatible; chatbot/1.0)"},
         ) as client:
-            response = await client.get(url)
+            # Re-validate every redirect hop: the client must never follow a
+            # public URL into a private or loopback address.
+            response = None
+            for _ in range(4):
+                allowed, reason = await asyncio.to_thread(_is_public_url, url)
+                if not allowed:
+                    raise HTTPException(status_code=400, detail=reason)
+                response = await client.get(url)
+                if response.status_code not in (301, 302, 303, 307, 308):
+                    break
+                location = response.headers.get("location", "")
+                if not location:
+                    break
+                url = urljoin(url, location)
+            else:
+                raise HTTPException(status_code=502, detail="That page redirected too many times.")
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail="Could not reach that page.") from exc
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"That page returned {response.status_code}.")
 
     content_type = response.headers.get("content-type", "")
     body = response.content[:FETCH_MAX_BYTES]
@@ -529,12 +557,11 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
         }
     )
 
-
 GROK_BIN = Path(os.path.expanduser("~/.local/bin/grok"))
 CODE_AGENT_ENABLED = os.environ.get("CODE_AGENT", "on").lower() not in {"off", "0", "false"}
 CODE_AGENT_CWD = Path(os.path.expanduser(os.environ.get("CODE_AGENT_CWD", "~")))
 CODE_AGENT_MODEL = os.environ.get("CODE_AGENT_MODEL", "grok-4.6")
-CODE_AGENT_TIMEOUT_S = float(os.environ.get("CODE_AGENT_TIMEOUT", "300"))
+CODE_AGENT_TIMEOUT_S = _env_float("CODE_AGENT_TIMEOUT", 300.0)
 
 
 class CodeRequest(BaseModel):
@@ -550,7 +577,7 @@ async def code_agent(req: CodeRequest) -> JSONResponse:
         raise HTTPException(status_code=400, detail="No task given.")
     if not GROK_BIN.exists():
         raise HTTPException(status_code=503, detail="Grok Build (grok) is not installed on ~/.local/bin.")
-    logger.warning("code_agent: cwd=%s task=%r model=%s", CODE_AGENT_CWD, task[:300], CODE_AGENT_MODEL)
+    logger.warning("code_agent: cwd=%s task_chars=%d model=%s", CODE_AGENT_CWD, len(task), CODE_AGENT_MODEL)
     try:
         process = await asyncio.create_subprocess_exec(
             str(GROK_BIN),
@@ -567,10 +594,14 @@ async def code_agent(req: CodeRequest) -> JSONResponse:
             env=dict(os.environ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
         output, _ = await asyncio.wait_for(process.communicate(), timeout=CODE_AGENT_TIMEOUT_S)
     except asyncio.TimeoutError as exc:
-        process.kill()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            process.kill()
         await process.wait()
         raise HTTPException(status_code=504, detail="The coding agent timed out.") from exc
     except OSError as exc:
@@ -856,7 +887,7 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
     app_name = req.app.strip() if req.app else None
     if app_name and (len(app_name) > 120 or any(ord(char) < 32 for char in app_name)):
         raise HTTPException(status_code=400, detail="The app or window name is invalid.")
-    sensitive_scope = app_name if action in {"screenshot", "scroll", "drag"} else None
+    sensitive_scope = app_name
     if action in {"click", "type", "key", "hotkey", "scroll", "drag", "screenshot"} and await _screen_scope_looks_sensitive(
         sensitive_scope
     ):
@@ -912,12 +943,9 @@ CHATBOT_DATA = Path(os.path.expanduser(
     os.environ.get("CHATBOT_DATA_DIR", os.environ.get("S2S_DATA_DIR", "~/.chatbot"))
 ))
 SESSIONS_DIR = CHATBOT_DATA / "sessions"
-PROJECTS_DIR = CHATBOT_DATA / "projects"
-PROJECTS_INDEX = CHATBOT_DATA / "projects.json"
 PERSONAL_MEMORY_PATH = CHATBOT_DATA / "personal-memory.md"
 PERSONAL_MEMORY_MAX_CHARS = 10_000  # roughly 2,500 English-language tokens
-PROJECT_MEMORY_MAX_CHARS = 20_000   # roughly 5,000 English-language tokens
-SESSION_RETENTION_COUNT = max(1, int(os.environ.get("CHATBOT_SESSION_RETENTION", "50")))
+SESSION_RETENTION_COUNT = max(1, int(_env_float("CHATBOT_SESSION_RETENTION", 50.0)))
 history_lock = asyncio.Lock()
 
 
@@ -1071,54 +1099,6 @@ def _migrate_legacy_memories() -> None:
             path.unlink(missing_ok=True)
 
 
-def _project_slug(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug[:64] or "project"
-
-
-def _load_projects() -> list[dict]:
-    value = _read_json(PROJECTS_INDEX, [])
-    return value if isinstance(value, list) else []
-
-
-def _save_projects(items: list[dict]) -> None:
-    _atomic_write(PROJECTS_INDEX, json.dumps(items, indent=2, ensure_ascii=False))
-
-
-def _find_project(project_id: str) -> dict:
-    project = next((item for item in _load_projects() if item.get("id") == project_id), None)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found.")
-    return project
-
-
-def _project_memory_path(project_id: str) -> Path:
-    if not re.fullmatch(r"[a-z0-9-]{1,64}", project_id):
-        raise HTTPException(status_code=400, detail="Invalid project.")
-    return PROJECTS_DIR / project_id / "project-memory.md"
-
-
-def _git_snapshot(root: Path) -> dict:
-    """Read real repository state. This is evidence, not an AI summary."""
-    if not root.is_dir():
-        return {"available": False, "reason": "The project folder is unavailable."}
-    def run(*args: str) -> str:
-        try:
-            result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=4)
-            return result.stdout.strip() if result.returncode == 0 else ""
-        except (OSError, subprocess.TimeoutExpired):
-            return ""
-    inside = run("rev-parse", "--is-inside-work-tree")
-    if inside != "true":
-        return {"available": True, "git": False, "checked_at": _utc_now()}
-    return {
-        "available": True, "git": True, "checked_at": _utc_now(),
-        "branch": run("branch", "--show-current") or "detached HEAD",
-        "head": run("log", "-1", "--pretty=%h %s"),
-        "status": run("status", "--short").splitlines()[:80],
-    }
-
-
 class SessionCreateRequest(BaseModel):
     title: str = "New conversation"
 
@@ -1130,11 +1110,6 @@ class SessionUpdateRequest(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     content: str
-
-
-class ProjectCreateRequest(BaseModel):
-    name: str
-    path: str
 
 
 @app.get("/api/sessions")
@@ -1171,10 +1146,14 @@ async def update_session(session_id: str, req: SessionUpdateRequest) -> JSONResp
         if req.title is not None:
             session["title"] = req.title.strip()[:120] or "New conversation"
         if req.messages is not None:
-            # Browser-rendered transcript messages are plain data: role, text,
-            # time and optional tool metadata. Keeping them bounded prevents a
-            # broken client from filling the disk in one request.
-            session["messages"] = req.messages[-2000:]
+            # Transcript messages are plain data, but each text is unbounded.
+            # Cap every text so one broken client cannot fill the disk.
+            capped = []
+            for message in req.messages[-2000:]:
+                message = dict(message)
+                message["text"] = str(message.get("text", ""))[:20_000]
+                capped.append(message)
+            session["messages"] = capped
         session["updated_at"] = _utc_now()
         _save_session(session)
     return JSONResponse({"session": session})
@@ -1229,84 +1208,13 @@ async def put_personal_memory(req: ProfileUpdateRequest) -> JSONResponse:
     async with history_lock:
         _migrate_legacy_memories()
         content = _dedupe_profile_lines(req.content.strip())
-    if len(content) > PERSONAL_MEMORY_MAX_CHARS:
-        raise HTTPException(status_code=400, detail="Personal memory is too long; consolidate it first.")
-    async with history_lock:
+        if len(content) > PERSONAL_MEMORY_MAX_CHARS:
+            raise HTTPException(status_code=400, detail="Personal memory is too long; consolidate it first.")
         _atomic_write(PERSONAL_MEMORY_PATH, content + ("\n" if content else ""))
     return JSONResponse({"content": content, "max_chars": PERSONAL_MEMORY_MAX_CHARS})
 
 
-@app.get("/api/projects")
-async def list_projects() -> JSONResponse:
-    return JSONResponse({"projects": _load_projects()})
-
-
-@app.post("/api/projects")
-async def create_project(req: ProjectCreateRequest) -> JSONResponse:
-    root = Path(os.path.expanduser(req.path)).resolve()
-    if not root.is_dir():
-        raise HTTPException(status_code=400, detail="Project folder was not found.")
-    name = req.name.strip()[:120] or root.name
-    async with history_lock:
-        projects = _load_projects()
-        existing = next((item for item in projects if item.get("path") == str(root)), None)
-        if existing:
-            return JSONResponse({"project": existing, "duplicate": True})
-        used = {str(item.get("id")) for item in projects}
-        base, suffix = _project_slug(name), 2
-        project_id = base
-        while project_id in used:
-            project_id = f"{base}-{suffix}"
-            suffix += 1
-        project = {"id": project_id, "name": name, "path": str(root), "created_at": _utc_now(), "last_verified": _git_snapshot(root)}
-        projects.append(project)
-        _save_projects(projects)
-        if not _project_memory_path(project_id).exists():
-            _atomic_write(_project_memory_path(project_id), f"# {name}\n\n## Current project knowledge\n\n")
-    return JSONResponse({"project": project, "duplicate": False})
-
-
-@app.get("/api/projects/{project_id}")
-async def get_project(project_id: str) -> JSONResponse:
-    project = _find_project(project_id)
-    content = _project_memory_path(project_id).read_text(encoding="utf-8") if _project_memory_path(project_id).exists() else ""
-    return JSONResponse({"project": project, "memory": content, "max_chars": PROJECT_MEMORY_MAX_CHARS})
-
-
-@app.get("/api/projects/{project_id}/context")
-async def get_project_context(project_id: str) -> JSONResponse:
-    """Fresh project context for a real work request, never stale notes alone."""
-    async with history_lock:
-        project = _find_project(project_id)
-        snapshot = _git_snapshot(Path(project["path"]))
-        project["last_verified"] = snapshot
-        projects = [project if item.get("id") == project_id else item for item in _load_projects()]
-        _save_projects(projects)
-        memory = _project_memory_path(project_id).read_text(encoding="utf-8") if _project_memory_path(project_id).exists() else ""
-    return JSONResponse({"project": project, "memory": memory, "current_state": snapshot,
-                         "rule": "The current project state is the source of truth; the Markdown is a compact guide."})
-
-
-@app.post("/api/projects/{project_id}/refresh")
-async def refresh_project(project_id: str) -> JSONResponse:
-    async with history_lock:
-        project = _find_project(project_id)
-        project["last_verified"] = _git_snapshot(Path(project["path"]))
-        projects = _load_projects()
-        projects = [project if item.get("id") == project_id else item for item in projects]
-        _save_projects(projects)
-    return JSONResponse({"project": project})
-
-
-@app.put("/api/projects/{project_id}/memory")
-async def put_project_memory(project_id: str, req: ProfileUpdateRequest) -> JSONResponse:
-    _find_project(project_id)
-    content = req.content.strip()
-    if len(content) > PROJECT_MEMORY_MAX_CHARS:
-        raise HTTPException(status_code=400, detail="Project memory is too long; consolidate it first.")
-    async with history_lock:
-        _atomic_write(_project_memory_path(project_id), content + ("\n" if content else ""))
-    return JSONResponse({"content": content, "max_chars": PROJECT_MEMORY_MAX_CHARS})
-
-
-app.mount("/", StaticFiles(directory=HERE, html=True), name="static")
+@app.get("/")
+def index() -> dict:
+    """No browser UI remains; the native macOS app uses /api/* on this sidecar."""
+    return {"ok": True, "service": "chatbot-sidecar", "ui": "removed"}

@@ -2568,7 +2568,7 @@ class TestChatImageLifecycle:
         return RealtimeConversationItemUserMessage(type="message", role="user", content=content)
 
     def test_strip_images_removes_image_parts(self):
-        from chatbot.LLM.chat import make_assistant_message
+        from chatbot.LLM.chat_factories import make_assistant_message
 
         chat = self._make_chat()
         chat.add_item(self._user_msg(("text", "What is this?"), ("image", "data:image/png;base64,abc")))
@@ -2580,7 +2580,7 @@ class TestChatImageLifecycle:
         assert user_msg.content[0].text == "What is this?"
 
     def test_strip_images_noop_on_text_only(self):
-        from chatbot.LLM.chat import make_assistant_message, make_user_message
+        from chatbot.LLM.chat_factories import make_assistant_message, make_user_message
 
         chat = self._make_chat()
         chat.add_item(make_user_message("hello"))
@@ -2590,7 +2590,7 @@ class TestChatImageLifecycle:
         assert chat.buffer[1].content[0].text == "hi"
 
     def test_strip_then_new_image_cycle(self):
-        from chatbot.LLM.chat import make_assistant_message
+        from chatbot.LLM.chat_factories import make_assistant_message
 
         chat = self._make_chat()
         chat.add_item(self._user_msg(("text", "look"), ("image", "old_url")))
@@ -2638,12 +2638,12 @@ class TestChatToolCallTracking:
         )
 
     def _user(self, text):
-        from chatbot.LLM.chat import make_user_message
+        from chatbot.LLM.chat_factories import make_user_message
 
         return make_user_message(text)
 
     def _assistant(self, text):
-        from chatbot.LLM.chat import make_assistant_message
+        from chatbot.LLM.chat_factories import make_assistant_message
 
         return make_assistant_message(text)
 

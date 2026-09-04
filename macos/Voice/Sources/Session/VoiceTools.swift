@@ -42,7 +42,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         "a screenshot as a fallback. If genuinely ambiguous metadata and wording still conflict, ask " +
         "one concise content-versus-visual question and do not frame it as permission."
 
-    private let baseURL = URL(string: "http://127.0.0.1:7860/api")!
+    private let baseURL = LocalService.sidecarAPI
 
     // Tool toggles in UserDefaults
     public var webSearchEnabled: Bool {
@@ -71,7 +71,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         return base + Self.toolUseHint + Self.toolIntentRouting
     }
 
-    /// Same wording as the web client's `memoriesBlock()`: stored profile
+    /// Same wording as the sidecar flow: stored profile
     /// injected into session instructions as editable context.
     public static func memoriesBlock(profile: String) -> String {
         let trimmed = profile.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -421,8 +421,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         let trimmed = fact.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return VoiceToolResult(output: "No fact provided.") }
         // The PUT endpoint REPLACES the whole profile, so read-modify-write
-        // like the web client. Never PUT a bare fact or the stored profile
-        // (e.g. family details) would be wiped.
+        // like the sidecar flow. Never PUT a bare fact or the stored profile
         let current: String
         do { current = try await ChatStore.shared.getPersonalMemory() }
         catch { return VoiceToolResult(output: "Could not read the personal profile.") }

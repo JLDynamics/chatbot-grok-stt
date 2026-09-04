@@ -1,10 +1,9 @@
 import Foundation
 
-/// Saved conversation + personal memory, mirrored from the web client's
-/// `web_app/main.js` history/memory flow against `web_app/server.py`'s
+/// Saved conversation + personal memory against `web_app/server.py`'s
 /// `/api` endpoints. The realtime voice backend itself is stateless per
 /// connection; continuity comes from replaying saved messages into the
-/// WebSocket (like the web `_replayHistory`) and PATCHing turns back.
+/// WebSocket and PATCHing turns back.
 public struct ChatMessage: Codable, Equatable {
     public var role: String   // "user" | "assistant" | "tool"
     public var text: String
@@ -51,7 +50,7 @@ public struct ChatSessionSummary: Codable, Identifiable {
 public final class ChatStore: @unchecked Sendable {
     public static let shared = ChatStore()
 
-    private let baseURL = URL(string: "http://127.0.0.1:7860/api")!
+    private let baseURL = LocalService.sidecarAPI
     private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 8

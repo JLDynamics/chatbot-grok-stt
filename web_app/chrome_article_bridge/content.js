@@ -3,7 +3,7 @@
   const MAX_PAGE_CHARS = 60000;
   const DEBOUNCE_MS = 700;
   const HEARTBEAT_MS = 30000;
-  const BRIDGE_VERSION = '0.4.1';
+  const BRIDGE_VERSION = '0.4.3';
   const RECEIVER_HOSTS = new Set(['127.0.0.1', 'localhost']);
 
   let publishTimer = null;
@@ -318,9 +318,13 @@
     observer?.disconnect();
     if (!invalidationWarned) {
       invalidationWarned = true;
-      console.warn(
-        '[Chatbot Page Bridge] Extension was reloaded. Reload this page once to activate the new content script.'
-      );
+      // One warning per page: every frame runs this script, but only the top
+      // frame's note is actionable (reloads/re-injects cover the whole tab).
+      if (window.top === window.self) {
+        console.warn(
+          '[Chatbot Page Bridge] Extension was reloaded. Reload this page once to activate the new content script.'
+        );
+      }
     }
     return true;
   }

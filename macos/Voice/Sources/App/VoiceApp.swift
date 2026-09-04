@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var hotKey: GlobalHotKey?
     private var escMonitor: Any?
 
-    private static let defaultWSURL = URL(string: "ws://127.0.0.1:8766/v1/realtime")!
+    private static let defaultWSURL = LocalService.voiceWebSocket
 
     private static func makeBackend() -> VoiceBackend {
         if UserDefaults.standard.bool(forKey: "voice.useMock") {

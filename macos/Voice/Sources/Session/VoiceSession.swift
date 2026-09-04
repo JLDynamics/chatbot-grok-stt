@@ -72,7 +72,7 @@ final class SessionController: ObservableObject {
     /// Shown as one line in the header. Cleared on the next successful start.
     @Published private(set) var errorText: String?
 
-    // MARK: - Saved conversations + memory (mirrors web_app/main.js)
+    // MARK: - Saved conversations + memory (via ChatStore against the sidecar /api)
 
     @Published private(set) var sessions: [ChatSessionSummary] = []
     @Published private(set) var personalMemory = ""
@@ -129,6 +129,7 @@ final class SessionController: ObservableObject {
         // Deltas stream into a single agent turn rather than appending rows.
         backend.onAgentDelta = { [weak self] chunk in
             guard let self else { return }
+            self.userTurnOpen = false
             self.pendingAgentText += chunk
             if let last = self.turns.last, last.speaker == .agent, self.agentTurnOpen {
                 self.turns[self.turns.count - 1].text += chunk
@@ -140,16 +141,15 @@ final class SessionController: ObservableObject {
         backend.onAgentDone = { [weak self] in
             guard let self else { return }
             self.agentTurnOpen = false
+            self.userTurnOpen = false
             let text = self.pendingAgentText.trimmingCharacters(in: .whitespacesAndNewlines)
             self.pendingAgentText = ""
             if !text.isEmpty { self.recordAssistant(text) }
         }
-
         backend.onToolActive = { [weak self] name in
+            self?.userTurnOpen = false
             let desc: String
             switch name {
-            case "web_search": desc = "Searching the web…"
-            case "web_fetch": desc = "Fetching webpage…"
             case "read_article": desc = "Reading Chrome article…"
             case "control_screen": desc = "Controlling desktop…"
             case "code_agent": desc = "Coding agent running…"
@@ -165,8 +165,13 @@ final class SessionController: ObservableObject {
     }
 
     private var agentTurnOpen = false
-
+    /// True while the last visible turn is the user's still-open turn: later
+    /// finals for the same spoken stretch (pause-split revisions, even with a
+    /// fresh item id) extend it instead of appending duplicate bubbles.
+    /// Cleared by any assistant/agent/tool activity or session change.
+    private var userTurnOpen = false
     private func append(_ turn: Turn) {
+        if turn.speaker != .you { userTurnOpen = false }
         turns.append(turn)
         if turns.count > maxTurns { turns.removeFirst(turns.count - maxTurns) }
     }
@@ -192,12 +197,13 @@ final class SessionController: ObservableObject {
 
     func begin() async {
         guard !isTransitioning else { return }
+        userTurnOpen = false
         isTransitioning = true
         defer { isTransitioning = false }
         errorText = nil
         beginTask?.cancel()
         // Hand the saved transcript to the backend so the live session opens
-        // with the same context as the web client.
+        // with the saved context.
         backend.setHistory(messages.map { ($0.role, $0.text, $0.name) })
         // Capture the task so a tap-to-cancel during connect can interrupt it.
         let task = Task { @MainActor in
@@ -220,6 +226,7 @@ final class SessionController: ObservableObject {
             await backend.stop()
             interim = nil
             agentTurnOpen = false
+            userTurnOpen = false
             if isMuted {
                 isMuted = false
                 backend.setMuted(false)
@@ -243,6 +250,7 @@ final class SessionController: ObservableObject {
             await backend.stop()
             interim = nil
             agentTurnOpen = false
+            userTurnOpen = false
             if isMuted {
                 isMuted = false
                 backend.setMuted(false)
@@ -258,6 +266,7 @@ final class SessionController: ObservableObject {
         await backend.stop()
         interim = nil
         agentTurnOpen = false
+        userTurnOpen = false
         if isMuted {
             isMuted = false
             backend.setMuted(false)
@@ -315,6 +324,7 @@ final class SessionController: ObservableObject {
             }
             interim = nil
             agentTurnOpen = false
+            userTurnOpen = false
             pendingAgentText = ""
             UserDefaults.standard.set(s.id, forKey: Self.lastSessionKey)
         } catch {
@@ -367,6 +377,7 @@ final class SessionController: ObservableObject {
         agentTurnOpen = false
         pendingAgentText = ""
         lastUserItemId = nil
+        userTurnOpen = false
     }
 
     private func restoreLastSession() async {
@@ -388,25 +399,60 @@ final class SessionController: ObservableObject {
         scheduleSave()
     }
 
-    /// Merge pause-split finals: the server reuses one item id across
+    /// Merge pause-split finals: the server usually reuses one item id across
     /// reopened segments of a single turn, so a matching id updates the
-    /// existing bubble instead of appending a duplicate.
+    /// existing bubble instead of appending a duplicate. The open-turn flag
+    /// covers the rest: while no assistant reply intervened, a later final
+    /// extends the same bubble even with a fresh id. The continuation rule
+    /// below covers the last gap: the assistant answered the partial before
+    /// you finished, so the restated final extends an earlier bubble with
+    /// other rows in between. One utterance still reads as one bubble.
     private func upsertUserTurn(text: String, itemId: String?) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        if let itemId, itemId == lastUserItemId,
-           let last = turns.last, last.speaker == .you {
+        if let last = turns.last, last.speaker == .you, (itemId == lastUserItemId || userTurnOpen) {
             turns[turns.count - 1].text = t
             if let idx = messages.lastIndex(where: { $0.role == "user" }) {
                 messages[idx].text = t
             }
             dirty = true
             scheduleSave()
+            lastUserItemId = itemId
+            userTurnOpen = true
+            return
+        }
+        if let idx = turns.lastIndex(where: { $0.speaker == .you }),
+           turns.count - 1 - idx <= 2,
+           Self.isContinuation(of: turns[idx].text, next: t) {
+            turns[idx].text = t
+            if let mIdx = messages.lastIndex(where: { $0.role == "user" }) {
+                messages[mIdx].text = t
+            }
+            dirty = true
+            scheduleSave()
+            lastUserItemId = itemId
+            userTurnOpen = true
             return
         }
         lastUserItemId = itemId
+        userTurnOpen = true
         append(Turn(speaker: .you, text: t))
         recordUser(t)
+    }
+
+    /// Whether a new final restates and extends an earlier partial bubble:
+    /// same words (STT may revise the spelling), or the old bubble is a
+    /// prefix of the restated whole. Adjacency is enforced by the caller.
+    private static func isContinuation(of old: String, next newText: String) -> Bool {
+        let a = old.lowercased()
+        let b = newText.lowercased()
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        if a == b || (b.count > a.count && b.hasPrefix(a)) { return true }
+        let oldWords = a.split(separator: " ")
+        guard oldWords.count >= 4, b.count > a.count else { return false }
+        let newWords = Set(b.split(separator: " "))
+        let overlap = oldWords.filter { newWords.contains($0) }.count
+        return Double(overlap) / Double(oldWords.count) >= 0.6
     }
 
     private func recordAssistant(_ text: String) {

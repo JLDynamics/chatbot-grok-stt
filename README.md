@@ -2,13 +2,11 @@
 
 A Mac-first live voice chatbot that runs its ears and voice locally, while a Responses API model handles the conversation.
 
-The retained path is intentionally small:
-
-`browser microphone → Parakeet MLX → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → browser speakers`
+`native panel microphone → Parakeet MLX → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → speakers`
 
 It keeps realtime WebSocket turn-taking, interruption/cancellation, partial transcripts, long-term memory, web tools, the Chrome page bridge, camera, coding-agent delegation, and explicit desktop control.
 
-The mic stays open while the assistant speaks (full-duplex barge-in). Echo control is the browser's AEC plus Silero VAD — we do not mute capture during TTS. Saved sidebar chats are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. VibeVoice runs locally without an AI watermark.
+The mic stays open while the assistant speaks (full-duplex barge-in). Echo control is the panel's audio engine plus Silero VAD — capture is not muted during TTS. Saved conversations are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. VibeVoice runs locally without an AI watermark.
 
 ## Requirements
 
@@ -22,12 +20,16 @@ The mic stays open while the assistant speaks (full-duplex barge-in). Echo contr
 
 ```bash
 uv sync --group dev
-npm install
 ./set-keys.sh
 ./run-browser.sh
 ```
 
-Open `http://127.0.0.1:7860`, allow microphone access, and click the orb. The first launch may download the Parakeet and TTS model files.
+```bash
+./macos/Voice/scripts/build.sh
+open macos/Voice/build/Voice.app
+```
+
+`run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`); the Voice panel connects to both. The first launch may download the Parakeet and TTS model files.
 
 The default model path is `meta/muse-spark-1.2-contributor` through OpenRouter. **Parakeet TDT 1.1B** STT and the TTS model run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language); set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
 
@@ -50,10 +52,9 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `KOKORO_DENOISE_FLOOR` / `VIBEVOICE_DENOISE_FLOOR` | `0.04` | Spectral-denoiser suppression floor; lower removes more hiss (slight risk of a processed texture) |
 | `PORT` / `WEB_PORT` | `8766` / `7860` | Realtime and browser ports |
 | `PARAKEET_MODEL` | `mlx-community/parakeet-tdt-1.1b` | MLX Parakeet STT model (English) |
-| `PARAKEET_LANG` | `en` | Parakeet language hint |
+| `VAD_MIN_SILENCE_MS` | `1200` | Silence (ms) before a spoken turn is considered finished. Higher keeps ~1 s thinking pauses inside one turn instead of splitting it; lower answers faster after you truly stop |
 | `VAD_THRESH` | `0.60` | VAD confidence threshold; higher = fewer false voice triggers |
 | `VAD_MIN_SPEECH_MS` | `600` | Sustained speech (ms) before a user turn / barge-in is confirmed. Raise to soften barge-in (so brief noises or the assistant's own echo don't cut a reply) |
-| `VAD_MIN_SILENCE_MS` | `400` | Silence (ms) before a spoken turn is considered finished |
 | `PROMPT` | concise voice prompt | Backend system prompt |
 | `STARTUP_GREETING` | empty | Optional greeting instruction on connection |
 | `TINYFISH_API_KEY` / `TAVILY_API_KEY` / `SERPER_API_KEY` | empty | Enables local web search; TinyFish also powers page fetch |
@@ -74,32 +75,27 @@ These solve different jobs:
 
 ## Chrome page bridge
 
-The extension is part of the live product at [`web_app/chrome_article_bridge`](web_app/chrome_article_bridge).
+The extension is part of the live product at [`web_app/chrome_article_bridge`](web_app/chrome_article_bridge). There is no chatbot browser tab; the bridge pairs with the native Voice panel.
 
-1. Keep the web app on its default `127.0.0.1:7860` address.
+1. Keep the sidecar running (`./run-browser.sh`, port `7860`).
 2. Open `chrome://extensions`.
 3. Enable **Developer mode**.
 4. Choose **Load unpacked** and select `web_app/chrome_article_bridge`.
-5. Open or reload the chatbot at `http://127.0.0.1:7860`. The extension enables
-   itself automatically and shows a green check. Then open or reload the public
-   page you want the chatbot to read.
+5. Open the public page you want read, then click the bridge toolbar icon once to enable it.
 
 If an older unpacked copy still points to the deleted `demo/chrome_article_bridge`
 folder, remove it and load the `web_app` path above. When bridge code changes,
-use the extension card's **Reload** button and then reload the article tab.
-The current card version is **0.4.2**. If you use the native macOS Voice app
-instead of the chatbot browser tab, open the article and click the bridge
-toolbar icon once to enable it (no chatbot tab needed). Reloading the extension invalidates the
-old script already inside open tabs, so the article/X tab reload is required.
+use the extension card's **Reload** button and then click the bridge toolbar
+icon once on the article tab; the click re-injects the new content script, so
+no page reload is needed.
+The current card version is **0.4.3**. A stored session from before the browser-UI
+removal disables itself once; re-enable it with one toolbar click and it persists
+in native mode from then on.
 
-The enabled state survives page reloads, tab changes, and switching to another
-app. No toolbar click is required. It turns off when the chatbot tab closes or
-navigates away, when Chrome ends the browser session, or when the local receiver
-becomes unavailable on the next delivery/30-second heartbeat. A blocked or
+The enabled state survives page reloads and tab changes. It turns off when
+the local sidecar becomes unavailable on the next 30-second heartbeat. A blocked or
 unsupported page clears stale text but leaves the green session state on. The
-toolbar icon remains a harmless retry/republish control; it does not turn an
-active session off.
-
+toolbar icon is the enable control; it does not turn an active session off.
 The bridge publishes only the currently visible HTTP(S) tab, blocks login/password/payment contexts, never reads the chatbot page itself, limits text to 60,000 characters, and keeps a fresh page for five minutes. For an individual X status URL it returns only the primary post and excludes replies; image-only posts remain visual requests. It does not scroll or take screenshots. See the [extension notes](web_app/chrome_article_bridge/README.md).
 
 Natural article wording routes to the bridge: “read/summarize/analyze the
@@ -120,7 +116,7 @@ screenshots remain limited to explicit control or visual requests.
 ## Optional tools
 
 - **Coding agent** runs the locally installed [Grok Build](https://x.ai/cli) `grok` CLI (model `grok-4.6`), which also has the `desktop-harness` skill for Mac control.
-- **Desktop control** uses `~/.local/bin/desktop-harness` and requires macOS Accessibility permission for actions plus Screen Recording permission for screenshots. The server kill switch defaults on, and each browser starts with the tool on when desktop-harness is available; disable it in **Tools → Desktop control** if you prefer. It acts or captures only when explicitly requested. A screenshot can target the main display or a named visible app/window; sensitive sign-in/payment scopes remain blocked.
+- **Desktop control** uses `~/.local/bin/desktop-harness` and requires macOS Accessibility permission for actions plus Screen Recording permission for screenshots. The server kill switch defaults on, and the panel starts with the tool on when desktop-harness is available; disable it in Settings if you prefer. It acts or captures only when explicitly requested. A screenshot can target the main display or a named visible app/window; sensitive sign-in/payment scopes remain blocked.
 - **Memory** uses an editable personal Markdown profile and saved conversations. The assistant can update it when you say “remember…” or “forget…”.
 
 ## Development
@@ -129,10 +125,9 @@ screenshots remain limited to explicit control or visual requests.
 uv run ruff check src tests
 uv run mypy src
 uv run pytest -q
-node --check web_app/main.js
 ```
 
-CI runs on macOS, checks the retained browser path, builds the Python package, and performs an installation smoke test. Publishing is handled by `.github/workflows/publish.yml` for `v*` tags.
+CI runs on macOS (lint, types, tests), builds the Python package, and performs an installation smoke test. Publishing is handled by `.github/workflows/publish.yml` for `v*` tags.
 
 ### Contributing via pull requests
 

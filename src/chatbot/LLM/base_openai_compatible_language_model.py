@@ -20,14 +20,8 @@ from openai.types.responses import ResponseFunctionToolCall
 from pydantic import BaseModel, ConfigDict, Field
 
 from chatbot.baseHandler import BaseHandler
-from chatbot.LLM.chat import (
-    Chat,
-    ChatItemError,
-    SupportedItem,
-    build_active_chat,
-    make_system_message,
-    make_user_message,
-)
+from chatbot.LLM.chat import Chat, ChatItemError, SupportedItem
+from chatbot.LLM.chat_factories import build_active_chat, make_system_message, make_user_message
 from chatbot.LLM.compaction_prompt import CompactGenerateFn, build_compactor
 from chatbot.LLM.text_prompt import build_text_system_prompt
 from chatbot.LLM.utils import remove_unspeechable, resolve_auto_language
@@ -239,9 +233,6 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
     # ── speculative-turn / cancellation gating ─────────────────────────────────
 
-    def _turn_is_latest(self, turn_id: str | None, turn_revision: int | None) -> bool:
-        return self.speculative_turns is None or self.speculative_turns.is_latest(turn_id, turn_revision)
-
     def _generation_is_stale(self, gen: int | None) -> bool:
         return gen is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(gen)
 
@@ -345,7 +336,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             yield self._chunk(turn, text=" ".join(batch))
 
         for event in events:
-            if self._generation_is_stale(turn.gen) or not self._turn_is_latest(turn.turn_id, turn.turn_revision):
+            if self._generation_is_stale(turn.gen) or not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
                 logger.info("LLM generation cancelled (interruption)")
                 cancelled = True
                 break
@@ -414,7 +405,6 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         return (
             not cancelled
             and not self._generation_is_stale(turn.gen)
-            and self._turn_is_latest(turn.turn_id, turn.turn_revision)
             and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
         )
 
@@ -424,7 +414,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         state: _GenState,
         turn: _Turn,
     ) -> Generator[LLMOut, None, bool]:
-        if self._generation_is_stale(turn.gen) or not self._turn_is_latest(turn.turn_id, turn.turn_revision):
+        if self._generation_is_stale(turn.gen) or not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
             logger.info("LLM generation cancelled (interruption)")
             return False
         for event in events:
@@ -453,7 +443,6 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         logger.info(f"Tools: {state.tools}")
         return (
             not self._generation_is_stale(turn.gen)
-            and self._turn_is_latest(turn.turn_id, turn.turn_revision)
             and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
         )
 
@@ -542,7 +531,6 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 error_message is None
                 and generation_completed
                 and not self._generation_is_stale(turn.gen)
-                and self._turn_is_latest(turn.turn_id, turn.turn_revision)
                 and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
             )
             if can_commit:
@@ -595,7 +583,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         turn_id = request.turn_id
         turn_revision = request.turn_revision
         speech_stopped_at_s = request.speech_stopped_at_s
-        if not self._turn_is_latest(turn_id, turn_revision):
+        if not self._turn_output_allowed(turn_id, turn_revision):
             logger.info("Skipping stale LLM request for turn=%s rev=%s", turn_id, turn_revision)
             yield EndOfResponse(
                 turn_id=turn_id,

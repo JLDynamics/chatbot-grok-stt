@@ -88,6 +88,7 @@ echo "Nothing you type is shown on screen or kept in shell history."
 prompt_for OPENROUTER_API_KEY "OpenRouter key (required)" "sk-or-v1-" "https://openrouter.ai/keys"
 prompt_for TINYFISH_API_KEY  "TinyFish key (optional, search + fetch)" "sk-tinyfish-" "https://agent.tinyfish.ai"
 prompt_for TAVILY_API_KEY     "Tavily key (optional, web search)" "tvly-" "https://app.tavily.com"
+prompt_for SERPER_API_KEY     "Serper key (optional, web search)" "" "https://serper.dev"
 
 # Verify the OpenRouter key actually works, so a typo surfaces now rather than
 # seven minutes into a model load.

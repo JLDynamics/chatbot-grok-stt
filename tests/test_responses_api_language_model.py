@@ -23,10 +23,8 @@ from openai.types.responses.response_output_text import ResponseOutputText
 import chatbot.LLM.base_openai_compatible_language_model as base_openai_compatible_language_model
 from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
 from chatbot.LLM.base_openai_compatible_language_model import WARMUP_MAX_RETRIES
-from chatbot.LLM.chat import (
-    Chat,
-    make_user_message,
-)
+from chatbot.LLM.chat import Chat
+from chatbot.LLM.chat_factories import make_user_message
 from chatbot.LLM.responses_api_language_model import ResponsesApiModelHandler
 from chatbot.pipeline.cancel_scope import CancelScope
 from chatbot.pipeline.messages import EndOfResponse, GenerateResponseRequest, LLMResponseChunk, TokenUsage

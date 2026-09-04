@@ -6,7 +6,6 @@ import threading
 from collections.abc import Callable
 from typing import Any, Literal, Union
 
-from openai.types.realtime import ConversationItem
 from openai.types.realtime.conversation_item import (
     RealtimeConversationItemAssistantMessage,
     RealtimeConversationItemFunctionCall,
@@ -14,12 +13,7 @@ from openai.types.realtime.conversation_item import (
     RealtimeConversationItemSystemMessage,
     RealtimeConversationItemUserMessage,
 )
-from openai.types.realtime.realtime_conversation_item_assistant_message import (
-    Content as AssistantContent,
-)
-from openai.types.realtime.realtime_conversation_item_system_message import Content as SystemContent
 from openai.types.realtime.realtime_conversation_item_user_message import Content as UserContent
-from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 from openai.types.responses.response_input_message_content_list_param import (
     ResponseInputMessageContentListParam,
@@ -315,35 +309,6 @@ class Chat:
                 self._pending_tool_calls.pop(call_id, None)
             self._user_turn_count = sum(isinstance(item, RealtimeConversationItemUserMessage) for item in self.buffer)
             logger.debug("Rolled back failed generation for user message %s", user_message_id)
-
-    def compact_audio_history(self, max_audio_turns: int) -> None:
-        """Retain only the newest bounded set of audio turns.
-
-        Older audio parts are replaced with a textual placeholder so the user
-        role and its paired assistant response remain valid in serialized
-        history. The newest turns keep their audio semantics for subsequent
-        Chat Completions requests.
-        """
-
-        with self._lock:
-            remaining = max(0, max_audio_turns)
-            for item in reversed(self.buffer):
-                if not isinstance(item, RealtimeConversationItemUserMessage):
-                    continue
-                if not any(part.type == "input_audio" for part in item.content):
-                    continue
-                if remaining:
-                    remaining -= 1
-                    continue
-                replacement_added = False
-                compacted: list[UserContent] = []
-                for part in item.content:
-                    if part.type != "input_audio":
-                        compacted.append(part)
-                    elif not replacement_added:
-                        compacted.append(UserContent(type="input_text", text=AUDIO_INPUT_HISTORY_PLACEHOLDER))
-                        replacement_added = True
-                item.content = compacted
 
     def to_responses_api_chat(self, items: list[SupportedItem] | None = None) -> ResponseInputParam:
         """Serialize the chat (system prompt + buffer) for the OpenAI Responses API.
@@ -680,6 +645,8 @@ class Chat:
             }
             drop_ids = marker_ids - fc_ids_to_keep
             remaining = [x for x in self.buffer if x.id not in drop_ids]
+            # Deferred to avoid a chat <-> chat_factories import cycle.
+            from chatbot.LLM.chat_factories import make_assistant_message, make_user_message
 
             user_msg = make_user_message(result.user_summary)
             user_msg.id = _generate_id("msg")
@@ -753,86 +720,3 @@ TransformersChatMessage = Union[
 # ---------------------------------------------------------------------------
 # Factory helpers -- hide verbose constructors behind simple calls
 # ---------------------------------------------------------------------------
-
-
-def make_user_message(text: str) -> RealtimeConversationItemUserMessage:
-    return RealtimeConversationItemUserMessage(
-        type="message",
-        role="user",
-        content=[UserContent(type="input_text", text=text)],
-    )
-
-
-def make_user_audio_message(audio_b64: str) -> RealtimeConversationItemUserMessage:
-    return RealtimeConversationItemUserMessage(
-        type="message",
-        role="user",
-        content=[UserContent(type="input_audio", audio=audio_b64)],
-    )
-
-
-def make_assistant_message(text: str) -> RealtimeConversationItemAssistantMessage:
-    return RealtimeConversationItemAssistantMessage(
-        type="message",
-        role="assistant",
-        content=[AssistantContent(type="output_text", text=text)],
-    )
-
-
-def make_system_message(text: str) -> RealtimeConversationItemSystemMessage:
-    return RealtimeConversationItemSystemMessage(
-        type="message",
-        role="system",
-        content=[SystemContent(type="input_text", text=text)],
-    )
-
-
-def add_supported_item(chat: Chat, item: ConversationItem) -> None:
-    """Narrow a protocol ``ConversationItem`` to a :data:`SupportedItem` and add it to *chat*.
-
-    Raises :class:`ChatItemError` on validation failure or unsupported type. Shared
-    by the conversation handler (in-band item injection) and the language-model
-    handlers (seeding an out-of-band response's throwaway chat from ``response.input``).
-    """
-    # call_id on function_call items must be client-supplied: it is referenced later by
-    # function_call_output items, so we cannot silently generate one here.
-    if isinstance(item, RealtimeConversationItemFunctionCall) and (
-        item.call_id is None or not item.call_id.startswith("call_")
-    ):
-        raise ChatItemError("function_call item is missing a call_id. The call_id should start with 'call_'.")
-
-    if isinstance(
-        item,
-        (
-            RealtimeConversationItemSystemMessage,
-            RealtimeConversationItemUserMessage,
-            RealtimeConversationItemAssistantMessage,
-            RealtimeConversationItemFunctionCall,
-            RealtimeConversationItemFunctionCallOutput,
-        ),
-    ):
-        chat.add_item(item)
-        return
-
-    raise ChatItemError(f"Unsupported item type: {getattr(item, 'type', None)}")
-
-
-def build_active_chat(original_chat: Chat, response: RealtimeResponseCreateParams | None) -> Chat:
-    """Build the chat an *out-of-band* response generates against (caller ensures out-of-band).
-
-    Mirrors the OpenAI realtime semantics for ``input``:
-
-    - ``input is None`` -> a read-only **copy of the default conversation** (the
-      out-of-band response reads history but never commits back).
-    - ``input == []`` -> a **fresh, empty chat** (context cleared; only the
-      system prompt, added later by the handler, will be present).
-    - ``input == [...]`` -> a **fresh chat seeded** with those items.
-
-    Raises :class:`ChatItemError` if an ``input`` item fails validation.
-    """
-    if response is not None and response.input is not None:
-        fresh = Chat(original_chat.size)
-        for item in response.input:
-            add_supported_item(fresh, item)
-        return fresh
-    return original_chat.copy()

@@ -60,19 +60,19 @@ print(page_info())
 PY
 ```
 
-After navigation, locate controls with the accessibility tree (`cdp("Accessibility.getFullAXTree")`) or stable ids such as `#tools-btn`, `#personal-memory-editor`, `#main-circle`.
+After navigation, locate controls with the accessibility tree (`cdp("Accessibility.getFullAXTree")`). The product surface is the native panel; browser-driven voice proof is no longer available.
 
-**Voice conversations** need a real microphone grant in Chrome. For deterministic CI-style proof, prefer HTTP-mapped features (personal memory, saved sessions, config) unless the task explicitly requires audio.
+**Voice conversations** run in the native panel with a real microphone. For deterministic CI-style proof, prefer HTTP-mapped features (personal memory, saved sessions, config) plus the WebSocket connect probe unless the task explicitly requires audio.
 
 Mapped features and entry points:
 
-| Feature | Browser entry | API entry |
+| Feature | Panel entry | API entry |
 | --- | --- | --- |
-| App shell | Open `BASE_URL` | `GET /api/config` |
-| Personal memory | Tools → Personal memory | `GET/PUT /api/personal-memory` |
-| Saved sessions | Saved conversations | `GET/POST/PATCH/DELETE /api/sessions` |
-| Web search | Tools → Local web search | `POST /api/search` (needs Tavily or Serper key) |
-| Voice orb | Tap `Start voice conversation` | WebSocket `VOICE_WS_URL` |
+| Sidecar health | `curl BASE_URL/` stub | `GET /api/config` |
+| Personal memory | Native Settings | `GET/PUT /api/personal-memory` |
+| Saved sessions | Native conversations list | `GET/POST/PATCH/DELETE /api/sessions` |
+| Web search | Native Settings toggles | `POST /api/search` (needs TinyFish, Tavily, or Serper key) |
+| Voice backend | Native panel (manual) | WebSocket `VOICE_WS_URL` connect probe |
 
 ## Evidence
 

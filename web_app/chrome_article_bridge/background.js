@@ -6,7 +6,7 @@ const RECEIVER_PATTERN = 'http://127.0.0.1:7860/*';
 const RECEIVER_ORIGIN = 'http://127.0.0.1:7860';
 const SESSION_KEY = 'chatbotPageBridgeSession';
 const HEALTH_ALARM = 'chatbotPageBridgeHealth';
-const BRIDGE_VERSION = '0.4.2';
+const BRIDGE_VERSION = '0.4.3';
 
 const STATUS_TITLES = {
   ready: 'Page Bridge is enabled; this page text is ready for Chatbot',
@@ -58,7 +58,21 @@ async function receiverIsAvailable() {
   return true;
 }
 
-async function setDisabledBadge(title = 'Open the local Chatbot page to start Page Bridge') {
+// A reloaded extension orphans the content script already inside open tabs:
+// it can no longer message this worker, so the tab looks dead until its
+// script is replaced. Re-injecting on toolbar click revives the tab without
+// a page reload. Stale instances already quiesced themselves, and a dead
+// context's listeners never fire, so the fresh instance takes over cleanly.
+async function reinjectContentScript(tabId) {
+  try {
+    await chrome.scripting?.executeScript?.({ target: { tabId }, files: ['content.js'] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function setDisabledBadge(title = 'Click to enable the Chatbot Page Bridge on this page') {
   await chrome.action.setBadgeText({ text: '' });
   await chrome.action.setTitle({ title });
 }
@@ -286,6 +300,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.action.onClicked.addListener((tab) => {
   void (async () => {
     try {
+      // Revive tabs orphaned by an extension reload before anything else:
+      // a stale content script cannot answer, so replace it first.
+      if (tab?.id) await reinjectContentScript(tab.id);
       const session = await getSession();
       if (!session.enabled || await chatbotReceiverIsActive()) {
         await enableSession(tab);

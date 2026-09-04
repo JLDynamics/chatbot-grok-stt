@@ -45,8 +45,9 @@ class SpectralDenoiser:
         self._wacc = np.zeros(0, dtype=np.float32)
 
     def _process_frame(self, frame: np.ndarray) -> np.ndarray:
-        mag = np.abs(np.fft.rfft(frame * self._win))
-        phase = np.angle(np.fft.rfft(frame * self._win))
+        spec = np.fft.rfft(frame * self._win)
+        mag = np.abs(spec)
+        phase = np.angle(spec)
         self._maghist.append(mag.copy())
         hist = np.array(self._maghist)
         noise = np.percentile(hist, self.noise_pct, axis=0)
@@ -60,20 +61,22 @@ class SpectralDenoiser:
         if not self.enabled or chunk is None or chunk.size == 0:
             return np.asarray(chunk, dtype=np.float32)
         self._in = np.concatenate([self._in, np.asarray(chunk, dtype=np.float32)])
-        out = np.zeros(0, dtype=np.float32)
+        parts: list[np.ndarray] = []
         while len(self._in) >= self.frame:
             yf = self._process_frame(self._in[: self.frame])
             self._in = self._in[self.hop :]
             self._pad_acc()
             self._acc[: self.frame] += yf
             self._wacc[: self.frame] += self._win * self._win
-            out = np.concatenate([out, self._emit_hop()])
-        return out
+            parts.append(self._emit_hop())
+        if not parts:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(parts)
 
     def flush(self) -> np.ndarray:
         if not self.enabled:
             return np.zeros(0, dtype=np.float32)
-        out = np.zeros(0, dtype=np.float32)
+        parts: list[np.ndarray] = []
         while len(self._in) > 0:
             fr = self._in[: self.frame]
             if len(fr) < self.frame:
@@ -83,11 +86,13 @@ class SpectralDenoiser:
             self._pad_acc()
             self._acc[: self.frame] += yf
             self._wacc[: self.frame] += self._win * self._win
-            out = np.concatenate([out, self._emit_hop()])
+            parts.append(self._emit_hop())
         # Drain the overlap tail left by the final frames (real signal).
         while len(self._acc) > 0:
-            out = np.concatenate([out, self._emit_hop()])
-        return out
+            parts.append(self._emit_hop())
+        if not parts:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(parts)
 
     def _pad_acc(self) -> None:
         # NOTE: extend by hop, not frame. Extending by frame while shifting by
@@ -170,3 +175,17 @@ def drop_queued_tts_inputs(queue_in: Any, turn_id: str | None, turn_revision: in
             kept.append(item)
         queue_in.queue = kept
     return dropped
+
+
+def build_denoise_chain(
+    gen_kwargs: dict[str, Any],
+) -> tuple[SpectralDenoiser, TTSNoiseGate, dict[str, Any]]:
+    """Pop the shared denoise flags and build the (denoiser, gate) pair."""
+    gen_kwargs = dict(gen_kwargs)
+    spectral_enabled = bool(gen_kwargs.pop("spectral_denoise", True))
+    spectral_floor = float(gen_kwargs.pop("spectral_denoise_floor", 0.04))
+    denoiser = SpectralDenoiser(enabled=spectral_enabled, floor=spectral_floor)
+    noise_gate_enabled = bool(gen_kwargs.pop("noise_gate", True))
+    noise_gate_threshold = float(gen_kwargs.pop("noise_gate_threshold", 0.010))
+    gate = TTSNoiseGate(enabled=noise_gate_enabled, threshold=noise_gate_threshold)
+    return denoiser, gate, gen_kwargs
