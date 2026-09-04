@@ -173,3 +173,59 @@ def test_every_tool_has_a_progress_label():
     labelled = set(re.findall(r'case "([a-z_]+)": desc =', session))
     assert dispatched, "no tool cases found; the dispatch shape changed"
     assert dispatched <= labelled, f"tools with no progress label: {sorted(dispatched - labelled)}"
+
+
+# ── scrolling must actually reach the app it names ────────────────────────
+
+
+def _allow_desktop(monkeypatch, tmp_path):
+    harness = tmp_path / "desktop-harness"
+    harness.write_text("#!/bin/sh\n")
+    harness.chmod(0o700)
+    monkeypatch.setattr(server, "DESKTOP_HARNESS_BIN", harness)
+    monkeypatch.setattr(server, "DESKTOP_CONTROL_ENABLED", True)
+
+    async def safe_scope(_app=None):
+        return None
+
+    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", safe_scope)
+
+
+def test_scroll_focuses_and_points_at_the_named_app(monkeypatch, tmp_path):
+    """macOS sends wheel events to the focused app, at the pointer.
+
+    Without both, scroll() silently does nothing while still reporting ok, so a
+    caller reading a long page loops forever on one screenful — the screenshots
+    come back byte-identical every round.
+    """
+    _allow_desktop(monkeypatch, tmp_path)
+    seen = {}
+
+    async def fake_harness(script, _timeout):
+        seen["script"] = script
+        return 0, '{"ok": true}'
+
+    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    response = client.post("/api/desktop/act", json={"action": "scroll", "app": "Google Chrome", "amount": 8})
+    assert response.status_code == 200
+
+    script = seen["script"]
+    assert "open_app(app)" in script, "scroll must focus the target app"
+    assert "window_frame(app)" in script and "move_to(" in script, "pointer must land inside the window"
+    # Ordering matters: focusing after the wheel event is useless.
+    assert script.index("open_app(app)") < script.index("scroll(dy=")
+    assert script.index("move_to(") < script.index("scroll(dy=")
+
+
+def test_scroll_without_a_target_does_not_steal_focus(monkeypatch, tmp_path):
+    """No app named means no window to aim at, so don't yank focus around."""
+    _allow_desktop(monkeypatch, tmp_path)
+    seen = {}
+
+    async def fake_harness(script, _timeout):
+        seen["script"] = script
+        return 0, '{"ok": true}'
+
+    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    assert client.post("/api/desktop/act", json={"action": "scroll", "amount": 3}).status_code == 200
+    assert "open_app(app)" not in seen["script"]

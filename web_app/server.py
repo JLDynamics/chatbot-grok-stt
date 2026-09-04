@@ -999,9 +999,23 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
         captured = await _capture_desktop_screenshot(app_name)
         return JSONResponse({"ok": True, "action": action, **captured})
     text = req.text or ""
+    preamble = ""
     if action == "scroll":
         amount = req.amount if req.amount else 5
         expression = ACTIONS[action].format(dy=-abs(amount) if amount >= 0 else abs(amount))
+        if app_name:
+            # macOS delivers scroll wheel events to the focused app, at the
+            # pointer. Without both, scroll() silently no-ops: it reported
+            # ok=true while the screen never moved, so a caller reading a long
+            # page would loop forever on the same screenful. Focus the target
+            # and put the pointer inside it first.
+            preamble = (
+                "open_app(app)\n"
+                "wait(0.6)\n"
+                "_frame = window_frame(app)\n"
+                "if _frame:\n"
+                "    move_to(_frame['x'] + _frame['w'] / 2, _frame['y'] + _frame['h'] / 2)\n"
+            )
     elif action == "drag":
         coords = req.coords or []
         if len(coords) != 4:
@@ -1020,9 +1034,11 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
     script = (
         "import json\n"
         "from desktop_harness.helpers import click_text, type_text, key, hotkey, scroll, drag, labels, wait_stable\n"
+        "from desktop_harness.helpers import open_app, window_frame, move_to, wait\n"
         f"app = {app_name!r}\n"
         f"verify = {action in {'click', 'type', 'key', 'hotkey'}!r}\n"
         "before = set(labels(app, limit=60)) if verify else set()\n"
+        f"{preamble}"
         f"result = {expression}\n"
         "if verify: wait_stable(0.35)\n"
         "changed = [x for x in labels(app, limit=60) if x and x not in before][:12] if verify else []\n"
