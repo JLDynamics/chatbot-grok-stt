@@ -40,6 +40,10 @@ final class LiveVoiceBackend: VoiceBackend {
 
     private var agentText = ""
     private var activeResponseId = ""
+    /// A response.create that arrived while one was still streaming, deferred
+    /// until it finishes. The server rejects an overlapping create outright, so
+    /// sending it eagerly silently ended the turn.
+    private var responseRequestPending = false
     private var cancelledIds = Set<String>()
     private var lastOutputLevelAt = Date.distantPast
     /// Personal memory profile + saved transcript, set by the controller
@@ -155,6 +159,7 @@ final class LiveVoiceBackend: VoiceBackend {
         noiseGate.reset()
         agentText = ""
         activeResponseId = ""
+        responseRequestPending = false
         cancelledIds.removeAll()
         muted = false
         micFramesSent = 0
@@ -303,6 +308,10 @@ final class LiveVoiceBackend: VoiceBackend {
             finishAgentTurn()
             onOutputLevel?(0)
             if !closed { onState?(.listening) }
+            if responseRequestPending, activeResponseId.isEmpty {
+                responseRequestPending = false
+                sendResponseCreate()
+            }
 
         case "response.function_call_arguments.done":
             guard let name = json["name"] as? String,
@@ -469,7 +478,24 @@ final class LiveVoiceBackend: VoiceBackend {
         ])
     }
 
+    /// Ask the model to continue after a tool result.
+    ///
+    /// A tool that returns faster than the in-flight response finishes (a
+    /// bridge miss answers immediately) would otherwise race it, and the server
+    /// answers an overlapping create with
+    /// `conversation_already_has_active_response`. Nothing retried that, so the
+    /// turn died after the spoken acknowledgement and the tool result was never
+    /// used — which also stops any fallback chain at its first rung. Defer
+    /// instead, and flush on `response.done`.
     private func requestResponse() {
+        guard activeResponseId.isEmpty else {
+            responseRequestPending = true
+            return
+        }
+        sendResponseCreate()
+    }
+
+    private func sendResponseCreate() {
         send([
             "type": "response.create",
             "response": [:] as [String: Any],
