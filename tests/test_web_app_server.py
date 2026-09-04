@@ -32,7 +32,7 @@ def test_config_exposes_retained_sidecar_capabilities(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DESKTOP_HARNESS_BIN", harness)
     monkeypatch.setattr(server, "DESKTOP_CONTROL_ENABLED", True)
     data = client.get("/api/config").json()
-    assert data["s2sUrl"].endswith("/v1/realtime")
+    assert data["chatbotUrl"].endswith("/v1/realtime")
     assert data["allowDirect"] is False
     assert data["desktopControl"] is True
     assert data["codeAgent"] is True

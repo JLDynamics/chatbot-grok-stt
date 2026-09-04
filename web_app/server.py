@@ -253,7 +253,8 @@ def config() -> dict:
     return {
         "search": bool(TINYFISH_KEY or SERPER_KEY or TAVILY_KEY),
         "allowDirect": False,
-        # Kept for the verify harness and older clients.
+        "chatbotUrl": CHATBOT_VOICE_URL,
+        # Legacy field kept for the verify harness and older clients.
         "s2sUrl": CHATBOT_VOICE_URL,
         "startupGreeting": STARTUP_GREETING,
         "codeAgent": CODE_AGENT_ENABLED,
