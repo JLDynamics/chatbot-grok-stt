@@ -243,24 +243,36 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
     assert "observer?.disconnect()" in content
     assert "Reload this page once to activate the new content script" in content
     assert "sendResponse({ ok: true })" in content
+    # Intent classification: still strict about which kind of thing is wanted.
     routing_examples = (
-        "requires no approval or confirmation",
-        "text request, call read_article directly",
-        "screen'. Use inspect_current_context only when the request is genuinely ambiguous",
-        "read_article means call read_article",
-        "control_screen_screenshot means call control_screen",
-        "Article, news, webpage, page, or individual X post requests",
-        "check, read, grab, summarize, analyze, or",
-        "screen/app/window, layout, image, chart, visual appearance, or front-page requests",
+        "read, check, grab, summarize, analyze, or explain an article",
+        "screen, app, window, layout, image, chart, visual appearance, or front-page requests",
         "An explicit 'take a screenshot'",
+        "Use inspect_current_context only when the request is genuinely ambiguous",
     )
     for example in routing_examples:
         assert example in swift
-    assert "no page body and no screenshot" in swift
-    assert "do not ask for approval and do not offer or call" in swift
+    assert "never page body and never pixels" in swift
     assert "content-versus-visual question" in swift
-    assert "After preflight, call the chosen content tool immediately without another spoken update" in swift
     assert "must not use read_article" in swift
+
+    # Method selection: an ordered ladder that descends on failure, rather than
+    # the previous dead end that told the user to reload the extension.
+    ladder = (
+        "1. web_fetch when you have or can search for a public URL",
+        "2. read_article for the live page in the user's Chrome",
+        "3. control_screen with action screenshot as the last resort",
+        "Descend automatically",
+        "never end a turn telling the user to reload the extension while a rung below is still untried",
+    )
+    for rung in ladder:
+        assert rung in swift
+
+    # The chain has to be audible, and read-only once it reaches the screen.
+    assert "one more every time you change method" in swift
+    assert "Never run two tools in a row in silence" in swift
+    assert "action screenshot and action scroll only" in swift
+    assert "not something you dismiss for them" in swift
     assert '"name": "inspect_current_context"' in swift
     assert "Do not call it for an explicit " in swift
     assert "X-post text request; call read_article directly" in swift
@@ -596,9 +608,13 @@ def test_context_preflight_routes_without_page_text_or_screenshot(monkeypatch):
     assert "Private body" not in json.dumps(chrome)
 
     swift = _voice_tools_text()
-    assert "without asking for approval or confirmation" in swift
-    assert "do not ask for approval and do not offer or call" in swift
-    assert "a screenshot as a fallback" in swift
+    # Reading a public page still needs no permission theatre...
+    assert "user's request is all the authorization you need" in swift
+    assert "never ask permission for it" in swift
+    # ...but a failed rung now descends instead of dead-ending, and says so.
+    assert "Never stop to ask permission between rungs" in swift
+    assert "never end a turn telling the user to reload the extension while a rung below is still untried" in swift
+    assert "one more every time you change method" in swift
 
     async def notes_context():
         return {"available": True, "sensitive": False, "app": "Notes", "window_title": "Shopping list"}

@@ -150,11 +150,15 @@ final class SessionController: ObservableObject {
             self?.userTurnOpen = false
             let desc: String
             switch name {
+            case "web_search": desc = "Searching the web…"
+            case "web_fetch": desc = "Fetching the page…"
             case "read_article": desc = "Reading Chrome article…"
             case "control_screen": desc = "Controlling desktop…"
             case "code_agent": desc = "Coding agent running…"
             case "inspect_current_context": desc = "Checking context…"
             case "remember": desc = "Saving memory…"
+            case "forget": desc = "Updating memory…"
+            case "search_chat_history": desc = "Searching past chats…"
             default: desc = "Running \(name)…"
             }
             self?.activeTool = desc

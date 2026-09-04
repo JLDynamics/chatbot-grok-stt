@@ -22,25 +22,39 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         "right away in the same response."
 
     public static let toolIntentRouting =
-        " Tool intent routing is strict. Reading a public article, news page, webpage, or " +
-        "individual X post is read-only and requires no approval or confirmation beyond the " +
-        "user's request. Never describe read_article as needing permission. For an explicit " +
-        "text request, call read_article directly, including when the user says it is 'on my " +
-        "screen'. Use inspect_current_context only when the request is genuinely ambiguous " +
-        "between page text and visual screen/app state. " +
-        "It returns routing metadata only: no page body and no screenshot. Follow its route_hint " +
-        "automatically when the user's intent agrees: read_article means call read_article for " +
-        "the full Chrome DOM text; control_screen_screenshot means call control_screen with " +
-        "action screenshot for the other app/UI; ask means ask one concise clarifying question. " +
-        "After preflight, call the chosen content tool immediately without another spoken update. " +
-        "Article, news, webpage, page, or individual X post requests to check, read, grab, summarize, analyze, or " +
-        "explain are text intent and must never use screenshots or desktop scrolling. Generic " +
-        "screen/app/window, layout, image, chart, visual appearance, or front-page requests are " +
-        "visual intent and must not use read_article. An explicit 'take a screenshot' can call " +
-        "control_screen screenshot directly. If read_article reports that the bridge is unavailable, " +
-        "tell the user to reload the extension/page; do not ask for approval and do not offer or call " +
-        "a screenshot as a fallback. If genuinely ambiguous metadata and wording still conflict, ask " +
-        "one concise content-versus-visual question and do not frame it as permission."
+        " Tool routing has two separate parts: what the user wants, and how you get it. " +
+        "INTENT. Requests to read, check, grab, summarize, analyze, or explain an article, news " +
+        "story, webpage, page, or individual X post want page TEXT. Generic screen, app, window, " +
+        "layout, image, chart, visual appearance, or front-page requests want what is VISIBLE: " +
+        "these are visual intent and must not use read_article. An explicit 'take a screenshot' " +
+        "calls control_screen screenshot directly. Reading a public page is read-only, so the " +
+        "user's request is all the authorization you need: never ask permission for it and never " +
+        "describe read_article as needing approval. Use inspect_current_context only when the " +
+        "request is genuinely ambiguous between page text and visual state; it returns routing " +
+        "metadata only, never page body and never pixels. " +
+        "METHOD. For page text there is a ladder. Start at the rung that fits what you already " +
+        "know, and go down a rung only when one fails: 1. web_fetch when you have or can search " +
+        "for a public URL. 2. read_article for the live page in the user's Chrome, which is the " +
+        "right rung when the page is 'on my screen', sits behind a login, or web_fetch came back " +
+        "gated. 3. control_screen with action screenshot as the last resort when neither text " +
+        "method worked. Descend automatically. Never stop to ask permission between rungs, and " +
+        "never end a turn telling the user to reload the extension while a rung below is still " +
+        "untried. " +
+        "Read the failure before you choose. web_fetch reporting gated true, or a bridge reason " +
+        "of bridge_never_enabled or bridge_expired, tells you which rung to try next, and a " +
+        "bridge failure carrying a url means web_fetch is worth trying with that url. " +
+        "SPEAK AS YOU GO. Say one short line before the first tool call, and one more every time " +
+        "you change method, such as 'That one is paywalled, let me read it from your Chrome' or " +
+        "'The bridge is not on for that tab, I will look at the screen'. Never run two tools in a " +
+        "row in silence. When you finally answer, say which method it came from if it was not the " +
+        "first one you tried. " +
+        "ON THE SCREEN FALLBACK, LOOK BUT DO NOT TOUCH. Reading page text through control_screen " +
+        "allows action screenshot and action scroll only. Never click, type, drag, or press keys " +
+        "to reach content: a consent banner, cookie wall, or login form in the way is something " +
+        "you describe and hand back to the user, not something you dismiss for them. Never pass " +
+        "off a screenshot of a paywall teaser as the article itself. " +
+        "If intent is still genuinely ambiguous after all this, ask one concise " +
+        "content-versus-visual question and do not frame it as permission."
 
     private let baseURL = LocalService.sidecarAPI
 
@@ -162,11 +176,12 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             defs.append([
                 "type": "function",
                 "name": "read_article",
-                "description": "Read the full main text from the public webpage, article, documentation, news page, or individual X status post currently open in Chrome. Always use this when the user asks to read, grab, check, analyze, explain, or summarize an article/news/webpage/page or X post on their screen; this is a read-only public-page operation and the user's request is sufficient authorization, so call it immediately without asking for approval or confirmation. Prefer it over control_screen and do not first claim that page text is unavailable. If it reports the bridge is unavailable, fall back to control_screen (screenshot) only for the visible screen content; never default to a screenshot for article text alone.",
+                "description": "Read the full main text of the public webpage, article, documentation, news page, or individual X status post currently open in Chrome. This reads the live page, so it works where web_fetch cannot: pages behind a login, pages that need JavaScript, and anything web_fetch reported as gated. Read-only, and the user's request is sufficient authorization, so call it without asking for approval. On failure it returns a reason: bridge_never_enabled means no page has been shared from Chrome, bridge_expired means the shared copy aged out and the reply carries the page url. Use that url with web_fetch, and fall back to control_screen screenshot only when no text method worked.",
                 "parameters": [
                     "type": "object",
                     "properties": [
-                        "app": ["type": "string", "description": "Optional Chrome app name."]
+                        "app": ["type": "string", "description": "Optional Chrome app name."],
+                        "url": ["type": "string", "description": "Optional page URL, when you already know which page is wanted. Used to fall back to fetching the page if Chrome has not shared it."]
                     ],
                     "required": [] as [String]
                 ] as [String: Any]
@@ -188,7 +203,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             defs.append([
                 "type": "function",
                 "name": "control_screen",
-                "description": "Act on the user's Mac: click a button or link by its visible text, type text, press a key, use a keyboard shortcut, scroll, drag, or take a screenshot of the main display or one visible app/window. Prefer clicking by text over dragging. Use screenshot for explicit visual intent: 'check my screen', what is visible in an app/window, a layout, image, chart, visual appearance, or an explicit screenshot request. Never use a screenshot or scrolling to read, analyze, explain, or summarize article/news/webpage/page or individual X post text; use read_article. Do not use read_article for generic visual screen requests.",
+                "description": "Act on the user's Mac: click a button or link by its visible text, type text, press a key, use a keyboard shortcut, scroll, drag, or take a screenshot of the main display or one visible app/window. Prefer clicking by text over dragging. Use screenshot for explicit visual intent: 'check my screen', what is visible in an app/window, a layout, image, chart, visual appearance, or an explicit screenshot request. Do not use read_article for generic visual screen requests. For article/news/webpage/page or individual X post text prefer read_article first; reach this tool only once web_fetch and read_article have both failed, and then use action screenshot and action scroll only, never click, type, drag, or key to get at page content.",
                 "parameters": [
                     "type": "object",
                     "properties": [
@@ -286,7 +301,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
                 return try await execWebFetch(url: args["url"] as? String ?? "")
 
             case "read_article":
-                return try await execReadArticle(app: args["app"] as? String)
+                return try await execReadArticle(app: args["app"] as? String, url: args["url"] as? String)
 
             case "control_screen":
                 return try await execControlScreen(args: args)
@@ -370,19 +385,28 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         return VoiceToolResult(output: "\(title)\n\n\(text)")
     }
 
-    private func execReadArticle(app: String?) async throws -> VoiceToolResult {
+    /// Read the live Chrome page.
+    ///
+    /// On failure this reports *why* and, when either the sidecar or the caller
+    /// knows it, *which page* — then stops. Choosing and narrating the next rung
+    /// of the fallback chain is the model's job, not this layer's: escalating
+    /// silently here would rob it of the chance to tell the user the method
+    /// changed, which is the whole point of the chain being visible.
+    private func execReadArticle(app: String?, url pageURL: String?) async throws -> VoiceToolResult {
         let url = baseURL.appendingPathComponent("browser/read")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
 
         let (data, res) = try await quickSession.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-            return VoiceToolResult(
-                output: "The read-only Chrome page bridge is unavailable. " +
-                    "Make sure Google Chrome is open, the Chatbot Page Bridge extension is loaded, " +
-                    "and reload the webpage you want to read. Without a chatbot browser tab open, " +
-                    "click the bridge toolbar icon once on the page first to enable it."
-            )
+            var output = "read_article could not read the Chrome page: \(errorDetail(data, res))"
+            // A URL the model already supplied is just as good for the fetch
+            // rung as one the sidecar remembered, so surface whichever exists.
+            if let known = pageURL?.trimmingCharacters(in: .whitespacesAndNewlines), !known.isEmpty,
+               !output.contains(known) {
+                output += " The page URL is \(known); web_fetch can be tried with it."
+            }
+            return VoiceToolResult(output: output)
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return VoiceToolResult(output: "Invalid response from Chrome bridge.")
