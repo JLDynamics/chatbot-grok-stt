@@ -12,12 +12,14 @@ final class MockVoiceBackend: VoiceBackend {
     var onState: ((SessionState) -> Void)?
     var onInputLevel: ((Float) -> Void)?
     var onOutputLevel: ((Float) -> Void)?
-    var onUserPartial: ((String) -> Void)?
+    var onUserPartial: ((String, String?) -> Void)?
     var onUserFinal: ((String, String?) -> Void)?
     var onAgentDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
     var onToolActive: ((String) -> Void)?
     var onToolDone: ((String, String) -> Void)?
+    var onAudioStatus: ((String?) -> Void)?
+    var onToolsCancelled: (() -> Void)?
 
     private struct Exchange {
         let said: String
@@ -73,7 +75,7 @@ final class MockVoiceBackend: VoiceBackend {
             for word in exchange.said.split(separator: " ") {
                 if Task.isCancelled { return }
                 partial += (partial.isEmpty ? "" : " ") + word
-                onUserPartial?(partial)
+                onUserPartial?(partial, nil)
                 try? await Task.sleep(nanoseconds: 160_000_000)
             }
             onUserFinal?(exchange.said, nil)

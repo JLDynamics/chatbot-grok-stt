@@ -26,6 +26,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voice uses your microphone so you can talk to the assistant.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Voice captures your screen only when you ask for a screenshot or visual screen help.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

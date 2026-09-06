@@ -15,7 +15,9 @@ class VibeVoiceTTSHandlerArguments:
     )
     vibevoice_tts_max_tokens: int = field(
         default=1024,
-        metadata={"help": "Safety ceiling on generated tokens; the model stops on EOS, so this only bounds runaway output."},
+        metadata={
+            "help": "Safety ceiling on generated tokens; the model stops on EOS, so this only bounds runaway output."
+        },
     )
     vibevoice_tts_cfg_scale: float = field(
         default=1.5,
@@ -23,15 +25,21 @@ class VibeVoiceTTSHandlerArguments:
     )
     vibevoice_tts_ddpm_steps: int | None = field(
         default=None,
-        metadata={"help": "Diffusion inference steps; leave unset for the model default (higher = slower but cleaner)."},
+        metadata={
+            "help": "Diffusion inference steps; leave unset for the model default (higher = slower but cleaner)."
+        },
     )
     vibevoice_tts_gen_noise_gate: bool = field(
         default=True,
-        metadata={"help": "Apply a gentle downward expander that hides the model's output noise floor (hiss) during pauses."},
+        metadata={
+            "help": "Apply a gentle downward expander that hides the model's output noise floor (hiss) during pauses."
+        },
     )
     vibevoice_tts_gen_noise_gate_threshold: float = field(
         default=0.010,
-        metadata={"help": "RMS threshold below which the noise gate attenuates; set lower to gate less, higher to gate more aggressively."},
+        metadata={
+            "help": "RMS threshold below which the noise gate attenuates; set lower to gate less, higher to gate more aggressively."
+        },
     )
     vibevoice_tts_gen_spectral_denoise: bool = field(
         default=True,
@@ -39,5 +47,7 @@ class VibeVoiceTTSHandlerArguments:
     )
     vibevoice_tts_gen_spectral_denoise_floor: float = field(
         default=0.04,
-        metadata={"help": "Spectral denoise floor: how far the noise can be suppressed (lower = more suppression, more risk of artifacts)."},
+        metadata={
+            "help": "Spectral denoise floor: how far the noise can be suppressed (lower = more suppression, more risk of artifacts)."
+        },
     )

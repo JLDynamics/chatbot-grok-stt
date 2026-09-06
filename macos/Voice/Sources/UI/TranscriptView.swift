@@ -18,10 +18,10 @@ struct TranscriptView: View {
                             emptyState
                         }
                         ForEach(session.turns) { turn in
-                            TurnRow(turn: turn, userInitial: userInitial, agentInitial: agentInitial)
+                            TurnRow(turn: Turn(speaker: turn.speaker, text: session.displayedText(for: turn), at: turn.at), userInitial: userInitial, agentInitial: agentInitial)
                                 .id(turn.id)
                         }
-                        if let interim = session.interim {
+                        if let interim = session.interim, !session.interimHasExistingRow {
                             InterimRow(text: interim, userInitial: userInitial)
                                 .id("interim")
                         }

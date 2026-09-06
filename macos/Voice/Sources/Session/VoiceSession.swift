@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 enum SessionState: Equatable {
     case idle
@@ -31,7 +32,7 @@ protocol VoiceBackend: AnyObject {
     var onState: ((SessionState) -> Void)? { get set }
     var onInputLevel: ((Float) -> Void)? { get set }        // 0...1, ~30 Hz
     var onOutputLevel: ((Float) -> Void)? { get set }       // 0...1, ~30 Hz
-    var onUserPartial: ((String) -> Void)? { get set }      // interim transcript
+    var onUserPartial: ((String, String?) -> Void)? { get set }      // interim transcript
     var onUserFinal: ((String, String?) -> Void)? { get set } // final transcript + server item id (stable across pause-merged segments)
     var onAgentDelta: ((String) -> Void)? { get set }       // streamed reply text
     var onAgentDone: (() -> Void)? { get set }
@@ -39,6 +40,8 @@ protocol VoiceBackend: AnyObject {
     /// (tool name, short result summary) — the summary is recorded in the
     /// transcript so later turns can see what a tool actually returned.
     var onToolDone: ((String, String) -> Void)? { get set }
+    var onAudioStatus: ((String?) -> Void)? { get set }
+    var onToolsCancelled: (() -> Void)? { get set }
 
     func start() async throws
     func stop() async
@@ -73,6 +76,10 @@ final class SessionController: ObservableObject {
 
     /// Shown as one line in the header. Cleared on the next successful start.
     @Published private(set) var errorText: String?
+    @Published private(set) var audioStatus: String?
+    @Published private(set) var interimItemId: String?
+    private var userRows: [String: UUID] = [:]
+    private var userMessages: [String: Int] = [:]
 
     // MARK: - Saved conversations + memory (via ChatStore against the sidecar /api)
 
@@ -101,9 +108,10 @@ final class SessionController: ObservableObject {
     private let backend: VoiceBackend
     private let maxTurns = 200
 
-    init(backend: VoiceBackend) {
+    init(backend: VoiceBackend, restoreSavedSession: Bool = true) {
         self.backend = backend
         wire()
+        guard restoreSavedSession else { return }
         Task { [weak self] in
             await self?.loadMemory()
             await self?.refreshSessions()
@@ -120,11 +128,17 @@ final class SessionController: ObservableObject {
         backend.onInputLevel = { [weak self] level in self?.inputLevel = level }
         backend.onOutputLevel = { [weak self] level in self?.outputLevel = level }
 
-        backend.onUserPartial = { [weak self] text in self?.interim = text }
+        backend.onAudioStatus = { [weak self] note in self?.audioStatus = note }
+        backend.onToolsCancelled = { [weak self] in self?.activeTool = nil }
+        backend.onUserPartial = { [weak self] text, itemId in
+            self?.interimItemId = itemId
+            self?.interim = text
+        }
 
         backend.onUserFinal = { [weak self] text, itemId in
             guard let self else { return }
             self.interim = nil
+            self.interimItemId = nil
             self.upsertUserTurn(text: text, itemId: itemId)
         }
 
@@ -153,6 +167,7 @@ final class SessionController: ObservableObject {
             let desc: String
             switch name {
             case "web_search": desc = "Searching the web…"
+            case "read_page": desc = "Reading page…"
             case "web_fetch": desc = "Fetching the page…"
             case "read_article": desc = "Reading Chrome article…"
             case "control_screen": desc = "Controlling desktop…"
@@ -285,6 +300,7 @@ final class SessionController: ObservableObject {
         inputLevel = 0
         outputLevel = 0
         state = .idle
+        activeTool = nil
         await flushSave()
     }
 
@@ -297,8 +313,9 @@ final class SessionController: ObservableObject {
 
     /// Only wired up if Stop is a barge-in rather than an end — see SPEC.md §7.
     func interrupt() {
-        guard case .agentSpeaking = state else { return }
+        guard isLive, state != .connecting else { return }
         backend.interrupt()
+        activeTool = nil
     }
 
     // MARK: - Saved conversations + memory
@@ -312,6 +329,7 @@ final class SessionController: ObservableObject {
     }
 
     func newSession() async {
+        if isLive { await end() }
         await flushSave()
         resetTranscript()
         UserDefaults.standard.removeObject(forKey: Self.lastSessionKey)
@@ -319,12 +337,16 @@ final class SessionController: ObservableObject {
 
     func openSession(id: String) async {
         if id == activeSessionId { return }
+        if isLive { await end() }
         await flushSave()
         do {
             let s = try await ChatStore.shared.getSession(id: id)
             dirty = false
             activeSessionId = s.id
             activeSessionTitle = s.title
+            userRows.removeAll()
+            userMessages.removeAll()
+            lastUserItemId = nil
             messages = s.messages
             turns = s.messages.compactMap { m -> Turn? in
                 switch m.role {
@@ -345,6 +367,7 @@ final class SessionController: ObservableObject {
 
     func deleteSession(id: String) async {
         if id == activeSessionId {
+            if isLive { await end() }
             saveTask?.cancel()
             saveTask = nil
             resetTranscript()
@@ -379,6 +402,8 @@ final class SessionController: ObservableObject {
     }
 
     private func resetTranscript() {
+        userRows.removeAll()
+        userMessages.removeAll()
         dirty = false
         activeSessionId = nil
         activeSessionTitle = "New conversation"
@@ -421,7 +446,19 @@ final class SessionController: ObservableObject {
     private func upsertUserTurn(text: String, itemId: String?) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        if let last = turns.last, last.speaker == .you, (itemId == lastUserItemId || userTurnOpen) {
+        if let id = itemId, let row = userRows[id],
+           let index = turns.firstIndex(where: { $0.id == row }) {
+            turns[index].text = t
+            if let messageIndex = userMessages[id], messages.indices.contains(messageIndex) {
+                messages[messageIndex].text = t
+            }
+            dirty = true
+            scheduleSave()
+            lastUserItemId = id
+            return
+        }
+        if let last = turns.last, last.speaker == .you,
+           userTurnOpen && Self.isContinuation(of: last.text, next: t) {
             turns[turns.count - 1].text = t
             if let idx = messages.lastIndex(where: { $0.role == "user" }) {
                 messages[idx].text = t
@@ -429,6 +466,7 @@ final class SessionController: ObservableObject {
             dirty = true
             scheduleSave()
             lastUserItemId = itemId
+            bindUserItem(itemId)
             userTurnOpen = true
             return
         }
@@ -442,6 +480,7 @@ final class SessionController: ObservableObject {
             dirty = true
             scheduleSave()
             lastUserItemId = itemId
+            bindUserItem(itemId)
             userTurnOpen = true
             return
         }
@@ -449,6 +488,24 @@ final class SessionController: ObservableObject {
         userTurnOpen = true
         append(Turn(speaker: .you, text: t))
         recordUser(t)
+        bindUserItem(itemId)
+    }
+
+    private func bindUserItem(_ itemId: String?) {
+        guard let id = itemId, let row = turns.last(where: { $0.speaker == .you }),
+              let index = messages.lastIndex(where: { $0.role == "user" }) else { return }
+        userRows[id] = row.id
+        userMessages[id] = index
+    }
+
+    func displayedText(for turn: Turn) -> String {
+        guard let item = interimItemId, userRows[item] == turn.id, let interim else { return turn.text }
+        return interim
+    }
+
+    var interimHasExistingRow: Bool {
+        guard let item = interimItemId, let row = userRows[item] else { return false }
+        return turns.contains(where: { $0.id == row })
     }
 
     /// Whether a new final restates and extends an earlier partial bubble:
@@ -459,11 +516,7 @@ final class SessionController: ObservableObject {
         let b = newText.lowercased()
         guard !a.isEmpty, !b.isEmpty else { return false }
         if a == b || (b.count > a.count && b.hasPrefix(a)) { return true }
-        let oldWords = a.split(separator: " ")
-        guard oldWords.count >= 4, b.count > a.count else { return false }
-        let newWords = Set(b.split(separator: " "))
-        let overlap = oldWords.filter { newWords.contains($0) }.count
-        return Double(overlap) / Double(oldWords.count) >= 0.6
+        return false
     }
 
     /// Append a tool result to the transcript so it survives into later turns.

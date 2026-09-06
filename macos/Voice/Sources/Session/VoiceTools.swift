@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 public struct VoiceToolResult: Sendable {
     public let output: String
@@ -62,8 +63,14 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         "READING A LONG PAGE FROM THE SCREEN. control_screen screenshot returns one screenful, " +
         "and control_screen scroll returns no picture at all, so scrolling alone shows you " +
         "nothing. To read past the first screen, alternate: screenshot, then scroll, then " +
-        "screenshot again, repeating while new text keeps appearing, up to about six rounds, and " +
+        "screenshot again, repeating while new text keeps appearing, up to about eight rounds, and " +
         "assemble what you read across them. Stop when the text repeats or you reach the end. " +
+        "SCROLL BIG: each scroll amount is scaled server-side to long strides, so prefer amount " +
+        "25-35 for full-screen strides on long pages; small amounts crawl and waste rounds. " +
+        "WORK QUIETLY: say one short line when starting ('Reading the full article now'), then run " +
+        "the whole screenshot/scroll ladder with empty text alongside the tool calls and no " +
+        "narration between rounds. This is the one exception to speaking as you go. Give ONE full " +
+        "answer at the end covering the entire article, never a play-by-play. " +
         "NEVER CLAIM AN ACTION YOU DID NOT TAKE. Only say you scrolled, captured, read, or found " +
         "something after the matching tool call has actually returned it. If a call failed or " +
         "returned nothing useful, say exactly that and what you are trying next. Never explain a " +
@@ -144,6 +151,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         let tools = activeToolDefinitions()
         if tools.isEmpty { return base }
         return base + Self.toolUseHint + Self.toolIntentRouting
+            + " For a general page-reading request, use read_page to execute the text ladder with bounded attempts. It prefers Chrome for X/Twitter links and current-page requests, and web fetch for other URLs. Set prefer_browser for other known login-dependent pages already open in Chrome. Search first only when you need to discover a URL; a search snippet is not an article. The separate web_fetch and read_article tools remain available for an explicitly named method. read_page reports all attempts, tries the other text method when content is partial, and preserves the requested page identity. If its text methods fail, screen reading remains screenshot and scroll only, and only for the requested visible page. Never label a partial capture as a complete article."
     }
 
     /// Same wording as the sidecar flow: stored profile
@@ -160,6 +168,16 @@ public final class VoiceToolExecutor: @unchecked Sendable {
 
     public func activeToolDefinitions() -> [[String: Any]] {
         var defs = [[String: Any]]()
+        if webSearchEnabled || chromeBridgeEnabled {
+            defs.append([
+                "type": "function", "name": "read_page",
+                "description": "Read a specific URL or the current Chrome page. Prefers Chrome for X/Twitter, otherwise web fetch. Tries each enabled text method at most once, including after partial content. Never substitutes a different open page. Omit url only for the page currently open in Chrome. Reports partial or blocked content explicitly.",
+                "parameters": ["type": "object", "properties": [
+                    "url": ["type": "string", "description": "Exact public URL, if known."],
+                    "prefer_browser": ["type": "boolean", "description": "Start with Chrome for a known login-dependent page already open there. X/Twitter links select this automatically."]
+                ], "required": [] as [String]] as [String: Any]
+            ])
+        }
 
         if webSearchEnabled {
             defs.append([
@@ -231,7 +249,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
                         ],
                         "text": ["type": "string", "description": "For click: visible label. For type: text. For key/hotkey: key name(s)."],
                         "app": ["type": "string", "description": "Optional app or window title to target."],
-                        "amount": ["type": "integer", "description": "For scroll: number of clicks (default 5)."],
+                        "amount": ["type": "integer", "description": "For scroll: stride size. Use 25-35 for full-screen strides on long pages (default 5)."],
                         "coords": [
                             "type": "array",
                             "items": ["type": "number"],
@@ -307,10 +325,14 @@ public final class VoiceToolExecutor: @unchecked Sendable {
 
     public func run(name: String, argsJson: String) async -> VoiceToolResult {
         let args = (try? JSONSerialization.jsonObject(with: Data(argsJson.utf8)) as? [String: Any]) ?? [:]
-        NSLog("[VoiceTools] executing tool name=\(name) args=\(argsJson)")
+        NSLog("[VoiceTools] executing tool name=\(name)")
 
         do {
+            try Task.checkCancellation()
             switch name {
+            case "read_page":
+                return try await execReadPage(url: args["url"] as? String, preferBrowser: args["prefer_browser"] as? Bool ?? false)
+
             case "web_search":
                 return try await execWebSearch(query: args["query"] as? String ?? "")
 
@@ -347,6 +369,33 @@ public final class VoiceToolExecutor: @unchecked Sendable {
     }
 
     // ── Tool Implementations ──
+
+    private func execReadPage(url: String?, preferBrowser: Bool) async throws -> VoiceToolResult {
+        let cleaned = url?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = try await PageReadWorkflow.read(
+            url: cleaned?.isEmpty == false ? cleaned : nil,
+            allowFetch: webSearchEnabled, allowBridge: chromeBridgeEnabled, preferBrowser: preferBrowser
+        ) { method, address in
+            var req = URLRequest(url: self.baseURL.appendingPathComponent(method == "web_fetch" ? "fetch" : "browser/read"))
+            req.httpMethod = "POST"
+            if method == "web_fetch", let address {
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.httpBody = try JSONSerialization.data(withJSONObject: ["url": address])
+            }
+            do {
+                let (data, response) = try await self.quickSession.data(for: req)
+                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+                if (response as? HTTPURLResponse)?.statusCode == 200 { return json }
+                var failure = json["detail"] as? [String: Any] ?? ["message": self.errorDetail(data, response)]
+                failure["status"] = "failed"
+                return failure
+            } catch {
+                try Task.checkCancellation()
+                return ["status": "failed", "message": error.localizedDescription]
+            }
+        }
+        return VoiceToolResult(output: VoiceToolFormatting.page(result, source: result["source"] as? String ?? "read_page"))
+    }
 
     private func execWebSearch(query: String) async throws -> VoiceToolResult {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -397,9 +446,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return VoiceToolResult(output: "Invalid fetch response.")
         }
-        let title = json["title"] as? String ?? stringURL
-        let text = json["text"] as? String ?? ""
-        return VoiceToolResult(output: "\(title)\n\n\(text)")
+        return VoiceToolResult(output: VoiceToolFormatting.page(json, source: "web_fetch"))
     }
 
     /// Read the live Chrome page.
@@ -428,12 +475,15 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return VoiceToolResult(output: "Invalid response from Chrome bridge.")
         }
-        let title = json["title"] as? String ?? json["url"] as? String ?? "Webpage"
-        let text = json["text"] as? String ?? ""
-        return VoiceToolResult(output: "Read-only Chrome article text:\n\(title)\n\n\(text)")
+        return VoiceToolResult(output: VoiceToolFormatting.page(json, source: "chrome_bridge"))
     }
 
     private func execControlScreen(args: [String: Any]) async throws -> VoiceToolResult {
+        if args["action"] as? String == "screenshot", !CGPreflightScreenCaptureAccess() {
+            return VoiceToolResult(output: "Screenshot unavailable: Voice does not have Screen Recording permission. "
+                + "Open Voice Settings, choose Screen Recording Permission, enable Voice in macOS, then quit and reopen Voice. "
+                + "No image was captured. Do not retry or describe the screen until permission is enabled.")
+        }
         let url = baseURL.appendingPathComponent("desktop/act")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -460,7 +510,10 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             return VoiceToolResult(output: "Did \(action). The screen changed — now showing: \(changed.joined(separator: ", "))")
         }
         let detail = json["result"] as? String ?? json["output"] as? String ?? ""
-        return VoiceToolResult(output: "Did \(action)." + (detail.isEmpty ? "" : " \(detail)"))
+        let verified = json["verified"] as? Bool ?? false
+        return VoiceToolResult(output: "Attempted \(action). "
+            + (verified ? "The interface was checked, but the intended outcome is not confirmed." : "The screen change has not been verified.")
+            + (detail.isEmpty ? "" : " \(detail)"))
     }
 
     private func execCodeAgent(task: String) async throws -> VoiceToolResult {

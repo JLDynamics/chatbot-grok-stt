@@ -22,7 +22,9 @@ BRIDGE_HEADERS = {"X-Chatbot-Bridge": "page-v1"}
 
 
 @pytest.fixture(autouse=True)
-def _clean_bridge_state():
+def _clean_bridge_state(monkeypatch):
+    # Exercise validation without relying on external DNS in a unit test.
+    monkeypatch.setattr(server.socket, "getaddrinfo", lambda *_: [(None, None, None, None, ("93.184.216.34", 0))])
     server.browser_pages.clear()
     server.last_seen_pages.clear()
     yield
@@ -241,7 +243,7 @@ def test_debounced_save_detaches_before_flushing():
     persisted the transcript.
     """
     session = (VOICE_SOURCES / "VoiceSession.swift").read_text()
-    schedule = session[session.index("private func scheduleSave"):]
+    schedule = session[session.index("private func scheduleSave") :]
     schedule = schedule[: schedule.index("func flushSave")]
     assert "self?.saveTask = nil" in schedule, "debounce must detach before flushing"
     assert schedule.index("self?.saveTask = nil") < schedule.index("await self?.flushSave()")

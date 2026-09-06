@@ -64,6 +64,16 @@ struct ConversationView: View {
                 .transition(.opacity.combined(with: .scale))
             }
 
+            if let note = session.audioStatus {
+                Text(note).font(.system(size: 10)).foregroundStyle(resolvedTheme.text3)
+                    .padding(.horizontal, 16)
+            }
+            if session.state == .agentSpeaking || session.activeTool != nil {
+                Button("Stop reply") { session.interrupt() }
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium))
+                    .padding(.vertical, 4)
+            }
+
             LevelMeterView(
                 state: session.state,
                 isMuted: session.isMuted,

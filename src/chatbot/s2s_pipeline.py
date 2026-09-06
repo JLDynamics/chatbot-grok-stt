@@ -80,13 +80,9 @@ def parse_arguments(
     parsed = parser.parse_args_into_dataclasses(args=list(argv) if argv is not None else None)
     module, server, vad, stt_config, llm_config, kokoro_config, vibevoice_config = parsed
     if module.tts == "kokoro":
-        tts_backend = BackendSelection(
-            TTS_BACKENDS["kokoro"], TTS_BACKENDS["kokoro"].normalize(kokoro_config)
-        )
+        tts_backend = BackendSelection(TTS_BACKENDS["kokoro"], TTS_BACKENDS["kokoro"].normalize(kokoro_config))
     else:
-        tts_backend = BackendSelection(
-            TTS_BACKENDS["vibevoice"], TTS_BACKENDS["vibevoice"].normalize(vibevoice_config)
-        )
+        tts_backend = BackendSelection(TTS_BACKENDS["vibevoice"], TTS_BACKENDS["vibevoice"].normalize(vibevoice_config))
     return ParsedArguments(
         module_kwargs=module,
         realtime_server_kwargs=server,

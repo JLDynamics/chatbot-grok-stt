@@ -42,7 +42,10 @@ the session and shows the red badge.
 ## What to ask the chatbot
 
 - “Read/summarize/analyze the article, news, webpage, or page on my screen” uses
-  `read_article` and this extension's full DOM text.
+  the native client's `read_page` workflow, starting with this extension's DOM text.
+  X/Twitter links also prefer the bridge. Other URLs start with web fetch, unless
+  the assistant identifies a known login-dependent page already open in Chrome.
+  Explicit bridge requests can still use `read_article` directly.
 - “Check my screen,” “look at this app/window,” or requests about a layout,
   image, chart, visual appearance, or front page use an explicit Desktop
   screenshot when Desktop Control is enabled.
@@ -54,10 +57,13 @@ the session and shows the red badge.
   form values, or pixels and takes no screenshot. The chatbot then routes
   automatically when the context is clear, otherwise it asks one short question.
 
-Article extraction never falls back automatically to a Desktop screenshot.
-Reading a supported public page is read-only and does not require a second approval
-after the user asks. If this bridge is unavailable, the chatbot reports that state
-and asks for an extension/page reload; it must not substitute a screenshot.
+The extension itself only extracts text. The native reading workflow tries each
+enabled text method at most once, including when the first result is partial.
+It verifies that a bridge result matches the requested URL and retains failure
+details. If text methods fail, the assistant can use Desktop screenshots and
+scrolling on the requested visible page, with a six-capture limit and repeated-image
+detection. Screen excerpts must be identified as partial; login forms and paywall
+teasers are not the article. Clicking or typing is a separate desktop-control request.
 
 ## Safety boundary
 

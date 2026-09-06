@@ -405,7 +405,9 @@ def create_app(
             # Previous client is gone and the drain is still finishing, or the
             # websocket already died. Unblock the drain so a refresh can retry.
             ws = getattr(existing.transport, "websocket", None)
-            ws_dead = ws is not None and getattr(ws, "client_state", None) is not None and ws.client_state.name != "CONNECTED"
+            ws_dead = (
+                ws is not None and getattr(ws, "client_state", None) is not None and ws.client_state.name != "CONNECTED"
+            )
             if existing.quarantined_at is None and (existing.released_at is not None or ws_dead):
                 existing.drained.set()
             return None

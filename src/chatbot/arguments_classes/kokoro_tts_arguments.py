@@ -11,11 +11,15 @@ class KokoroTTSHandlerArguments:
     )
     kokoro_tts_voice: str = field(
         default="bm_fable",
-        metadata={"help": "Kokoro voice, e.g. bm_fable (British male), af_heart (American female), jf_alpha (Japanese)."},
+        metadata={
+            "help": "Kokoro voice, e.g. bm_fable (British male), af_heart (American female), jf_alpha (Japanese)."
+        },
     )
     kokoro_tts_lang_code: str = field(
         default="b",
-        metadata={"help": "Kokoro language code: a (American), b (British), e/j/f/i/p/z/h (Spanish/Japanese/French/Italian/Portuguese/Chinese/Hindi)."},
+        metadata={
+            "help": "Kokoro language code: a (American), b (British), e/j/f/i/p/z/h (Spanish/Japanese/French/Italian/Portuguese/Chinese/Hindi)."
+        },
     )
     kokoro_tts_speed: float = field(
         default=1.0,

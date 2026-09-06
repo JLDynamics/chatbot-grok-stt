@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreGraphics
 
 struct SettingsView: View {
     @ObservedObject var session: SessionController
@@ -13,6 +14,9 @@ struct SettingsView: View {
     @State private var timer: Timer?
     @State private var memoryText: String = ""
     @State private var memoryNote: String = ""
+    @State private var screenCaptureAllowed = CGPreflightScreenCaptureAccess()
+    @State private var requestedScreenCapture = false
+    @AppStorage("voice.audioMode") private var audioMode = "automatic"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -46,6 +50,15 @@ struct SettingsView: View {
             // Tool Toggles
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("Conversation audio", selection: $audioMode) {
+                            Text("Speakers (echo cancellation)").tag("automatic")
+                            Text("Headphones (open microphone)").tag("headphones")
+                            Text("Speaker compatibility").tag("compatibility")
+                        }
+                        Text("Applies next conversation. Headphones keeps the microphone open; use it only with headphones. Compatibility mode uses Stop reply instead of spoken interruption.")
+                            .font(.system(size: 11)).foregroundStyle(theme.text3)
+                    }
                     toolRow(
                         icon: "desktopcomputer",
                         title: "Desktop Control",
@@ -54,6 +67,23 @@ struct SettingsView: View {
                     ) { val in
                         VoiceToolExecutor.shared.desktopControlEnabled = val
                     }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(screenCaptureAllowed ? "Screen Recording allowed" : "Screen Recording needed for screenshots")
+                            .font(.system(size: 11)).foregroundStyle(theme.text3)
+                        Button("Screen Recording Permission") {
+                            if !screenCaptureAllowed && !requestedScreenCapture {
+                                requestedScreenCapture = true
+                                _ = CGRequestScreenCaptureAccess()
+                            }
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        Text("Enable Voice in macOS, then quit and reopen Voice. Rebuilding a locally signed app may require permission again.")
+                            .font(.system(size: 10.5)).foregroundStyle(theme.text3)
+                    }
+                    .padding(.leading, 32)
 
                     toolRow(
                         icon: "magnifyingglass",
@@ -150,7 +180,7 @@ struct SettingsView: View {
             Spacer(minLength: 0)
 
             // Footer note
-            Text("Changes apply immediately to your next voice turn.")
+            Text("Changes apply when you start your next conversation.")
                 .font(.system(size: 10.5))
                 .foregroundStyle(theme.text3)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -163,6 +193,7 @@ struct SettingsView: View {
                 .strokeBorder(theme.border, lineWidth: 0.5)
         )
         .onAppear {
+            screenCaptureAllowed = CGPreflightScreenCaptureAccess()
             memoryText = session.personalMemory
             checkStatus()
             timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in

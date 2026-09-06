@@ -19,6 +19,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 cp "$ROOT/Resources/Info.plist" "$OUT/Contents/Info.plist"
 cp "$ROOT/Resources/Voice.entitlements" "$OUT/Contents/Resources/Voice.entitlements"
+printf '%s\n' "$(cd "$ROOT/../.." && pwd)" > "$OUT/Contents/Resources/RepositoryPath.txt"
 
 echo "Compiling ${#SOURCES[@]} Swift files → $BIN"
 xcrun swiftc \
@@ -33,9 +34,17 @@ xcrun swiftc \
   "${SOURCES[@]}" \
   -o "$BIN"
 
-codesign --force --deep --sign - \
+# A persistent Apple Development/Developer ID identity keeps macOS privacy
+# grants valid across builds. Ad-hoc signing has a different identity per binary.
+SIGNING_IDENTITY="${VOICE_SIGNING_IDENTITY:--}"
+codesign --force --deep --sign "$SIGNING_IDENTITY" \
   --entitlements "$ROOT/Resources/Voice.entitlements" \
-  "$OUT" 2>/dev/null || codesign --force --deep --sign - "$OUT"
+  "$OUT"
+
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+  echo "Local ad-hoc build: macOS may ask for permissions again after rebuilding."
+  echo "Set VOICE_SIGNING_IDENTITY to an installed signing identity to preserve grants across builds."
+fi
 
 echo "Built $OUT"
 echo "Run: open \"$OUT\""

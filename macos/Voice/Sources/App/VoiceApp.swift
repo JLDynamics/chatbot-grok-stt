@@ -85,6 +85,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 self.hidePanel()
                 return nil
             }
+            // Text editors own ordinary typing; space and M must not toggle
+            // the conversation or microphone while editing personal memory.
+            if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable {
+                return event
+            }
             // Space toggles session when panel is key (SPEC §9).
             if event.keyCode == 49, flags.isEmpty, !event.isARepeat {
                 self.session.toggleSession()
@@ -116,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        LocalServiceStarter.shared.stop()
         Task { await session.end() }
     }
 

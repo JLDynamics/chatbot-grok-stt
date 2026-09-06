@@ -235,7 +235,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // workflow. Preserve that page for the server's bounded five-minute
         // TTL so read_article can consume it from the receiver tab. Switching
         // to any other page still removes that tab's entry immediately.
-        if (await chatbotReceiverIsActive()) {
+        if (await chatbotReceiverIsActive() || (session.native && await senderIsCurrent(sender))) {
           await setStatus(tabId, 'hidden');
           sendResponse({ ok: true, enabled: true, preserved: true });
           return;
@@ -404,6 +404,16 @@ void (async () => {
   const receiverTab = await findReceiverTab();
   if (receiverTab) {
     await enableSession(receiverTab);
+  } else if (session.enabled && session.native) {
+    // MV3 workers can restart between messages. A native session has no
+    // receiver tab; restore it while its local service is still available.
+    try {
+      await receiverIsAvailable();
+      await startHealthAlarm();
+      await setStatus(null, 'hidden');
+    } catch (error) {
+      await disableSession(error instanceof Error ? error.message : String(error), true);
+    }
   } else if (session.enabled) {
     await disableSession('Chatbot Page Bridge stopped because the Chatbot tab was closed');
   } else {

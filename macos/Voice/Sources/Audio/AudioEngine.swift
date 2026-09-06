@@ -6,6 +6,10 @@ final class AudioEngine {
 
     var onInputLevel: ((Float) -> Void)?
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+    var onPlaybackDrained: (() -> Void)?
+    private(set) var statusNote: String?
+    private var headphones = false
+    private let playback = PlaybackTracker()
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -64,9 +68,7 @@ final class AudioEngine {
 
     private func restartEngine() {
         guard shouldBeRunning, !engine.isRunning else { return }
-        playbackLock.lock()
-        activePlaybackBuffers = 0
-        playbackLock.unlock()
+        playback.clear()
 
         wireIO(format: nil)
         engine.prepare()
@@ -96,23 +98,16 @@ final class AudioEngine {
         shouldBeRunning = true
 
         let input = engine.inputNode
-        let inChannels = input.inputFormat(forBus: 0).channelCount
-        // Voice Processing IO (hardware AEC) defaults OFF: on this Mac's
-        // built-in mic it engages but the tap turns 9-channel, and averaging
-        // dilutes the mic ~10dB (borderline VAD, misheard words), while plain
-        // input is a clean 1-channel tap with perfect transcripts. Speaker
-        // echo is instead contained by software ducking + hangover in the tap
-        // (see isPlaying). Opt in per-machine only after verifying levels:
-        //   defaults write com.jack.Voice voice.enableVPIO -bool true
-        // NOTE: `defaults` targets the sandbox container for open-.app
-        // launches and the main domain for direct-binary runs; the in-code
-        // default below is what keeps both paths consistent.
-        let enableVPIO = (UserDefaults.standard.object(forKey: "voice.enableVPIO") as? Bool) ?? false
+        let mode = UserDefaults.standard.string(forKey: "voice.audioMode") ?? "automatic"
+        headphones = mode == "headphones"
+        let enableVPIO = mode == "automatic"
+        statusNote = nil
 
-        if enableVPIO && inChannels <= 2 {
+        if enableVPIO {
             do {
                 try input.setVoiceProcessingEnabled(true)
                 voiceProcessingEnabled = true
+                input.isVoiceProcessingAGCEnabled = true
             } catch {
                 voiceProcessingEnabled = false
                 try? input.setVoiceProcessingEnabled(false)
@@ -152,6 +147,9 @@ final class AudioEngine {
             }
         }
 
+        if !voiceProcessingEnabled && !headphones {
+            statusNote = "Speaker compatibility mode: use Stop reply to interrupt, or choose Headphones in Settings."
+        }
         if !player.isPlaying { player.play() }
         let inFmt = engine.inputNode.inputFormat(forBus: 0)
         ioFormat = AVAudioFormat(
@@ -177,9 +175,7 @@ final class AudioEngine {
             tapped = false
         }
         player.stop()
-        playbackLock.lock()
-        activePlaybackBuffers = 0
-        playbackLock.unlock()
+        playback.clear()
         engine.stop()
         ioFormat = nil
         DispatchQueue.main.async { [weak self] in self?.onInputLevel?(0) }
@@ -208,43 +204,22 @@ final class AudioEngine {
         if muted { DispatchQueue.main.async { [weak self] in self?.onInputLevel?(0) } }
     }
 
-    private var activePlaybackBuffers = 0
-    private let playbackLock = NSLock()
-    private var lastPlayAt = Date.distantPast
-    /// Speaker/room tail after the final buffer. Without hardware AEC the
-    /// mic must stay ducked through this tail or our own reply loops back
-    /// into the server VAD as a new user turn (echo loop).
-    private let playbackHangover: TimeInterval = 0.9
-
-    var isPlaying: Bool {
-        playbackLock.lock()
-        defer { playbackLock.unlock() }
-        // No time-based reset: replies run 15s+ and every abandonment path
-        // (stop/clearPlayback/restartEngine) zeroes the counter explicitly.
-        // A time guard unducks the mic mid-reply and re-creates the echo loop.
-        if activePlaybackBuffers > 0 { return true }
-        return Date().timeIntervalSince(lastPlayAt) < playbackHangover
-    }
+    var isPlaying: Bool { playback.isAudible }
 
     func play(_ buffer: AVAudioPCMBuffer) {
         if !player.isPlaying { player.play() }
-        playbackLock.lock()
-        activePlaybackBuffers += 1
-        lastPlayAt = Date()
-        playbackLock.unlock()
-        player.scheduleBuffer(buffer) { [weak self] in
+        let token = playback.enqueue()
+        // dataPlayedBack tracks the speakers, not merely data consumed by the engine.
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             guard let self else { return }
-            self.playbackLock.lock()
-            self.activePlaybackBuffers = max(0, self.activePlaybackBuffers - 1)
-            self.playbackLock.unlock()
+            if self.playback.complete(token) { self.onPlaybackDrained?() }
         }
     }
 
     func clearPlayback() {
+        // Invalidate callbacks before stop() releases old scheduled buffers.
+        playback.clear()
         player.stop()
-        playbackLock.lock()
-        activePlaybackBuffers = 0
-        playbackLock.unlock()
         if engine.isRunning { player.play() }
     }
 
@@ -262,19 +237,30 @@ final class AudioEngine {
         }
         engine.disconnectNodeOutput(player)
         engine.connect(player, to: engine.mainMixerNode, format: playFmt)
+        // VPIO requires matching client-side capture and render formats.
+        // Leaving the output at hardware stereo while tapping mono fails
+        // initialization with -10875 on the built-in MacBook device pair.
+        engine.disconnectNodeOutput(engine.mainMixerNode)
+        engine.connect(engine.mainMixerNode, to: engine.outputNode,
+                       format: voiceProcessingEnabled ? playFmt : nil)
         ioFormat = playFmt
         if tapped {
             input.removeTap(onBus: 0)
             tapped = false
         }
-        // nil format = hardware layout. Mixing to mono in the
-        // PCM path avoids silent taps from forcing a mono installTap format.
-        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+        // Ask the voice-processing output for mono, rather than averaging its
+        // aggregate hardware channels (which diluted the processed microphone).
+        let processed = input.outputFormat(forBus: 0)
+        let tapFormat = voiceProcessingEnabled ? AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: processed.sampleRate,
+            channels: 1, interleaved: false
+        ) : nil
+        input.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] buffer, _ in
             guard let self, !self.muted else { return }
             // If hardware AEC is unavailable and audio is actively playing through speakers,
             // duck the tap buffer so speaker audio cannot loop back to the server VAD.
-            if !self.voiceProcessingEnabled && self.isPlaying {
-                self.publishLevel(from: buffer)
+            if !self.voiceProcessingEnabled && !self.headphones && self.playback.needsEchoGuard() {
+                DispatchQueue.main.async { [weak self] in self?.onInputLevel?(0) }
                 return
             }
             self.onBuffer?(buffer)

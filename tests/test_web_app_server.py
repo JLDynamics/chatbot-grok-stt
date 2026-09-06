@@ -103,6 +103,35 @@ def test_desktop_screenshot_reports_permission_and_sensitive_scope(monkeypatch, 
     assert response.status_code == 451
 
 
+@pytest.mark.asyncio
+async def test_denied_screen_permission_never_invokes_capture(monkeypatch):
+    import sys
+    import types
+
+    called = []
+    quartz = types.ModuleType("Quartz")
+    quartz.CGPreflightScreenCaptureAccess = lambda: False
+    helpers = types.ModuleType("desktop_harness.helpers")
+    helpers.screenshot = lambda **kwargs: called.append(kwargs)
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+    monkeypatch.setitem(sys.modules, "desktop_harness.helpers", helpers)
+
+    async def execute_script(script, _timeout):
+        try:
+            exec(script, {})
+        except PermissionError as exc:
+            return 1, str(exc)
+        raise AssertionError("Denied permission must stop the capture script")
+
+    monkeypatch.setattr(server, "_run_harness", execute_script)
+    for _ in range(2):
+        with pytest.raises(server.HTTPException) as error:
+            await server._capture_desktop_screenshot(None)
+        assert error.value.status_code == 403
+        assert "Do not retry" in error.value.detail
+    assert called == [], "Repeated requests must never reach the prompting capture API"
+
+
 def test_fetch_rejects_local_addresses(monkeypatch):
     monkeypatch.setattr(server.socket, "getaddrinfo", lambda *_: [(None, None, None, None, ("127.0.0.1", 0))])
     response = client.post("/api/fetch", json={"url": "http://example.test/private"})
@@ -362,11 +391,11 @@ eval(readFileSync("web_app/chrome_article_bridge/background.js", "utf8"));
 
 const wait = () => new Promise((resolve) => setTimeout(resolve, 20));
 
-async function call(message) {
+async function call(message, tab = { id: 17, active: true, windowId: 3 }) {
   return await new Promise((resolve, reject) => {
     const keptOpen = listener(
       message,
-      { tab: { id: 17, active: true, windowId: 3 } },
+      { tab },
       resolve,
     );
     if (keptOpen !== true) reject(new Error("message port was not kept open"));
@@ -476,6 +505,22 @@ const nativePublished = await call({
 });
 if (!nativePublished.ok || badgeText !== "✓") {
   throw new Error("native-mode session did not publish page text");
+}
+const beforeNativeHide = hideCount;
+const nativeHandoff = await call({ type: "hide-page" });
+if (!nativeHandoff.preserved || hideCount !== beforeNativeHide) {
+  throw new Error("switching to the native app removed the selected Chrome article");
+}
+const otherTab = await call({ type: "hide-page" }, { id: 17, active: false, windowId: 3 });
+if (otherTab.preserved || hideCount !== beforeNativeHide + 1) {
+  throw new Error("switching Chrome tabs retained the old article");
+}
+// Re-evaluate the actual worker source with session storage intact, as MV3
+// does after suspending an idle worker. Native mode must survive that restart.
+eval(readFileSync("web_app/chrome_article_bridge/background.js", "utf8"));
+await wait();
+if (!stored.chatbotPageBridgeSession?.native || badgeText !== "✓") {
+  throw new Error("worker restart incorrectly ended the native session");
 }
 alarmListener({ name: "chatbotPageBridgeHealth" });
 await wait();
@@ -959,6 +1004,9 @@ def test_desktop_scroll_defaults_to_five_lines(monkeypatch, tmp_path):
     async def safe_scope(_app=None):
         return None
 
+    async def frontmost_chrome():
+        return {"app": "Google Chrome", "title": "Article"}
+
     captured: list[str] = []
 
     async def fake_harness(script, _timeout):
@@ -966,7 +1014,31 @@ def test_desktop_scroll_defaults_to_five_lines(monkeypatch, tmp_path):
         return 0, json.dumps({"ok": True, "result": "ok", "changed": [], "verified": False})
 
     monkeypatch.setattr(server, "_screen_scope_looks_sensitive", safe_scope)
+    monkeypatch.setattr(server, "_desktop_frontmost_context", frontmost_chrome)
     monkeypatch.setattr(server, "_run_harness", fake_harness)
     response = client.post("/api/desktop/act", json={"action": "scroll"})
     assert response.status_code == 200
-    assert "scroll(dy=-5)" in captured[0]
+    # Default amount 5 is scaled to full strides (lines x6).
+    assert "scroll(dy=-30)" in captured[0]
+    # No app given: preamble must focus the frontmost app and center the
+    # pointer, otherwise the wheel events silently no-op.
+    assert "open_app(app)" in captured[0]
+
+
+def test_desktop_scroll_without_app_stays_safe_on_login_window(monkeypatch, tmp_path):
+    _enable_desktop_control(monkeypatch, tmp_path)
+
+    async def frontmost_login():
+        return {"app": "Google Chrome", "title": "Sign in to X"}
+
+    async def login_scope(_app=None):
+        return "sign in"
+
+    async def fake_harness(script, _timeout):
+        raise AssertionError("harness must not run for blocked scopes")
+
+    monkeypatch.setattr(server, "_desktop_frontmost_context", frontmost_login)
+    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", login_scope)
+    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    response = client.post("/api/desktop/act", json={"action": "scroll"})
+    assert response.status_code == 451

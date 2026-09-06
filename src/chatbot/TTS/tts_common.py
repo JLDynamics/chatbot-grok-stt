@@ -208,7 +208,9 @@ class TTSNoiseGate:
             return block
         # Soft-knee downward expansion: below the threshold, scale towards the
         # floor gain; at/above it, pass-through.
-        gain = self.floor_gain + (1.0 - self.floor_gain) * (min(self._env, self.threshold) / self.threshold) ** self.ratio
+        gain = (
+            self.floor_gain + (1.0 - self.floor_gain) * (min(self._env, self.threshold) / self.threshold) ** self.ratio
+        )
         return block * min(1.0, gain)
 
 

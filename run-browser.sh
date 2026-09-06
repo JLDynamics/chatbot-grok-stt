@@ -5,7 +5,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
-CHATBOT_ENV="$HOME/.config/chatbot/env"
+CHATBOT_ENV="${CHATBOT_ENV:-$HOME/.config/chatbot/env}"
 if [[ -f "$CHATBOT_ENV" ]]; then
   saved_openrouter="${OPENROUTER_API_KEY:-}"
   saved_tavily="${TAVILY_API_KEY:-}"
@@ -28,9 +28,11 @@ MODEL="${MODEL:-meta/muse-spark-1.2-contributor}"
 export MODEL
 
 listener() { lsof -ti "TCP:$1" -sTCP:LISTEN 2>/dev/null | head -1 || true; }
+reuse_running=false
+if [[ "${1:-}" == "--reuse-running" ]]; then reuse_running=true; fi
 for port in "$PORT" "$WEB_PORT"; do
   pid="$(listener "$port")"
-  if [[ -n "$pid" ]]; then
+  if [[ -n "$pid" && "$reuse_running" == false ]]; then
     echo "Error: port $port is already in use by pid $pid." >&2
     exit 1
   fi
@@ -42,14 +44,18 @@ cleanup() {
   [[ -n "$web_pid" ]] && kill "$web_pid" 2>/dev/null || true
   [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-echo "Starting the Chatbot voice service..."
-PORT="$PORT" ./run-openrouter.sh >"$SERVER_LOG" 2>&1 &
-server_pid=$!
+if [[ -z "$(listener "$PORT")" ]]; then
+  echo "Starting the Chatbot voice service..."
+  PORT="$PORT" ./run-openrouter.sh >"$SERVER_LOG" 2>&1 &
+  server_pid=$!
+fi
 for _ in $(seq 1 120); do
   [[ -n "$(listener "$PORT")" ]] && break
-  if ! kill -0 "$server_pid" 2>/dev/null; then
+  if [[ -n "$server_pid" ]] && ! kill -0 "$server_pid" 2>/dev/null; then
     tail -20 "$SERVER_LOG" >&2
     exit 1
   fi
@@ -61,10 +67,26 @@ if [[ -z "$(listener "$PORT")" ]]; then
 fi
 
 echo "Sidecar on http://localhost:$WEB_PORT (API only, no browser UI). Voice backend on port $PORT."
-echo "Ctrl+C stops both processes."
-  STARTUP_GREETING="${STARTUP_GREETING:-}" \
-  WEB_PORT="$WEB_PORT" \
-  uv run uvicorn --app-dir web_app server:app --host 127.0.0.1 --port "$WEB_PORT" \
-  2>&1 | tee "$WEB_LOG" &
-web_pid=$!
-wait "$web_pid"
+echo "Ctrl+C stops the services started by this launcher."
+if [[ -z "$(listener "$WEB_PORT")" ]]; then
+  if [[ -x .venv/bin/uvicorn ]]; then
+    sidecar_command=(.venv/bin/uvicorn)
+  else
+    sidecar_command=(uv run uvicorn)
+  fi
+  STARTUP_GREETING="${STARTUP_GREETING:-}" WEB_PORT="$WEB_PORT" \
+    "${sidecar_command[@]}" --app-dir web_app server:app --host 127.0.0.1 --port "$WEB_PORT" \
+    >"$WEB_LOG" 2>&1 &
+  web_pid=$!
+fi
+# Supervise only children this launcher owns. An existing external service
+# must not be killed when this launcher exits or its other child fails.
+while [[ -n "$server_pid" || -n "$web_pid" ]]; do
+  for child in "$server_pid" "$web_pid"; do
+    if [[ -n "$child" ]] && ! kill -0 "$child" 2>/dev/null; then
+      echo "A Chatbot service stopped. Check $SERVER_LOG and $WEB_LOG." >&2
+      exit 1
+    fi
+  done
+  sleep 1
+done

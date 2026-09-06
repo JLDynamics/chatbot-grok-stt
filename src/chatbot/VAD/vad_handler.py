@@ -601,8 +601,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                             turn_id=turn_id,
                             turn_revision=turn_revision,
                             reopened=reopened,
-                            interrupt_response=effective_active_speech_duration_ms
-                            >= self.min_speech_ms,
+                            interrupt_response=effective_active_speech_duration_ms >= self.min_speech_ms,
                         )
                     )
         elif not is_triggered_now and vad_output is None:

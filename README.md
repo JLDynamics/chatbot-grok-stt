@@ -6,7 +6,7 @@ A Mac-first live voice chatbot that runs its ears and voice locally, while a Res
 
 It keeps realtime WebSocket turn-taking, interruption/cancellation, partial transcripts, long-term memory, web tools, the Chrome page bridge, camera, coding-agent delegation, and explicit desktop control.
 
-The mic stays open while the assistant speaks (full-duplex barge-in). Echo control is the panel's audio engine plus Silero VAD — capture is not muted during TTS. Saved conversations are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. VibeVoice runs locally without an AI watermark.
+In the default **Speakers (echo cancellation)** mode, the mic stays open while the assistant speaks. The panel uses matched mono capture/render formats for Apple's voice processing, with Silero VAD detecting interruptions. If voice processing cannot start, the panel visibly reports compatibility mode, which suppresses microphone capture during playback. **Headphones** mode keeps capture open without echo cancellation. **Stop reply** stops playback and pending tools without ending the conversation. Saved conversations are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. VibeVoice runs locally without an AI watermark.
 
 ## Requirements
 
@@ -125,6 +125,7 @@ screenshots remain limited to explicit control or visual requests.
 uv run ruff check src tests
 uv run mypy src
 uv run pytest -q
+bash macos/Voice/scripts/test.sh
 ```
 
 CI runs on macOS (lint, types, tests), builds the Python package, and performs an installation smoke test. Publishing is handled by `.github/workflows/publish.yml` for `v*` tags.
@@ -132,6 +133,8 @@ CI runs on macOS (lint, types, tests), builds the Python package, and performs a
 ### Contributing via pull requests
 
 Work on a feature branch off `main`, open a pull request, and wait for review before merging. Keep each PR focused on one change so reviewers can follow the diff easily. After approval, merge into `main` and delete the branch.
+
+The native test runner covers playback queue generations, cancelled work, page fallback limits, and transcript revisions. See [voice reliability validation](docs/voice-reliability-validation.md) for hardware evidence and the remaining live checks.
 
 ## License
 

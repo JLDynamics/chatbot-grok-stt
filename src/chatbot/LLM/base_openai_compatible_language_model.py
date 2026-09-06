@@ -441,10 +441,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     yield self._chunk(turn, text=out)
         logger.debug(f"Clean text: {state.clean_text}")
         logger.info(f"Tools: {state.tools}")
-        return (
-            not self._generation_is_stale(turn.gen)
-            and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
-        )
+        return not self._generation_is_stale(turn.gen) and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
 
     # ── orchestration ─────────────────────────────────────────────────────────
 

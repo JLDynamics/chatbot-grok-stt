@@ -578,7 +578,14 @@ def _is_public_url(url: str) -> tuple[bool, str]:
             ip = ipaddress.ip_address(address[4][0])
         except ValueError:
             continue
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
             return False, "Refusing to fetch a private or loopback address."
     return True, ""
 
@@ -660,6 +667,7 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
         }
     )
 
+
 GROK_BIN = Path(os.path.expanduser("~/.local/bin/grok"))
 CODE_AGENT_ENABLED = os.environ.get("CODE_AGENT", "on").lower() not in {"off", "0", "false"}
 CODE_AGENT_CWD = Path(os.path.expanduser(os.environ.get("CODE_AGENT_CWD", "~")))
@@ -667,12 +675,41 @@ CODE_AGENT_MODEL = os.environ.get("CODE_AGENT_MODEL", "grok-4.6")
 CODE_AGENT_TIMEOUT_S = _env_float("CODE_AGENT_TIMEOUT", 300.0)
 
 
+async def _while_connected(work, request: Request, timeout: float):
+    stopped = asyncio.Event()
+
+    async def disconnected():
+        while not stopped.is_set():
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.1)
+
+    running = asyncio.ensure_future(work)
+    watcher = asyncio.create_task(disconnected())
+    try:
+        done, _ = await asyncio.wait({running, watcher}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        if running in done:
+            return await running
+        if watcher in done:
+            raise asyncio.CancelledError("The tool client disconnected")
+        raise asyncio.TimeoutError
+    finally:
+        # Starlette's receive probe uses an AnyIO cancellation scope which can
+        # consume a Task.cancel() arriving during that probe. The stop flag
+        # ensures the watcher exits on its next iteration in that case too.
+        stopped.set()
+        for task in (running, watcher):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(running, watcher, return_exceptions=True)
+
+
 class CodeRequest(BaseModel):
     task: str
 
 
 @app.post("/api/code")
-async def code_agent(req: CodeRequest) -> JSONResponse:
+async def code_agent(req: CodeRequest, request: Request) -> JSONResponse:
     task = req.task.strip()
     if not CODE_AGENT_ENABLED:
         raise HTTPException(status_code=503, detail="The coding agent is turned off.")
@@ -699,13 +736,15 @@ async def code_agent(req: CodeRequest) -> JSONResponse:
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )
-        output, _ = await asyncio.wait_for(process.communicate(), timeout=CODE_AGENT_TIMEOUT_S)
-    except asyncio.TimeoutError as exc:
+        output, _ = await _while_connected(process.communicate(), request, CODE_AGENT_TIMEOUT_S)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except (OSError, ProcessLookupError):
             process.kill()
         await process.wait()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         raise HTTPException(status_code=504, detail="The coding agent timed out.") from exc
     except OSError as exc:
         raise HTTPException(status_code=502, detail="Could not start the coding agent.") from exc
@@ -814,9 +853,12 @@ async def _run_harness(script: str, timeout: float) -> tuple[int, str]:
 
     try:
         return_code, output = await asyncio.wait_for(complete(), timeout=timeout)
-    except asyncio.TimeoutError as exc:
-        process.kill()
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        if process.returncode is None:
+            process.kill()
         await process.wait()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         raise HTTPException(status_code=504, detail="That action took too long.") from exc
     return return_code, output.decode("utf-8", errors="replace").strip()
 
@@ -931,8 +973,33 @@ async def _screen_scope_looks_sensitive(app: str | None = None) -> str | None:
 async def _capture_desktop_screenshot(app: str | None) -> dict[str, str]:
     script = (
         "import json\n"
+        "import Quartz\n"
+        "if not Quartz.CGPreflightScreenCaptureAccess():\n"
+        "    raise PermissionError('Screen Recording permission is not enabled for the app running Chatbot')\n"
         "from desktop_harness.helpers import screenshot\n"
-        f"print(json.dumps({{'path': screenshot(app={app!r})}}))\n"
+        f"path = screenshot(app={app!r})\n"
+        # TCC denial yields a valid but near-uniform black PNG (not None), which
+        # used to sail through size/PNG checks and reach the model as a "dark"
+        # image. A legit dark-mode desktop still has bright text (high variance);
+        # a denied capture has ~zero pixels above 0.25. Report the bright
+        # fraction so the sidecar can return a 403 permission hint instead.
+        "from AppKit import NSImage, NSBitmapImageRep\n"
+        "img = NSImage.alloc().initWithContentsOfFile_(path)\n"
+        "rep = NSBitmapImageRep.imageRepWithData_(img.TIFFRepresentation())\n"
+        "w, h = int(rep.pixelsWide()), int(rep.pixelsHigh())\n"
+        "sx, sy = max(1, w // 64), max(1, h // 64)\n"
+        "bright, n = 0, 0\n"
+        "for yy in range(0, h, sy):\n"
+        "    for xx in range(0, w, sx):\n"
+        "        c = rep.colorAtX_y_(xx, yy)\n"
+        "        if c is None:\n"
+        "            continue\n"
+        "        c = c.colorUsingColorSpaceName_('NSCalibratedRGBColorSpace') or c\n"
+        "        n += 1\n"
+        "        if (c.redComponent() + c.greenComponent() + c.blueComponent()) / 3.0 > 0.25:\n"
+        "            bright += 1\n"
+        "frac = (bright / n) if n else 1.0\n"
+        "print(json.dumps({'path': path, 'bright_frac': frac, 'samples': n}))\n"
     )
     code, output = await _run_harness(script, 20.0)
     if code != 0:
@@ -945,15 +1012,26 @@ async def _capture_desktop_screenshot(app: str | None) -> dict[str, str]:
                 status_code=403,
                 detail=(
                     "Screen capture is not available. Grant Screen Recording permission to the "
-                    "app running Chatbot, then restart it."
+                    "app running Chatbot (Voice when started from Voice), then quit and reopen it. "
+                    "No screenshot was captured. Do not retry until permission is enabled."
                 ),
             )
         raise HTTPException(status_code=502, detail=detail)
     try:
         payload = json.loads(output.splitlines()[-1])
         path = Path(payload["path"]).resolve(strict=True)
-    except (json.JSONDecodeError, IndexError, KeyError, OSError, TypeError) as exc:
+        bright_frac = float(payload.get("bright_frac", 1.0))
+    except (json.JSONDecodeError, IndexError, KeyError, OSError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail="Desktop Harness returned an invalid screenshot path.") from exc
+    if bright_frac < 0.005:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Screen capture returned a black image (permission denied). Grant Screen Recording "
+                "permission to the app running Chatbot (Voice when started from Voice, else Terminal/Python), "
+                "then quit and reopen it. No usable screenshot was captured. Do not retry until permission is enabled."
+            ),
+        )
     capture_dir = DESKTOP_CAPTURE_DIR.resolve()
     if path.parent != capture_dir or not path.is_file():
         raise HTTPException(status_code=502, detail="Desktop Harness returned an unsafe screenshot path.")
@@ -979,7 +1057,7 @@ async def _capture_desktop_screenshot(app: str | None) -> dict[str, str]:
 
 
 @app.post("/api/desktop/act")
-async def desktop_act(req: DesktopActRequest) -> JSONResponse:
+async def desktop_act(req: DesktopActRequest, request: Request) -> JSONResponse:
     if not DESKTOP_CONTROL_ENABLED:
         raise HTTPException(status_code=503, detail="Desktop control is turned off.")
     if not DESKTOP_HARNESS_BIN.is_file() or not os.access(DESKTOP_HARNESS_BIN, os.X_OK):
@@ -991,18 +1069,43 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
     if app_name and (len(app_name) > 120 or any(ord(char) < 32 for char in app_name)):
         raise HTTPException(status_code=400, detail="The app or window name is invalid.")
     sensitive_scope = app_name
-    if action in {"click", "type", "key", "hotkey", "scroll", "drag", "screenshot"} and await _screen_scope_looks_sensitive(
-        sensitive_scope
-    ):
+    if action in {
+        "click",
+        "type",
+        "key",
+        "hotkey",
+        "scroll",
+        "drag",
+        "screenshot",
+    } and await _screen_scope_looks_sensitive(sensitive_scope):
         raise HTTPException(status_code=451, detail="Desktop control is blocked on sign-in and payment windows.")
     if action == "screenshot":
-        captured = await _capture_desktop_screenshot(app_name)
+        captured = await _while_connected(_capture_desktop_screenshot(app_name), request, 60.0)
         return JSONResponse({"ok": True, "action": action, **captured})
     text = req.text or ""
     preamble = ""
     if action == "scroll":
-        amount = req.amount if req.amount else 5
-        expression = ACTIONS[action].format(dy=-abs(amount) if amount >= 0 else abs(amount))
+        raw = req.amount if req.amount else 5
+        # dy unit is LINES: raw amounts like 5-7 crawl a few lines per round,
+        # so long pages take forever and repeat-detection stops early on heavy
+        # overlap. Scale to full strides (~half screen) and clamp for sanity.
+        stride = max(1, min(abs(raw), 40)) * 6
+        expression = ACTIONS[action].format(dy=-stride if raw >= 0 else stride)
+        if not app_name:
+            # The model often omits app. Without focus + pointer placement the
+            # wheel events land wherever the cursor happens to be and scroll()
+            # reports ok while nothing moves (proven by byte-identical captures
+            # across repeated scrolls). Default to the frontmost app so the
+            # preamble below still focuses it and centers the pointer.
+            try:
+                front = await _desktop_frontmost_context()
+                candidate = str(front.get("app") or "").strip()[:120] or None
+            except HTTPException:
+                candidate = None
+            if candidate:
+                app_name = candidate
+                if await _screen_scope_looks_sensitive(app_name):
+                    raise HTTPException(status_code=451, detail="Desktop control is blocked on sign-in and payment windows.")
         if app_name:
             # macOS delivers scroll wheel events to the focused app, at the
             # pointer. Without both, scroll() silently no-ops: it reported
@@ -1042,15 +1145,17 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
         f"result = {expression}\n"
         "if verify: wait_stable(0.35)\n"
         "changed = [x for x in labels(app, limit=60) if x and x not in before][:12] if verify else []\n"
-        "print(json.dumps({'ok': True, 'result': str(result), 'changed': changed, 'verified': verify}))\n"
+        "print(json.dumps({'ok': result is not False, 'result': str(result), 'changed': changed, 'verified': bool(changed)}))\n"
     )
-    code, output = await _run_harness(script, 45.0)
+    code, output = await _while_connected(_run_harness(script, 45.0), request, 60.0)
     if code != 0:
         raise HTTPException(status_code=502, detail=output[-300:] or "Desktop action failed.")
     try:
         payload = json.loads(output.splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
-        payload = {"ok": True, "verified": False, "changed": [], "result": output[-500:]}
+        raise HTTPException(status_code=502, detail="Desktop Harness returned an invalid result.")
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        raise HTTPException(status_code=502, detail="Desktop Harness did not complete that action.")
     return JSONResponse({"ok": True, "action": action, **payload})
 
 
@@ -1058,9 +1163,9 @@ async def desktop_act(req: DesktopActRequest) -> JSONResponse:
 # never inside a code repository.  Full transcripts are the source of truth;
 # the Markdown files are small, editable guides that can safely be included in
 # a new model session.
-CHATBOT_DATA = Path(os.path.expanduser(
-    os.environ.get("CHATBOT_DATA_DIR", os.environ.get("S2S_DATA_DIR", "~/.chatbot"))
-))
+CHATBOT_DATA = Path(
+    os.path.expanduser(os.environ.get("CHATBOT_DATA_DIR", os.environ.get("S2S_DATA_DIR", "~/.chatbot")))
+)
 SESSIONS_DIR = CHATBOT_DATA / "sessions"
 PERSONAL_MEMORY_PATH = CHATBOT_DATA / "personal-memory.md"
 PERSONAL_MEMORY_MAX_CHARS = 10_000  # roughly 2,500 English-language tokens
@@ -1096,9 +1201,12 @@ def _session_summary(session: dict) -> dict:
     messages = session.get("messages", [])
     preview = next((str(m.get("text", "")).strip() for m in messages if str(m.get("text", "")).strip()), "")
     return {
-        "id": session.get("id"), "title": session.get("title", "New conversation"),
-        "created_at": session.get("created_at"), "updated_at": session.get("updated_at"),
-        "message_count": len(messages), "preview": preview[:180],
+        "id": session.get("id"),
+        "title": session.get("title", "New conversation"),
+        "created_at": session.get("created_at"),
+        "updated_at": session.get("updated_at"),
+        "message_count": len(messages),
+        "preview": preview[:180],
     }
 
 
@@ -1251,8 +1359,13 @@ async def list_sessions() -> JSONResponse:
 
 @app.post("/api/sessions")
 async def create_session(req: SessionCreateRequest) -> JSONResponse:
-    session = {"id": uuid.uuid4().hex, "title": req.title.strip()[:120] or "New conversation",
-               "created_at": _utc_now(), "updated_at": _utc_now(), "messages": []}
+    session = {
+        "id": uuid.uuid4().hex,
+        "title": req.title.strip()[:120] or "New conversation",
+        "created_at": _utc_now(),
+        "updated_at": _utc_now(),
+        "messages": [],
+    }
     async with history_lock:
         _save_session(session)
     return JSONResponse({"session": session})
@@ -1313,11 +1426,18 @@ async def search_history(q: str = "", limit: int = 8) -> JSONResponse:
                     continue
                 first = min((lowered.find(term) for term in terms if term in lowered), default=0)
                 start, end = max(0, first - 140), min(len(text), first + 360)
-                results.append({"session_id": session.get("id"), "title": session.get("title", "New conversation"),
-                                "role": message.get("role", "assistant"), "text": text[start:end], "score": score,
-                                "updated_at": session.get("updated_at", "")})
+                results.append(
+                    {
+                        "session_id": session.get("id"),
+                        "title": session.get("title", "New conversation"),
+                        "role": message.get("role", "assistant"),
+                        "text": text[start:end],
+                        "score": score,
+                        "updated_at": session.get("updated_at", ""),
+                    }
+                )
     results.sort(key=lambda item: (item["score"], item["updated_at"]), reverse=True)
-    return JSONResponse({"results": results[:max(1, min(limit, 20))]})
+    return JSONResponse({"results": results[: max(1, min(limit, 20))]})
 
 
 @app.get("/api/personal-memory")
