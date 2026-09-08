@@ -6,7 +6,6 @@ Live calls run only when the sidecar is already up, so unit CI stays offline.
 from __future__ import annotations
 
 import importlib.util
-import json
 import os
 from pathlib import Path
 
