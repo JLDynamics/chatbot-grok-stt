@@ -11,7 +11,24 @@ final class AudioEngine {
     private var headphones = false
     private let playback = PlaybackTracker()
 
-    private let engine = AVAudioEngine()
+    /// Created on first `start()`, after microphone permission. `stop()` must
+    /// not create it — Voice tears down before start, and constructing
+    /// AVAudioEngine while TCC is `.notDetermined` raises a sheet of its own.
+    private var engine: AVAudioEngine?
+
+    @discardableResult
+    private func requireEngine() -> AVAudioEngine {
+        if let engine { return engine }
+        let created = AVAudioEngine()
+        engine = created
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleConfigChange),
+            name: .AVAudioEngineConfigurationChange,
+            object: created
+        )
+        return created
+    }
     private let player = AVAudioPlayerNode()
     private var shouldBeRunning = false
     private var tapped = false
@@ -43,31 +60,23 @@ final class AudioEngine {
         }
     }
 
-    init() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleConfigChange),
-            name: .AVAudioEngineConfigurationChange,
-            object: engine
-        )
-    }
-
     deinit {
         watchdog?.invalidate()
         NotificationCenter.default.removeObserver(self)
     }
 
     @objc private func handleConfigChange(_ note: Notification) {
+        guard let engine else { return }
         NSLog("[AudioEngine] config changed; isRunning=\(engine.isRunning) shouldBeRunning=\(shouldBeRunning)")
         guard shouldBeRunning else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self, self.shouldBeRunning, !self.engine.isRunning else { return }
+            guard let self, self.shouldBeRunning, self.engine?.isRunning == false else { return }
             self.restartEngine()
         }
     }
 
     private func restartEngine() {
-        guard shouldBeRunning, !engine.isRunning else { return }
+        guard shouldBeRunning, let engine, !engine.isRunning else { return }
         playback.clear()
 
         wireIO(format: nil)
@@ -81,7 +90,33 @@ final class AudioEngine {
         }
     }
 
+    private static var permissionTask: Task<Bool, Never>?
+
+    /// One prompt, one API. Mixing `AVCaptureDevice.requestAccess` with
+    /// `AVAudioEngine.start` shows two microphone sheets after a rebuild,
+    /// when TCC is `.notDetermined` again.
     static func requestMicrophoneAccess() async -> Bool {
+        if let permissionTask { return await permissionTask.value }
+        let task = Task { await performMicrophoneRequest() }
+        permissionTask = task
+        let granted = await task.value
+        permissionTask = nil
+        return granted
+    }
+
+    private static func performMicrophoneRequest() async -> Bool {
+        if #available(macOS 14.0, *) {
+            switch AVAudioApplication.shared.recordPermission {
+            case .granted: return true
+            case .denied: return false
+            default:
+                return await withCheckedContinuation { continuation in
+                    AVAudioApplication.requestRecordPermission { allowed in
+                        continuation.resume(returning: allowed)
+                    }
+                }
+            }
+        }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: return true
         case .notDetermined: return await AVCaptureDevice.requestAccess(for: .audio)
@@ -94,6 +129,7 @@ final class AudioEngine {
             throw AudioError.microphoneDenied
         }
 
+        let engine = requireEngine()
         if engine.isRunning { stop() }
         shouldBeRunning = true
 
@@ -170,6 +206,13 @@ final class AudioEngine {
     func stop() {
         shouldBeRunning = false
         disarmWatchdog()
+        guard let engine else {
+            player.stop()
+            playback.clear()
+            ioFormat = nil
+            DispatchQueue.main.async { [weak self] in self?.onInputLevel?(0) }
+            return
+        }
         if tapped {
             engine.inputNode.removeTap(onBus: 0)
             tapped = false
@@ -187,7 +230,7 @@ final class AudioEngine {
         disarmWatchdog()
         watchdog = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self, self.shouldBeRunning else { return }
-            if !self.engine.isRunning {
+            if self.engine?.isRunning == false {
                 NSLog("[AudioEngine] watchdog: engine stopped unexpectedly; restarting")
                 self.restartEngine()
             }
@@ -220,10 +263,11 @@ final class AudioEngine {
         // Invalidate callbacks before stop() releases old scheduled buffers.
         playback.clear()
         player.stop()
-        if engine.isRunning { player.play() }
+        if engine?.isRunning == true { player.play() }
     }
 
     private func wireIO(format: AVAudioFormat?) {
+        let engine = requireEngine()
         let input = engine.inputNode
         let hw = input.inputFormat(forBus: 0)
         let playFmt = format ?? AVAudioFormat(

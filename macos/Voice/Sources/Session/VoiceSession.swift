@@ -85,6 +85,9 @@ final class SessionController: ObservableObject {
 
     @Published private(set) var sessions: [ChatSessionSummary] = []
     @Published private(set) var personalMemory = ""
+    @Published private(set) var memoryError: String?
+    @Published private(set) var sessionsError: String?
+    @Published private(set) var sidecarConfig: SidecarConfig?
     @Published private(set) var activeSessionTitle = "New conversation"
     @Published var showSessions = false
 
@@ -115,6 +118,7 @@ final class SessionController: ObservableObject {
         Task { [weak self] in
             await self?.loadMemory()
             await self?.refreshSessions()
+            await self?.refreshConfig()
             await self?.restoreLastSession()
         }
     }
@@ -170,7 +174,7 @@ final class SessionController: ObservableObject {
             case "read_page": desc = "Reading page…"
             case "web_fetch": desc = "Fetching the page…"
             case "read_article": desc = "Reading Chrome article…"
-            case "control_screen": desc = "Controlling desktop…"
+            case "screenshot": desc = "Taking a screenshot…"
             case "code_agent": desc = "Coding agent running…"
             case "inspect_current_context": desc = "Checking context…"
             case "remember": desc = "Saving memory…"
@@ -245,6 +249,11 @@ final class SessionController: ObservableObject {
         beginTask = task
         await task.value
         beginTask = nil
+        if !task.isCancelled, errorText == nil {
+            await loadMemory()
+            await refreshSessions()
+            await refreshConfig()
+        }
         if task.isCancelled {
             // Tap-to-cancel won during connecting but backend.start() still
             // ran to completion underneath: shut it back down so we never
@@ -322,8 +331,11 @@ final class SessionController: ObservableObject {
 
     func refreshSessions() async {
         do {
+            try await LocalServiceStarter.shared.ensureSidecar()
             sessions = try await ChatStore.shared.listSessions()
+            sessionsError = nil
         } catch {
+            sessionsError = error.localizedDescription
             NSLog("[Voice] could not list chat sessions: \(error.localizedDescription)")
         }
     }
@@ -340,6 +352,7 @@ final class SessionController: ObservableObject {
         if isLive { await end() }
         await flushSave()
         do {
+            try await LocalServiceStarter.shared.ensureSidecar()
             let s = try await ChatStore.shared.getSession(id: id)
             dirty = false
             activeSessionId = s.id
@@ -374,8 +387,11 @@ final class SessionController: ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.lastSessionKey)
         }
         do {
+            try await LocalServiceStarter.shared.ensureSidecar()
             try await ChatStore.shared.deleteSession(id: id)
+            sessionsError = nil
         } catch {
+            sessionsError = error.localizedDescription
             NSLog("[Voice] could not delete chat session: \(error.localizedDescription)")
         }
         await refreshSessions()
@@ -383,19 +399,34 @@ final class SessionController: ObservableObject {
 
     func loadMemory() async {
         do {
+            try await LocalServiceStarter.shared.ensureSidecar()
             personalMemory = try await ChatStore.shared.getPersonalMemory()
+            memoryError = nil
         } catch {
-            NSLog("[Voice] could not load personal memory")
+            memoryError = error.localizedDescription
+            NSLog("[Voice] could not load personal memory: \(error.localizedDescription)")
+        }
+    }
+
+    func refreshConfig() async {
+        do {
+            sidecarConfig = try await ChatStore.shared.getConfig()
+        } catch {
+            sidecarConfig = nil
+            NSLog("[Voice] could not load sidecar config: \(error.localizedDescription)")
         }
     }
 
     /// Returns false when the save failed (e.g. profile too long).
     func saveMemory(_ text: String) async -> Bool {
         do {
+            try await LocalServiceStarter.shared.ensureSidecar()
             personalMemory = try await ChatStore.shared.putPersonalMemory(content: text)
+            memoryError = nil
             await backend.refreshMemory()
             return true
         } catch {
+            memoryError = error.localizedDescription
             NSLog("[Voice] could not save personal memory: \(error.localizedDescription)")
             return false
         }
@@ -561,6 +592,7 @@ final class SessionController: ObservableObject {
         guard dirty, !messages.isEmpty else { return }
         guard let id = await ensureSession() else { return }
         do {
+            try await LocalServiceStarter.shared.ensureSidecar()
             try await ChatStore.shared.patchSession(id: id, title: activeSessionTitle, messages: messages)
             dirty = false
         } catch {
@@ -571,6 +603,7 @@ final class SessionController: ObservableObject {
     private func ensureSession() async -> String? {
         if let id = activeSessionId { return id }
         do {
+            try await LocalServiceStarter.shared.ensureSidecar()
             let created = try await ChatStore.shared.createSession(title: activeSessionTitle)
             activeSessionId = created.id
             UserDefaults.standard.set(created.id, forKey: Self.lastSessionKey)

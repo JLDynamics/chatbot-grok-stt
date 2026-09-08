@@ -24,13 +24,27 @@ PORT="${PORT:-8766}"
 WEB_PORT="${WEB_PORT:-7860}"
 SERVER_LOG="${SERVER_LOG:-/tmp/chatbot-server.log}"
 WEB_LOG="${WEB_LOG:-/tmp/chatbot-web.log}"
-MODEL="${MODEL:-meta/muse-spark-1.2-contributor}"
+MODEL="${MODEL:-openai/gpt-5.6-luna}"
 export MODEL
 
 listener() { lsof -ti "TCP:$1" -sTCP:LISTEN 2>/dev/null | head -1 || true; }
 reuse_running=false
-if [[ "${1:-}" == "--reuse-running" ]]; then reuse_running=true; fi
-for port in "$PORT" "$WEB_PORT"; do
+sidecar_only=false
+for arg in "$@"; do
+  case "$arg" in
+    --reuse-running) reuse_running=true ;;
+    --sidecar-only) sidecar_only=true ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+ports=("$WEB_PORT")
+if [[ "$sidecar_only" == false ]]; then
+  ports=("$PORT" "$WEB_PORT")
+fi
+for port in "${ports[@]}"; do
   pid="$(listener "$port")"
   if [[ -n "$pid" && "$reuse_running" == false ]]; then
     echo "Error: port $port is already in use by pid $pid." >&2
@@ -48,25 +62,28 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if [[ -z "$(listener "$PORT")" ]]; then
-  echo "Starting the Chatbot voice service..."
-  PORT="$PORT" ./run-openrouter.sh >"$SERVER_LOG" 2>&1 &
-  server_pid=$!
-fi
-for _ in $(seq 1 120); do
-  [[ -n "$(listener "$PORT")" ]] && break
-  if [[ -n "$server_pid" ]] && ! kill -0 "$server_pid" 2>/dev/null; then
-    tail -20 "$SERVER_LOG" >&2
+if [[ "$sidecar_only" == false ]]; then
+  if [[ -z "$(listener "$PORT")" ]]; then
+    echo "Starting the Chatbot voice service..."
+    PORT="$PORT" ./run-openrouter.sh >"$SERVER_LOG" 2>&1 &
+    server_pid=$!
+  fi
+  for _ in $(seq 1 120); do
+    [[ -n "$(listener "$PORT")" ]] && break
+    if [[ -n "$server_pid" ]] && ! kill -0 "$server_pid" 2>/dev/null; then
+      tail -20 "$SERVER_LOG" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  if [[ -z "$(listener "$PORT")" ]]; then
+    echo "The model server did not start. See $SERVER_LOG." >&2
     exit 1
   fi
-  sleep 1
-done
-if [[ -z "$(listener "$PORT")" ]]; then
-  echo "The model server did not start. See $SERVER_LOG." >&2
-  exit 1
+  echo "Sidecar on http://localhost:$WEB_PORT (API only, no browser UI). Voice backend on port $PORT."
+else
+  echo "Sidecar on http://localhost:$WEB_PORT (API only, no browser UI)."
 fi
-
-echo "Sidecar on http://localhost:$WEB_PORT (API only, no browser UI). Voice backend on port $PORT."
 echo "Ctrl+C stops the services started by this launcher."
 if [[ -z "$(listener "$WEB_PORT")" ]]; then
   if [[ -x .venv/bin/uvicorn ]]; then

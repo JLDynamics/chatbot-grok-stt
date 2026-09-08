@@ -1,5 +1,7 @@
 import Foundation
 import CoreGraphics
+import ImageIO
+import ScreenCaptureKit
 
 public struct VoiceToolResult: Sendable {
     public let output: String
@@ -11,8 +13,9 @@ public struct VoiceToolResult: Sendable {
     }
 }
 
-/// Executes tools (Web Search, Desktop Control, Chrome Bridge, Code Agent)
-/// via the local FastAPI backend (http://127.0.0.1:7860/api).
+/// Executes tools (search, fetch, Chrome bridge, screenshot, code agent)
+/// via the local FastAPI backend (http://127.0.0.1:7860/api). Screenshot
+/// runs in-process; it does not use desktop-harness.
 public final class VoiceToolExecutor: @unchecked Sendable {
     public static let shared = VoiceToolExecutor()
 
@@ -28,7 +31,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         "story, webpage, page, or individual X post want page TEXT. Generic screen, app, window, " +
         "layout, image, chart, visual appearance, or front-page requests want what is VISIBLE: " +
         "these are visual intent and must not use read_article. An explicit 'take a screenshot' " +
-        "calls control_screen screenshot directly. Reading a public page is read-only, so the " +
+        "calls screenshot directly. Reading a public page is read-only, so the " +
         "user's request is all the authorization you need: never ask permission for it and never " +
         "describe read_article as needing approval. Use inspect_current_context only when the " +
         "request is genuinely ambiguous between page text and visual state; it returns routing " +
@@ -37,41 +40,21 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         "know, and go down a rung only when one fails: 1. web_fetch when you have or can search " +
         "for a public URL. 2. read_article for the live page in the user's Chrome, which is the " +
         "right rung when the page is 'on my screen', sits behind a login, or web_fetch came back " +
-        "gated. 3. control_screen with action screenshot as the last resort when neither text " +
-        "method worked. Descend automatically. Never stop to ask permission between rungs, and " +
-        "never end a turn telling the user to reload the extension while a rung below is still " +
-        "untried. " +
+        "gated. Do not click, scroll, or drive the browser. Descend automatically. Never stop " +
+        "to ask permission between rungs, and never end a turn telling the user to reload the " +
+        "extension while a rung below is still untried. " +
         "Read the failure before you choose. web_fetch reporting gated true, or a bridge reason " +
         "of bridge_never_enabled or bridge_expired, tells you which rung to try next, and a " +
         "bridge failure carrying a url means web_fetch is worth trying with that url. " +
         "SPEAK AS YOU GO. Say one short line before the first tool call, and one more every time " +
-        "you change method, such as 'That one is paywalled, let me read it from your Chrome' or " +
-        "'The bridge is not on for that tab, I will look at the screen'. Never run two tools in a " +
-        "row in silence. When you finally answer, say which method it came from if it was not the " +
-        "first one you tried. " +
-        "ON THE SCREEN FALLBACK, LOOK BUT DO NOT TOUCH. Reading page text through control_screen " +
-        "allows action screenshot and action scroll only. Never click, type, drag, or press keys " +
-        "to reach content: a consent banner, cookie wall, or login form in the way is something " +
-        "you describe and hand back to the user, not something you dismiss for them. Never pass " +
-        "off a screenshot of a paywall teaser as the article itself. " +
-        "AN EXPLICIT INSTRUCTION WINS. If the user names a method — 'use the desktop " +
-        "harness', 'use click and scroll', 'take a screenshot', 'search the web for it' — do " +
-        "that, immediately, on this turn. Do not answer with what you would normally prefer, do " +
-        "not restate the routing rules back to them, and do not say you will do it 'if' they are " +
-        "asking: they already asked. Routing order is your default, not a veto over a direct " +
-        "request. " +
-        "READING A LONG PAGE FROM THE SCREEN. control_screen screenshot returns one screenful, " +
-        "and control_screen scroll returns no picture at all, so scrolling alone shows you " +
-        "nothing. To read past the first screen, alternate: screenshot, then scroll, then " +
-        "screenshot again, repeating while new text keeps appearing, up to about eight rounds, and " +
-        "assemble what you read across them. Stop when the text repeats or you reach the end. " +
-        "SCROLL BIG: each scroll amount is scaled server-side to long strides, so prefer amount " +
-        "25-35 for full-screen strides on long pages; small amounts crawl and waste rounds. " +
-        "WORK QUIETLY: say one short line when starting ('Reading the full article now'), then run " +
-        "the whole screenshot/scroll ladder with empty text alongside the tool calls and no " +
-        "narration between rounds. This is the one exception to speaking as you go. Give ONE full " +
-        "answer at the end covering the entire article, never a play-by-play. " +
-        "NEVER CLAIM AN ACTION YOU DID NOT TAKE. Only say you scrolled, captured, read, or found " +
+        "you change method, such as 'That one is paywalled, let me read it from your Chrome'. " +
+        "Never run two tools in a row in silence. When you finally answer, say which method it " +
+        "came from if it was not the first one you tried. " +
+        "AN EXPLICIT INSTRUCTION WINS. If the user names a method — 'take a screenshot', " +
+        "'search the web for it', 'read the Chrome page' — do that, immediately, on this turn. " +
+        "Do not answer with what you would normally prefer, do not restate the routing rules " +
+        "back to them, and do not say you will do it 'if' they are asking: they already asked. " +
+        "NEVER CLAIM AN ACTION YOU DID NOT TAKE. Only say you captured, read, or found " +
         "something after the matching tool call has actually returned it. If a call failed or " +
         "returned nothing useful, say exactly that and what you are trying next. Never explain a " +
         "missing result by saying it happened in the background or that the user could not see " +
@@ -99,8 +82,9 @@ public final class VoiceToolExecutor: @unchecked Sendable {
     /// Search, fetch, bridge read, preflight — all bounded well under a minute
     /// server-side (`FETCH_TIMEOUT_S` 15s, search 12s).
     private let quickSession = session(timeout: 30)
-    /// `/api/desktop/act` — the harness is capped at 45s server-side.
-    private let desktopSession = session(timeout: 75)
+    /// Sidecar screenshot fallback. Keep this short so a hung capture cannot
+    /// pin the voice turn (a 75s wait left the session silent until barge-in).
+    private let screenshotSession = session(timeout: 12)
     /// `/api/code` — `CODE_AGENT_TIMEOUT_S` defaults to 300s.
     private let codeAgentSession = session(timeout: 360)
 
@@ -132,9 +116,9 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         set { UserDefaults.standard.set(newValue, forKey: "tools.web_search") }
     }
 
-    public var desktopControlEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "tools.desktop_control") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "tools.desktop_control") }
+    public var screenshotEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "tools.screenshot") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "tools.screenshot") }
     }
 
     public var chromeBridgeEnabled: Bool {
@@ -151,7 +135,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         let tools = activeToolDefinitions()
         if tools.isEmpty { return base }
         return base + Self.toolUseHint + Self.toolIntentRouting
-            + " For a general page-reading request, use read_page to execute the text ladder with bounded attempts. It prefers Chrome for X/Twitter links and current-page requests, and web fetch for other URLs. Set prefer_browser for other known login-dependent pages already open in Chrome. Search first only when you need to discover a URL; a search snippet is not an article. The separate web_fetch and read_article tools remain available for an explicitly named method. read_page reports all attempts, tries the other text method when content is partial, and preserves the requested page identity. If its text methods fail, screen reading remains screenshot and scroll only, and only for the requested visible page. Never label a partial capture as a complete article."
+            + " For a general page-reading request, use read_page to execute the text ladder with bounded attempts. It prefers Chrome for X/Twitter links and current-page requests, and web fetch for other URLs. Set prefer_browser for other known login-dependent pages already open in Chrome. Search first only when you need to discover a URL; a search snippet is not an article. The separate web_fetch and read_article tools remain available for an explicitly named method. read_page reports all attempts, tries the other text method when content is partial, and preserves the requested page identity. If its text methods fail, say so; do not click or scroll the page. Use screenshot only for visual intent, never as a substitute for the article text."
     }
 
     /// Same wording as the sidecar flow: stored profile
@@ -211,7 +195,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             defs.append([
                 "type": "function",
                 "name": "read_article",
-                "description": "Read the full main text of the public webpage, article, documentation, news page, or individual X status post currently open in Chrome. This reads the live page, so it works where web_fetch cannot: pages behind a login, pages that need JavaScript, and anything web_fetch reported as gated. Read-only, and the user's request is sufficient authorization, so call it without asking for approval. On failure it returns a reason: bridge_never_enabled means no page has been shared from Chrome, bridge_expired means the shared copy aged out and the reply carries the page url. Use that url with web_fetch, and fall back to control_screen screenshot only when no text method worked.",
+                "description": "Read the full main text of the public webpage, article, documentation, news page, or individual X status post currently open in Chrome. This reads the live page, so it works where web_fetch cannot: pages behind a login, pages that need JavaScript, and anything web_fetch reported as gated. Read-only, and the user's request is sufficient authorization, so call it without asking for approval. On failure it returns a reason: bridge_never_enabled means no page has been shared from Chrome, bridge_expired means the shared copy aged out and the reply carries the page url. Use that url with web_fetch. Do not try to click or scroll the page.",
                 "parameters": [
                     "type": "object",
                     "properties": [
@@ -225,7 +209,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             defs.append([
                 "type": "function",
                 "name": "inspect_current_context",
-                "description": "Privacy-preserving routing preflight only for requests genuinely ambiguous between page text and visual state in the current screen/app. Do not call it for an explicit article, news, webpage, page, or X-post text request; call read_article directly. It returns only whether Chrome has a fresh readable public page and minimal frontmost app/window metadata when Desktop Control is enabled. It never returns page body text, screen labels, form values, or pixels and never takes a screenshot.",
+                "description": "Privacy-preserving routing preflight only for requests genuinely ambiguous between page text and visual state in the current screen/app. Do not call it for an explicit article, news, webpage, page, or X-post text request; call read_article directly. It returns only whether Chrome has a fresh readable public page. It never returns page body text, screen labels, form values, or pixels and never takes a screenshot.",
                 "parameters": [
                     "type": "object",
                     "properties": [:] as [String: Any],
@@ -234,29 +218,15 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             ])
         }
 
-        if desktopControlEnabled {
+        if screenshotEnabled {
             defs.append([
                 "type": "function",
-                "name": "control_screen",
-                "description": "Act on the user's Mac: click a button or link by its visible text, type text, press a key, use a keyboard shortcut, scroll, drag, or take a screenshot of the main display or one visible app/window. Prefer clicking by text over dragging. Use screenshot for explicit visual intent: 'check my screen', what is visible in an app/window, a layout, image, chart, visual appearance, or an explicit screenshot request. Do not use read_article for generic visual screen requests. For article/news/webpage/page or individual X post text prefer read_article first; reach this tool only once web_fetch and read_article have both failed, and then use action screenshot and action scroll only, never click, type, drag, or key to get at page content.",
+                "name": "screenshot",
+                "description": "Capture what is currently visible on the Mac screen. Use for explicit visual intent: 'check my screen', a layout, image, chart, or appearance. Do not use this to read a long article or news story; use read_article or web_fetch for page text.",
                 "parameters": [
                     "type": "object",
-                    "properties": [
-                        "action": [
-                            "type": "string",
-                            "enum": ["click", "type", "key", "hotkey", "scroll", "drag", "screenshot"],
-                            "description": "screenshot = capture pixels without acting; click = press something by its label; key = one key like return or escape; hotkey = a chord like 'cmd s'."
-                        ],
-                        "text": ["type": "string", "description": "For click: visible label. For type: text. For key/hotkey: key name(s)."],
-                        "app": ["type": "string", "description": "Optional app or window title to target."],
-                        "amount": ["type": "integer", "description": "For scroll: stride size. Use 25-35 for full-screen strides on long pages (default 5)."],
-                        "coords": [
-                            "type": "array",
-                            "items": ["type": "number"],
-                            "description": "For drag: [x1, y1, x2, y2]."
-                        ] as [String: Any]
-                    ] as [String: Any],
-                    "required": ["action"]
+                    "properties": [:] as [String: Any],
+                    "required": [] as [String]
                 ] as [String: Any]
             ])
         }
@@ -265,7 +235,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             defs.append([
                 "type": "function",
                 "name": "code_agent",
-                "description": "Hand a coding or file task to a coding agent running on this machine. It can read files, run shell commands, edit and write code. Use it when the user asks you to look at, change, run, test or fix something on their computer. Describe the whole task in one clear instruction — the agent works on its own and reports back.",
+                "description": "Hand a coding or file task to Grok running on this machine. It can read files, run shell commands, and edit code. Use it only when the user asks to look at, change, run, test, or fix files on disk. Do not use it for news, search, fetching websites, reading Chrome, or screenshots.",
                 "parameters": [
                     "type": "object",
                     "properties": [
@@ -342,8 +312,8 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             case "read_article":
                 return try await execReadArticle(app: args["app"] as? String, url: args["url"] as? String)
 
-            case "control_screen":
-                return try await execControlScreen(args: args)
+            case "screenshot":
+                return try await execScreenshot()
 
             case "code_agent":
                 return try await execCodeAgent(task: args["task"] as? String ?? "")
@@ -478,42 +448,35 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         return VoiceToolResult(output: VoiceToolFormatting.page(json, source: "chrome_bridge"))
     }
 
-    private func execControlScreen(args: [String: Any]) async throws -> VoiceToolResult {
-        if args["action"] as? String == "screenshot", !CGPreflightScreenCaptureAccess() {
-            return VoiceToolResult(output: "Screenshot unavailable: Voice does not have Screen Recording permission. "
-                + "Open Voice Settings, choose Screen Recording Permission, enable Voice in macOS, then quit and reopen Voice. "
-                + "No image was captured. Do not retry or describe the screen until permission is enabled.")
+    private func execScreenshot() async throws -> VoiceToolResult {
+        // Prefer in-process capture when this binary is already allowed.
+        // Never prompt here. After ad-hoc rebuilds CGPreflight is often false
+        // even though System Settings still lists Voice — fall back to sidecar.
+        if let png = await ScreenCapture.mainDisplayPNG(),
+           let image = ScreenCapture.modelImageDataURL(from: png) {
+            return VoiceToolResult(output: "Screenshot captured successfully.", image: image)
         }
+        if let fallback = try await sidecarScreenshot() {
+            return fallback
+        }
+        return VoiceToolResult(output: ScreenCapture.permissionHelp)
+    }
+
+    private func sidecarScreenshot() async throws -> VoiceToolResult? {
         let url = baseURL.appendingPathComponent("desktop/act")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: args)
-
-        let (data, res) = try await desktopSession.data(for: req)
-        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-            return VoiceToolResult(output: "Desktop control failed: \(errorDetail(data, res))")
-        }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return VoiceToolResult(output: "Invalid desktop response.")
-        }
-
-        let action = json["action"] as? String ?? "act"
-        if action == "screenshot", let image = json["image"] as? String {
-            let path = json["path"] as? String ?? ""
-            return VoiceToolResult(
-                output: "Desktop screenshot captured successfully." + (path.isEmpty ? "" : " Local file: \(path)"),
-                image: image
-            )
-        }
-        if let changed = json["changed"] as? [String], !changed.isEmpty {
-            return VoiceToolResult(output: "Did \(action). The screen changed — now showing: \(changed.joined(separator: ", "))")
-        }
-        let detail = json["result"] as? String ?? json["output"] as? String ?? ""
-        let verified = json["verified"] as? Bool ?? false
-        return VoiceToolResult(output: "Attempted \(action). "
-            + (verified ? "The interface was checked, but the intended outcome is not confirmed." : "The screen change has not been verified.")
-            + (detail.isEmpty ? "" : " \(detail)"))
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["action": "screenshot"])
+        let (data, res) = try await screenshotSession.data(for: req)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200,
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let image = json["image"] as? String, image.hasPrefix("data:image"),
+              let raw = ScreenCapture.rawImage(fromDataURL: image)
+        else { return nil }
+        let attached = ScreenCapture.modelImageDataURL(from: raw)
+            ?? (raw.count < 200_000 ? image : nil)
+        return VoiceToolResult(output: "Screenshot captured successfully.", image: attached)
     }
 
     private func execCodeAgent(task: String) async throws -> VoiceToolResult {
@@ -542,7 +505,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["include_desktop": desktopControlEnabled])
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["include_desktop": false])
 
         let (data, res) = try await quickSession.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
@@ -616,5 +579,135 @@ public final class VoiceToolExecutor: @unchecked Sendable {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return false }
         return json["connected"] as? Bool ?? false
+    }
+}
+
+/// Capture the main display from Voice.app itself. Screen Recording TCC is
+/// per code identity; the Python sidecar is a different binary, so checking
+/// `CGPreflightScreenCaptureAccess` in Voice and then capturing in Python
+/// was the wrong process on both sides.
+enum ScreenCapture {
+    static var isAllowed: Bool { CGPreflightScreenCaptureAccess() }
+
+    static let permissionHelp =
+        "Screenshot unavailable: this Voice build does not have Screen Recording permission. "
+        + "macOS keeps a leftover Voice toggle after ad-hoc rebuilds, so the list can look enabled while this binary is not. "
+        + "Open System Settings → Privacy & Security → Screen Recording, turn Voice off, remove it, add /Applications/Voice.app, then quit and reopen Voice."
+
+    static func requestAccess() -> Bool {
+        if isAllowed { return true }
+        return CGRequestScreenCaptureAccess()
+    }
+
+    static func mainDisplayPNG() async -> Data? {
+        guard isAllowed else { return nil }
+        return await withTimeout(seconds: 4) { await captureOnce() }
+    }
+
+    private static func captureOnce() async -> Data? {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let display = content.displays.first else { return nil }
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let config = SCStreamConfiguration()
+            config.width = display.width
+            config.height = display.height
+            config.showsCursor = false
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            if nearlyBlack(image) { return nil }
+            return pngData(from: image)
+        } catch {
+            NSLog("[ScreenCapture] \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private static func withTimeout(seconds: Double, _ work: @escaping () async -> Data?) async -> Data? {
+        await withTaskGroup(of: Data?.self) { group in
+            group.addTask { await work() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    static func rawImage(fromDataURL dataURL: String) -> Data? {
+        guard let comma = dataURL.firstIndex(of: ",") else { return nil }
+        let encoded = dataURL[dataURL.index(after: comma)...]
+        return Data(base64Encoded: String(encoded))
+    }
+
+    /// Downscale + JPEG so the model can see the screen without stuffing the
+    /// websocket / context with a multi-megabyte PNG (that stalled replies).
+    static func modelImageDataURL(from data: Data, maxEdge: Int = 1280, quality: Double = 0.72) -> String? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let jpeg = jpegData(from: image, maxEdge: maxEdge, quality: quality)
+        else { return nil }
+        return "data:image/jpeg;base64," + jpeg.base64EncodedString()
+    }
+
+    static func jpegData(from image: CGImage, maxEdge: Int = 1280, quality: Double = 0.72) -> Data? {
+        let w = image.width, h = image.height
+        let longest = max(w, h)
+        let scale = longest > maxEdge ? Double(maxEdge) / Double(longest) : 1
+        let tw = max(1, Int((Double(w) * scale).rounded()))
+        let th = max(1, Int((Double(h) * scale).rounded()))
+        guard let ctx = CGContext(
+            data: nil,
+            width: tw,
+            height: th,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        ctx.interpolationQuality = .medium
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: tw, height: th))
+        guard let scaled = ctx.makeImage() else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(dest, scaled, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
+    }
+
+    static func pngData(from image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return data as Data
+    }
+
+    static func nearlyBlack(_ image: CGImage) -> Bool {
+        let tw = 32, th = 32
+        var pixels = [UInt8](repeating: 0, count: tw * th * 4)
+        guard let ctx = CGContext(
+            data: &pixels,
+            width: tw,
+            height: th,
+            bitsPerComponent: 8,
+            bytesPerRow: tw * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: tw, height: th))
+        var bright = 0
+        let n = tw * th
+        for i in 0..<n {
+            let o = i * 4
+            if Int(pixels[o]) + Int(pixels[o + 1]) + Int(pixels[o + 2]) > 191 { bright += 1 }
+        }
+        return n > 0 && Double(bright) / Double(n) < 0.005
     }
 }

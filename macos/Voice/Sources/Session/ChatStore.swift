@@ -45,6 +45,30 @@ public struct ChatSessionSummary: Codable, Identifiable {
     }
 }
 
+public struct SidecarConfig: Codable, Equatable {
+    public var search: Bool
+    public var codeAgent: Bool
+    public var desktopControl: Bool
+
+    public init(search: Bool = false, codeAgent: Bool = false, desktopControl: Bool = false) {
+        self.search = search
+        self.codeAgent = codeAgent
+        self.desktopControl = desktopControl
+    }
+}
+
+struct ChatStoreError: LocalizedError {
+    let status: Int
+    let detail: String?
+    var errorDescription: String? { detail ?? "Server error (\(status))" }
+
+    static func from(status: Int, data: Data) -> ChatStoreError {
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let detail = json?["detail"] as? String
+        return ChatStoreError(status: status, detail: detail)
+    }
+}
+
 /// Thin async client for the local FastAPI sidecar (default
 /// `http://127.0.0.1:7860/api`, same base URL as VoiceToolExecutor).
 public final class ChatStore: @unchecked Sendable {
@@ -66,7 +90,7 @@ public final class ChatStore: @unchecked Sendable {
 
     public func listSessions() async throws -> [ChatSessionSummary] {
         let data = try await get("sessions")
-        return (try? JSONDecoder().decode(SessionsList.self, from: data))?.sessions ?? []
+        return try JSONDecoder().decode(SessionsList.self, from: data).sessions
     }
 
     public func createSession(title: String = "New conversation") async throws -> ChatSession {
@@ -94,22 +118,25 @@ public final class ChatStore: @unchecked Sendable {
     public func deleteSession(id: String) async throws {
         var req = URLRequest(url: baseURL.appendingPathComponent("sessions/\(id)"))
         req.httpMethod = "DELETE"
-        let (_, res) = try await session.data(for: req)
-        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
+        let (data, res) = try await session.data(for: req)
+        try check(data, res)
     }
 
     // MARK: - Personal memory
 
     public func getPersonalMemory() async throws -> String {
         let data = try await get("personal-memory")
-        return (try? JSONDecoder().decode(MemoryEnvelope.self, from: data))?.content ?? ""
+        return try JSONDecoder().decode(MemoryEnvelope.self, from: data).content
     }
 
     public func putPersonalMemory(content: String) async throws -> String {
         let data = try await put("personal-memory", body: ["content": content])
-        return (try? JSONDecoder().decode(MemoryEnvelope.self, from: data))?.content ?? content
+        return try JSONDecoder().decode(MemoryEnvelope.self, from: data).content
+    }
+
+    public func getConfig() async throws -> SidecarConfig {
+        let data = try await get("config")
+        return try JSONDecoder().decode(SidecarConfig.self, from: data)
     }
 
     // MARK: - History search (for the search_chat_history tool)
@@ -134,11 +161,18 @@ public final class ChatStore: @unchecked Sendable {
 
     // MARK: - Plumbing
 
-    private func get(_ path: String) async throws -> Data {
-        let (data, res) = try await session.data(from: baseURL.appendingPathComponent(path))
-        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+    private func check(_ data: Data, _ res: URLResponse) throws {
+        guard let http = res as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
+        guard http.statusCode == 200 else {
+            throw ChatStoreError.from(status: http.statusCode, data: data)
+        }
+    }
+
+    private func get(_ path: String) async throws -> Data {
+        let (data, res) = try await session.data(from: baseURL.appendingPathComponent(path))
+        try check(data, res)
         return data
     }
 
@@ -160,9 +194,7 @@ public final class ChatStore: @unchecked Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, res) = try await session.data(for: req)
-        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
+        try check(data, res)
         return data
     }
 }

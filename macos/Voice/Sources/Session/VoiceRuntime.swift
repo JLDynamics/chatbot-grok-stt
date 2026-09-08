@@ -1,5 +1,16 @@
 import Foundation
 
+/// Decide when a tool result may ask the model to continue.
+///
+/// Parallel tool calls (several `web_search` in one response) must not each
+/// fire `response.create`. The first result would be spoken, then later
+/// results would trigger another nearly identical reply.
+enum VoiceToolFollowUp {
+    static func shouldSend(pendingTools: Int, responseActive: Bool) -> Bool {
+        pendingTools == 0 && !responseActive
+    }
+}
+
 /// Invalidates asynchronous work when a connection or user turn is superseded.
 @MainActor
 final class VoiceWorkScope {

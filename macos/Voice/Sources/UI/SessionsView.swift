@@ -52,7 +52,21 @@ struct SessionsView: View {
 
             Divider().background(theme.border)
 
-            if session.sessions.isEmpty {
+            if working && session.sessions.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                        .controlSize(.small)
+                    Spacer()
+                }
+                .padding(.vertical, 12)
+            } else if session.sessions.isEmpty, let error = session.sessionsError {
+                Text(error)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(theme.text3)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 12)
+            } else if session.sessions.isEmpty {
                 Text("No saved conversations yet. Start talking and they will appear here.")
                     .font(.system(size: 11.5))
                     .foregroundStyle(theme.text3)
@@ -77,7 +91,11 @@ struct SessionsView: View {
             RoundedRectangle(cornerRadius: Theme.radius)
                 .strokeBorder(theme.border, lineWidth: 0.5)
         )
-        .task { await session.refreshSessions() }
+        .task {
+            working = true
+            await session.refreshSessions()
+            working = false
+        }
     }
 
     private func sessionRow(_ row: ChatSessionSummary) -> some View {

@@ -160,11 +160,31 @@ def test_tool_result_defers_response_create_until_the_active_one_finishes():
     # requestResponse defers rather than sending straight out...
     assert "guard activeResponseId.isEmpty else {" in live
     assert "responseRequestPending = true" in live
-    # ...and response.done flushes whatever was deferred.
-    assert "if responseRequestPending, activeResponseId.isEmpty {" in live
+    # ...and response.done flushes whatever was deferred, but not while other
+    # tools from the same response are still running (parallel web_search).
+    assert "VoiceToolFollowUp.shouldSend(" in live
+    assert "pendingTools: toolScope.pendingIds.count" in live
     assert "sendResponseCreate()" in live
     # Per-session teardown must not leak a pending request into the next session.
     assert 'activeResponseId = ""\n        responseRequestPending = false' in live
+
+
+def test_parallel_tools_wait_before_follow_up():
+    """Several tool calls in one response must share a single follow-up.
+
+    The Qin Shi Huang search turn issued three web_search calls. Each result
+    used to send response.create, so the panel spoke two nearly identical
+    answers. Wait until pending tools drain, and do not arm the 10s watchdog
+    for a tool that is not the last one still running.
+    """
+    runtime = (VOICE_SOURCES / "VoiceRuntime.swift").read_text()
+    live = (VOICE_SOURCES / "LiveVoiceBackend.swift").read_text()
+    assert "enum VoiceToolFollowUp" in runtime
+    assert "pendingTools == 0 && !responseActive" in runtime
+    assert "guard toolScope.pendingIds.isEmpty else {" in live
+    assert "follow-up waiting for %d remaining tool(s)" in live
+    assert "if self.toolScope.pendingIds.isEmpty {" in live
+    assert "self.armFollowUpWatchdog(callId: callId, generation: generation)" in live
 
 
 def test_every_tool_has_a_progress_label():

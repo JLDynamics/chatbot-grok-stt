@@ -883,6 +883,8 @@ async def _desktop_frontmost_context() -> dict[str, object]:
         payload = json.loads(output.splitlines()[-1])
     except (json.JSONDecodeError, IndexError) as exc:
         raise HTTPException(status_code=502, detail="Desktop Harness returned invalid context metadata.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Desktop Harness returned invalid context metadata.")
     app_name = str(payload.get("app") or "").strip()[:120]
     window_title = str(payload.get("title") or "").strip()[:200]
     sensitive = next((hint for hint in LOGIN_HINTS if hint in f"{app_name} {window_title}".lower()), None)
@@ -968,6 +970,23 @@ async def _screen_scope_looks_sensitive(app: str | None = None) -> str | None:
         raise HTTPException(status_code=502, detail="Could not inspect the desktop safety scope.") from exc
     scope = json.dumps(info).lower()
     return next((hint for hint in LOGIN_HINTS if hint in scope), None)
+
+
+async def _screenshot_target_is_sensitive(app: str | None) -> str | None:
+    """Block capturing a login/payment/password-manager window.
+
+    Unlike click/type, a full-display screenshot must not treat a "Sign in"
+    button somewhere in the accessibility tree as a hard block — that is how
+    ordinary Chrome pages were denying every screenshot.
+    """
+    if app:
+        lowered = app.lower()
+        return next((hint for hint in LOGIN_HINTS if hint in lowered), None)
+    try:
+        front = await _desktop_frontmost_context()
+    except HTTPException:
+        return None
+    return "login" if front.get("sensitive") else None
 
 
 async def _capture_desktop_screenshot(app: str | None) -> dict[str, str]:
@@ -1076,8 +1095,9 @@ async def desktop_act(req: DesktopActRequest, request: Request) -> JSONResponse:
         "hotkey",
         "scroll",
         "drag",
-        "screenshot",
     } and await _screen_scope_looks_sensitive(sensitive_scope):
+        raise HTTPException(status_code=451, detail="Desktop control is blocked on sign-in and payment windows.")
+    if action == "screenshot" and await _screenshot_target_is_sensitive(app_name):
         raise HTTPException(status_code=451, detail="Desktop control is blocked on sign-in and payment windows.")
     if action == "screenshot":
         captured = await _while_connected(_capture_desktop_screenshot(app_name), request, 60.0)

@@ -4,7 +4,7 @@ A Mac-first live voice chatbot that runs its ears and voice locally, while a Res
 
 `native panel microphone → Parakeet MLX → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → speakers`
 
-It keeps realtime WebSocket turn-taking, interruption/cancellation, partial transcripts, long-term memory, web tools, the Chrome page bridge, camera, coding-agent delegation, and explicit desktop control.
+It keeps realtime WebSocket turn-taking, interruption/cancellation, partial transcripts, long-term memory, web search and fetch, the Chrome page bridge, in-app screenshots, camera, and optional coding-agent delegation.
 
 In the default **Speakers (echo cancellation)** mode, the mic stays open while the assistant speaks. The panel uses matched mono capture/render formats for Apple's voice processing, with Silero VAD detecting interruptions. If voice processing cannot start, the panel visibly reports compatibility mode, which suppresses microphone capture during playback. **Headphones** mode keeps capture open without echo cancellation. **Stop reply** stops playback and pending tools without ending the conversation. Saved conversations are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. VibeVoice runs locally without an AI watermark.
 
@@ -29,9 +29,15 @@ uv sync --group dev
 open macos/Voice/build/Voice.app
 ```
 
-`run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`); the Voice panel connects to both. The first launch may download the Parakeet and TTS model files.
+To show Voice in Finder → Applications, Launchpad, and Spotlight:
 
-The default model path is `meta/muse-spark-1.2-contributor` through OpenRouter. **Parakeet TDT 1.1B** STT and the TTS model run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language); set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
+```bash
+./macos/Voice/scripts/install.sh
+```
+
+`run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`); the Voice panel connects to both. Clicking the installed app starts those services if they are not already running. The first launch may download the Parakeet and TTS model files.
+
+The default model path is `openai/gpt-5.6-luna` through OpenRouter. **Parakeet TDT 1.1B** STT and the TTS model run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language); set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
 
 ## Configuration
 
@@ -40,7 +46,7 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `TTS` | `kokoro` | TTS backend: `kokoro` (Kokoro-82M) or `vibevoice` (Microsoft VibeVoice) |
-| `MODEL` | `meta/muse-spark-1.2-contributor` | OpenRouter Responses API model ID |
+| `MODEL` | `openai/gpt-5.6-luna` | OpenRouter Responses API model ID |
 | `KOKORO_MODEL` | `mlx-community/Kokoro-82M-bf16` | Kokoro-82M MLX model repo |
 | `KOKORO_VOICE` | `bm_fable` | Kokoro voice (e.g. `bm_fable` British male, `af_heart` American female); auto-switches with the detected language |
 | `KOKORO_LANG` | `b` | Kokoro language code (`a`/`b`/`e`/`j`/`f`/`i`/`p`/`z`/`h`) |
@@ -61,7 +67,7 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `CODE_AGENT` | `on` | Set `off` to hide coding-agent delegation |
 | `CODE_AGENT_CWD` | home folder | Default working folder for coding tasks |
 | `CODE_AGENT_MODEL` | `grok-4.6` | Model for coding-agent delegation (via Grok Build) |
-| `DESKTOP_CONTROL` | `on` | Server-side kill switch for explicit Mac actions |
+| `DESKTOP_CONTROL` | `on` | Unused by Voice; kept for the sidecar verify harness |
 | `CHATBOT_DATA_DIR` | `~/.chatbot` | Saved chats, personal profile, and project notebooks |
 | `CHATBOT_SESSION_RETENTION` | `50` | Maximum saved conversations kept on disk |
 

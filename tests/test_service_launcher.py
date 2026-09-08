@@ -91,6 +91,25 @@ def test_reuse_starts_only_missing_services_and_preserves_external(launcher, exi
             wait_for(lambda: not marker.exists())
 
 
+def test_sidecar_only_starts_web_without_voice(launcher):
+    directory, start = launcher
+    process = start("--sidecar-only")
+    wait_for(lambda: (directory / "17860").exists())
+    assert not (directory / "18766").exists()
+    process.terminate()
+    assert process.wait(timeout=5) == 143
+    wait_for(lambda: not (directory / "17860").exists())
+
+
+def test_sidecar_only_reuses_existing_web(launcher):
+    directory, start = launcher
+    (directory / "17860").write_text("external-service")
+    process = start("--reuse-running", "--sidecar-only")
+    assert process.wait(timeout=5) == 0
+    assert (directory / "17860").read_text() == "external-service"
+    assert not (directory / "18766").exists()
+
+
 def test_normal_start_refuses_an_occupied_port(launcher):
     directory, start = launcher
     (directory / "18766").write_text("external-service")

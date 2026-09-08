@@ -393,7 +393,11 @@ final class LiveVoiceBackend: VoiceBackend {
                 onOutputLevel?(0)
                 if !closed { onState?(.listening) }
             }
-            if responseRequestPending, activeResponseId.isEmpty {
+            if responseRequestPending,
+               VoiceToolFollowUp.shouldSend(
+                   pendingTools: toolScope.pendingIds.count,
+                   responseActive: !activeResponseId.isEmpty
+               ) {
                 responseRequestPending = false
                 sendResponseCreate()
             }
@@ -539,8 +543,7 @@ final class LiveVoiceBackend: VoiceBackend {
         if ["read_page", "web_fetch", "read_article"].contains(name) { readingPage = true }
         onToolActive?(name)
         let task = Task {
-            let args = (try? JSONSerialization.jsonObject(with: Data(argsJson.utf8))) as? [String: Any]
-            let screenReadAction = name == "control_screen" && ["screenshot", "scroll"].contains(args?["action"] as? String ?? "")
+            let screenReadAction = name == "screenshot"
             var result: VoiceToolResult
             if self.readingPage && self.screenReads.stopped && screenReadAction {
                 result = VoiceToolResult(output: "Screen reading is finished for this turn. Use the partial content already obtained; do not repeat capture or scroll.")
@@ -572,7 +575,9 @@ final class LiveVoiceBackend: VoiceBackend {
             self.toolScope.finish(callId, generation: generation)
             self.onToolDone?(name, result.output)
             self.requestResponse()
-            self.armFollowUpWatchdog(callId: callId, generation: generation)
+            if self.toolScope.pendingIds.isEmpty {
+                self.armFollowUpWatchdog(callId: callId, generation: generation)
+            }
         }
         toolScope.insert(task, id: callId)
     }
@@ -610,7 +615,15 @@ final class LiveVoiceBackend: VoiceBackend {
     /// turn died after the spoken acknowledgement and the tool result was never
     /// used — which also stops any fallback chain at its first rung. Defer
     /// instead, and flush on `response.done`.
+    ///
+    /// Parallel tools in one response must also wait for each other. Sending a
+    /// follow-up after the first of several `web_search` results makes the
+    /// model answer twice with the same content once the rest arrive.
     private func requestResponse() {
+        guard toolScope.pendingIds.isEmpty else {
+            NSLog("[LiveVoice] follow-up waiting for %d remaining tool(s)", toolScope.pendingIds.count)
+            return
+        }
         guard activeResponseId.isEmpty else {
             NSLog("[LiveVoice] follow-up deferred (response %@ active)", activeResponseId)
             responseRequestPending = true

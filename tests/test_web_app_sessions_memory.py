@@ -24,6 +24,16 @@ def isolated_client(monkeypatch, tmp_path):
     return TestClient(server.app)
 
 
+def test_personal_memory_envelope_matches_native_client(isolated_client):
+    isolated_client.put("/api/personal-memory", json={"content": "- Nicole is Jack's daughter."})
+    body = isolated_client.get("/api/personal-memory").json()
+    assert set(body) >= {"content", "max_chars"}
+    assert "Nicole is Jack's daughter" in body["content"]
+    assert body["max_chars"] >= len(body["content"])
+    config = isolated_client.get("/api/config").json()
+    assert {"search", "codeAgent", "desktopControl", "chatbotUrl"} <= set(config)
+
+
 def test_personal_memory_round_trip(isolated_client):
     res = isolated_client.put("/api/personal-memory", json={"content": "- Likes tea"})
     assert res.status_code == 200
@@ -57,6 +67,21 @@ def test_legacy_memories_migrate_into_profile(isolated_client, tmp_path):
     assert "Nicole is Jack's daughter" in body["content"]
     assert not legacy.exists()
     assert legacy.with_name("memories.json.migrated").exists()
+
+
+def test_session_list_shape_matches_native_client(isolated_client):
+    created = isolated_client.post("/api/sessions", json={"title": "hello how you"}).json()["session"]
+    isolated_client.patch(
+        f"/api/sessions/{created['id']}",
+        json={"messages": [{"role": "user", "text": "hello"}]},
+    )
+    listed = isolated_client.get("/api/sessions").json()
+    item = listed["sessions"][0]
+    for key in ("id", "title", "preview", "message_count", "updated_at"):
+        assert key in item
+    assert item["title"] == "hello how you"
+    assert item["preview"] == "hello"
+    assert item["message_count"] == 1
 
 
 def test_session_crud_and_search(isolated_client):

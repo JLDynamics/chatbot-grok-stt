@@ -10,8 +10,14 @@ with the Chatbot voice backend. Spec comes from `~/voice-chat-window-design`.
 open macos/Voice/build/Voice.app
 ```
 
-Requires the voice server on `ws://127.0.0.1:8766/v1/realtime` (for example
-`./run-browser.sh` or `./run-openrouter.sh`).
+Install into `/Applications` (Finder, Launchpad, Spotlight):
+
+```bash
+./macos/Voice/scripts/install.sh
+```
+
+Requires the voice server on `ws://127.0.0.1:8766/v1/realtime`. Clicking the
+app starts `./run-browser.sh` when those default local ports are used.
 
 ## Backends
 

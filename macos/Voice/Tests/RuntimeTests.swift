@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 @main
 struct RuntimeTests {
@@ -7,8 +8,47 @@ struct RuntimeTests {
         let standardVoice = URL(string: "ws://127.0.0.1:8766/v1/realtime")!
         let standardTools = URL(string: "http://127.0.0.1:7860/api")!
         assert(LocalServiceStarter.manages(voice: standardVoice, sidecar: standardTools))
+        assert(LocalServiceStarter.managesSidecar(standardTools))
         assert(!LocalServiceStarter.manages(voice: URL(string: "wss://example.com/v1/realtime")!, sidecar: standardTools))
         assert(!LocalServiceStarter.manages(voice: standardVoice, sidecar: URL(string: "http://127.0.0.1:7960/api")!))
+        assert(!LocalServiceStarter.managesSidecar(URL(string: "http://127.0.0.1:7960/api")!))
+
+        let summary = try JSONDecoder().decode(
+            ChatSessionSummary.self,
+            from: Data(#"{"id":"abc","title":"hello","preview":"hi","message_count":2,"updated_at":"2026-09-08T15:24:07+00:00","created_at":"2026-09-08"}"#.utf8)
+        )
+        assert(summary.id == "abc" && summary.title == "hello" && summary.preview == "hi")
+        let config = try JSONDecoder().decode(
+            SidecarConfig.self,
+            from: Data(#"{"search":true,"codeAgent":false,"desktopControl":true,"chatbotUrl":"ws://x"}"#.utf8)
+        )
+        assert(config.search && !config.codeAgent && config.desktopControl)
+        let storeError = ChatStoreError.from(
+            status: 400,
+            data: Data(#"{"detail":"Personal memory is too long; consolidate it first."}"#.utf8)
+        )
+        assert(storeError.errorDescription == "Personal memory is too long; consolidate it first.")
+        assert(ScreenCapture.permissionHelp.contains("Screen Recording"))
+        assert(ScreenCapture.permissionHelp.contains("ad-hoc"))
+        var pixel: [UInt8] = [220, 40, 40, 255, 40, 220, 40, 255, 40, 40, 220, 255, 220, 220, 40, 255]
+        let jpegImage = pixel.withUnsafeMutableBytes { raw -> CGImage? in
+            guard let ctx = CGContext(
+                data: raw.baseAddress,
+                width: 2,
+                height: 2,
+                bitsPerComponent: 8,
+                bytesPerRow: 8,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return nil }
+            return ctx.makeImage()
+        }
+        assert(jpegImage != nil)
+        let jpeg = ScreenCapture.jpegData(from: jpegImage!, maxEdge: 1280, quality: 0.72)
+        assert(jpeg != nil && jpeg!.count > 20)
+        assert(jpeg!.starts(with: [0xFF, 0xD8]))
+        let url = ScreenCapture.modelImageDataURL(from: jpeg!)
+        assert(url?.hasPrefix("data:image/jpeg;base64,") == true)
         let tracker = PlaybackTracker()
         let old = tracker.enqueue()
         tracker.clear()
@@ -20,6 +60,11 @@ struct RuntimeTests {
         assert(!tracker.isAudible)
         assert(tracker.needsEchoGuard(now: now.addingTimeInterval(0.5)))
         assert(!tracker.needsEchoGuard(now: now.addingTimeInterval(1)))
+
+        assert(!VoiceToolFollowUp.shouldSend(pendingTools: 3, responseActive: false))
+        assert(!VoiceToolFollowUp.shouldSend(pendingTools: 0, responseActive: true))
+        assert(!VoiceToolFollowUp.shouldSend(pendingTools: 1, responseActive: true))
+        assert(VoiceToolFollowUp.shouldSend(pendingTools: 0, responseActive: false))
 
         let scope = VoiceWorkScope()
         let oldGeneration = scope.generation
@@ -140,8 +185,8 @@ struct RuntimeTests {
         assert(!screens.accept(signature: "one"))
         assert(screens.stopped)
         screens = ScreenReadBudget()
-        for number in 0..<6 { assert(screens.accept(signature: String(number))) }
-        assert(screens.stopped && !screens.accept(signature: "seventh"))
+        for number in 0..<8 { assert(screens.accept(signature: String(number))) }
+        assert(screens.stopped && !screens.accept(signature: "ninth"))
 
         testTranscript()
         print("Native runtime checks passed: playback, cancellation, page recovery, screen bounds, transcript revisions")

@@ -11,7 +11,7 @@ if [[ -f "$CHATBOT_ENV" ]]; then
   [[ -n "$saved_openrouter" ]] && OPENROUTER_API_KEY="$saved_openrouter"
 fi
 
-MODEL="${MODEL:-meta/muse-spark-1.2-contributor}"
+MODEL="${MODEL:-openai/gpt-5.6-luna}"
 PORT="${PORT:-8766}"
 BATCH_SENTENCES="${BATCH_SENTENCES:-3}"
 CHAT_SIZE="${CHAT_SIZE:-20}"

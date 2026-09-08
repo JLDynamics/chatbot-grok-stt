@@ -103,6 +103,27 @@ def test_desktop_screenshot_reports_permission_and_sensitive_scope(monkeypatch, 
     assert response.status_code == 451
 
 
+def test_desktop_screenshot_ignores_sign_in_labels_on_normal_apps(monkeypatch, tmp_path):
+    _enable_desktop_control(monkeypatch, tmp_path)
+    capture_dir = tmp_path / "Library/Caches/desktop-harness/captures"
+    capture_dir.mkdir(parents=True)
+    capture = capture_dir / "capture.png"
+    capture.write_bytes(b"\x89PNG\r\n\x1a\n" + os.urandom(1_200))
+    monkeypatch.setattr(server, "DESKTOP_CAPTURE_DIR", capture_dir)
+
+    async def login_labels(_app=None):
+        return "sign in"
+
+    async def fake_harness(script, _timeout):
+        return 0, json.dumps({"path": str(capture), "bright_frac": 0.4, "samples": 64})
+
+    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", login_labels)
+    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    response = client.post("/api/desktop/act", json={"action": "screenshot", "app": "Safari"})
+    assert response.status_code == 200
+    assert response.json()["image"].startswith("data:image/png;base64,")
+
+
 @pytest.mark.asyncio
 async def test_denied_screen_permission_never_invokes_capture(monkeypatch):
     import sys
@@ -283,6 +304,7 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
         "screen, app, window, layout, image, chart, visual appearance, or front-page requests",
         "An explicit 'take a screenshot'",
         "Use inspect_current_context only when the request is genuinely ambiguous",
+        "calls screenshot directly",
     )
     for example in routing_examples:
         assert example in swift
@@ -295,7 +317,7 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
     ladder = (
         "1. web_fetch when you have or can search for a public URL",
         "2. read_article for the live page in the user's Chrome",
-        "3. control_screen with action screenshot as the last resort",
+        "Do not click, scroll, or drive the browser",
         "Descend automatically",
         "never end a turn telling the user to reload the extension while a rung below is still untried",
     )
@@ -305,8 +327,8 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
     # The chain has to be audible, and read-only once it reaches the screen.
     assert "one more every time you change method" in swift
     assert "Never run two tools in a row in silence" in swift
-    assert "action screenshot and action scroll only" in swift
-    assert "not something you dismiss for them" in swift
+    assert "Use screenshot only for visual intent" in swift
+    assert '"name": "screenshot"' in swift
     assert '"name": "inspect_current_context"' in swift
     assert "Do not call it for an explicit " in swift
     assert "X-post text request; call read_article directly" in swift
