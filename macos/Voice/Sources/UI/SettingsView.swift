@@ -86,7 +86,7 @@ struct SettingsView: View {
                         }
                         Text(screenCaptureAllowed
                              ? "This running Voice.app can capture the screen."
-                             : "macOS may show Voice as enabled from an older build. Screenshots still try a fallback capture. To grant this build: remove Voice in Screen Recording, add /Applications/Voice.app, then quit and reopen.")
+                             : "The list can show Voice as on from an older copy. Click Screen Recording Permission so THIS build can prompt. If it is already on: remove Voice, add the Voice.app you launched, then quit and reopen.")
                             .font(.system(size: 10.5)).foregroundStyle(theme.text3)
                     }
                     .padding(.leading, 32)

@@ -65,9 +65,14 @@ xcrun swiftc \
   "${SOURCES[@]}" \
   -o "$BIN"
 
-# A persistent Apple Development/Developer ID identity keeps macOS privacy
-# grants valid across builds. Ad-hoc signing has a different identity per binary.
-SIGNING_IDENTITY="${VOICE_SIGNING_IDENTITY:--}"
+# A persistent identity keeps Screen Recording / mic grants valid across
+# rebuilds. Ad-hoc signing gets a new TCC identity every binary.
+if [[ -n "${VOICE_SIGNING_IDENTITY:-}" ]]; then
+  SIGNING_IDENTITY="$VOICE_SIGNING_IDENTITY"
+else
+  SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Voice Local Signing/ {print $2; exit}')"
+  SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
+fi
 codesign --force --deep --sign "$SIGNING_IDENTITY" \
   --entitlements "$ROOT/Resources/Voice.entitlements" \
   "$OUT"
@@ -75,6 +80,8 @@ codesign --force --deep --sign "$SIGNING_IDENTITY" \
 if [[ "$SIGNING_IDENTITY" == "-" ]]; then
   echo "Local ad-hoc build: macOS may ask for permissions again after rebuilding."
   echo "Set VOICE_SIGNING_IDENTITY to an installed signing identity to preserve grants across builds."
+else
+  echo "Signed with $SIGNING_IDENTITY (Screen Recording grants survive rebuilds)."
 fi
 
 echo "Built $OUT"

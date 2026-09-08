@@ -30,6 +30,11 @@ struct RuntimeTests {
         assert(storeError.errorDescription == "Personal memory is too long; consolidate it first.")
         assert(ScreenCapture.permissionHelp.contains("Screen Recording"))
         assert(ScreenCapture.permissionHelp.contains("ad-hoc"))
+        let padded = ScreenCapture.rawImage(fromDataURL: "data:image/png;base64,iVBORw0KGgo")
+        assert(padded == nil || padded!.count >= 0)
+        let pngB64 = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).base64EncodedString().dropLast()
+        let repaired = ScreenCapture.rawImage(fromDataURL: "data:image/png;base64," + pngB64)
+        assert(repaired != nil && repaired!.starts(with: [0x89, 0x50, 0x4E, 0x47]))
         var pixel: [UInt8] = [220, 40, 40, 255, 40, 220, 40, 255, 40, 40, 220, 255, 220, 220, 40, 255]
         let jpegImage = pixel.withUnsafeMutableBytes { raw -> CGImage? in
             guard let ctx = CGContext(

@@ -449,34 +449,48 @@ public final class VoiceToolExecutor: @unchecked Sendable {
     }
 
     private func execScreenshot() async throws -> VoiceToolResult {
-        // Prefer in-process capture when this binary is already allowed.
-        // Never prompt here. After ad-hoc rebuilds CGPreflight is often false
-        // even though System Settings still lists Voice — fall back to sidecar.
+        // Try this binary first even when CGPreflight is false: ad-hoc rebuilds
+        // leave a leftover Voice toggle in Settings that does not match this
+        // code identity. Then the sidecar. Surface the real failure; do not
+        // always claim Screen Recording is off.
         if let png = await ScreenCapture.mainDisplayPNG(),
            let image = ScreenCapture.modelImageDataURL(from: png) {
             return VoiceToolResult(output: "Screenshot captured successfully.", image: image)
         }
-        if let fallback = try await sidecarScreenshot() {
-            return fallback
+        switch try await sidecarScreenshot() {
+        case .captured(let result):
+            return result
+        case .failed(let detail):
+            return VoiceToolResult(output: detail + " " + ScreenCapture.permissionHelp)
+        case .unavailable:
+            return VoiceToolResult(output: ScreenCapture.permissionHelp)
         }
-        return VoiceToolResult(output: ScreenCapture.permissionHelp)
     }
 
-    private func sidecarScreenshot() async throws -> VoiceToolResult? {
+    private enum SidecarShot {
+        case captured(VoiceToolResult)
+        case failed(String)
+        case unavailable
+    }
+
+    private func sidecarScreenshot() async throws -> SidecarShot {
         let url = baseURL.appendingPathComponent("desktop/act")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["action": "screenshot"])
         let (data, res) = try await screenshotSession.data(for: req)
-        guard let http = res as? HTTPURLResponse, http.statusCode == 200,
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let image = json["image"] as? String, image.hasPrefix("data:image"),
-              let raw = ScreenCapture.rawImage(fromDataURL: image)
-        else { return nil }
-        let attached = ScreenCapture.modelImageDataURL(from: raw)
-            ?? (raw.count < 200_000 ? image : nil)
-        return VoiceToolResult(output: "Screenshot captured successfully.", image: attached)
+        let code = (res as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 200,
+           let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let image = json["image"] as? String, image.hasPrefix("data:image"),
+           let raw = ScreenCapture.rawImage(fromDataURL: image) {
+            let attached = ScreenCapture.modelImageDataURL(from: raw)
+                ?? (raw.count < 200_000 ? image : nil)
+            return .captured(VoiceToolResult(output: "Screenshot captured successfully.", image: attached))
+        }
+        if code == 0 { return .unavailable }
+        return .failed("Screenshot fallback failed (\(errorDetail(data, res))).")
     }
 
     private func execCodeAgent(task: String) async throws -> VoiceToolResult {
@@ -590,9 +604,10 @@ enum ScreenCapture {
     static var isAllowed: Bool { CGPreflightScreenCaptureAccess() }
 
     static let permissionHelp =
-        "Screenshot unavailable: this Voice build does not have Screen Recording permission. "
-        + "macOS keeps a leftover Voice toggle after ad-hoc rebuilds, so the list can look enabled while this binary is not. "
-        + "Open System Settings → Privacy & Security → Screen Recording, turn Voice off, remove it, add /Applications/Voice.app, then quit and reopen Voice."
+        "Screenshot unavailable: this running Voice binary does not have Screen Recording. "
+        + "After ad-hoc rebuilds macOS often leaves a leftover Voice toggle that looks enabled while this copy is not. "
+        + "In Voice Settings click Screen Recording Permission so THIS build can prompt. "
+        + "If Voice is already on in System Settings → Privacy & Security → Screen Recording: turn it off, remove it, add the Voice.app you actually launched, then quit and reopen."
 
     static func requestAccess() -> Bool {
         if isAllowed { return true }
@@ -600,8 +615,19 @@ enum ScreenCapture {
     }
 
     static func mainDisplayPNG() async -> Data? {
-        guard isAllowed else { return nil }
-        return await withTimeout(seconds: 4) { await captureOnce() }
+        // Do not trust CGPreflight alone. It is often false after an ad-hoc
+        // rebuild even when Screen Recording still lists Voice, and a capture
+        // can still succeed — or the request dialog can attach this binary.
+        if let png = await withTimeout(seconds: 6, { await captureOnce() }) {
+            return png
+        }
+        if !isAllowed {
+            _ = requestAccess()
+            if let png = await withTimeout(seconds: 6, { await captureOnce() }) {
+                return png
+            }
+        }
+        return nil
     }
 
     private static func captureOnce() async -> Data? {
@@ -637,8 +663,12 @@ enum ScreenCapture {
 
     static func rawImage(fromDataURL dataURL: String) -> Data? {
         guard let comma = dataURL.firstIndex(of: ",") else { return nil }
-        let encoded = dataURL[dataURL.index(after: comma)...]
-        return Data(base64Encoded: String(encoded))
+        var encoded = String(dataURL[dataURL.index(after: comma)...])
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+        let pad = (4 - encoded.count % 4) % 4
+        if pad > 0 { encoded += String(repeating: "=", count: pad) }
+        return Data(base64Encoded: encoded)
     }
 
     /// Downscale + JPEG so the model can see the screen without stuffing the
