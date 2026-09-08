@@ -4,7 +4,7 @@ import SwiftUI
 struct OrbView: View {
     let state: SessionState
     let isMuted: Bool
-    let inputLevel: Float
+    @ObservedObject var levels: AudioLevels
     let onTap: () -> Void
 
     @Environment(\.theme) private var theme
@@ -23,7 +23,8 @@ struct OrbView: View {
             }
             .frame(width: diameter, height: diameter)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle(pressedScale: 0.96))
+        .contentShape(Circle())
         .accessibilityLabel(accessibilityLabel)
         .help(helpText)
     }
@@ -64,8 +65,8 @@ struct OrbView: View {
         case .listening:
             Circle()
                 .strokeBorder(theme.orbRing, lineWidth: 2)
-                .padding(-ringSpread(for: inputLevel))
-                .animation(.linear(duration: 0.09), value: inputLevel)
+                .padding(-ringSpread(for: levels.input))
+                .animation(.linear(duration: 0.09), value: levels.input)
         case .agentSpeaking:
             if reduceMotion {
                 Circle().strokeBorder(theme.orbRing, lineWidth: 6)

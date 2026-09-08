@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from collections.abc import Callable
 from queue import Empty, Queue
 from threading import Event
 from time import perf_counter
@@ -37,17 +38,36 @@ class BaseHandler(Generic[InT, OutT]):
         queue_in: Queue[InT | PipelineControlMessage | bytes],
         queue_out: Queue[OutT | PipelineControlMessage | bytes],
         setup_args: tuple[Any, ...] = (),
-        setup_kwargs: dict[str, Any] = {},
+        setup_kwargs: dict[str, Any] | None = None,
+        defer_setup: bool = False,
     ) -> None:
         self.stop_event = stop_event
         self.queue_in = queue_in
         self.queue_out = queue_out
         self.pipeline_index: int | None = None
-        self.setup(*setup_args, **setup_kwargs)
+        self._setup_args = setup_args
+        self._setup_kwargs = setup_kwargs or {}
+        self._setup_done = False
+        self.ready_callback: Callable[[bool], None] | None = None
         # Only the most recent duration is ever read (``last_time``), but this
         # grows once per emitted output — tens of times a second for TTS blocks
         # — so it is bounded rather than kept for the life of the process.
         self._times: deque[float] = deque(maxlen=64)
+        if not defer_setup:
+            self.ensure_setup()
+
+    def ensure_setup(self) -> None:
+        """Load models on the handler thread so the HTTP server can bind first."""
+        if self._setup_done:
+            return
+        self.setup(*self._setup_args, **self._setup_kwargs)
+        self._setup_done = True
+
+    def _notify_ready(self, ok: bool) -> None:
+        callback = self.ready_callback
+        self.ready_callback = None
+        if callback is not None:
+            callback(ok)
 
     def setup(self, *arg: Any, **kwargs: Any) -> None:
         pass
@@ -89,6 +109,15 @@ class BaseHandler(Generic[InT, OutT]):
         if self.pipeline_index is not None:
             pipeline_log_ctx.set(self.pipeline_index)
         logger.debug(f"{self.__class__.__name__}: Handler thread started")
+        try:
+            self.ensure_setup()
+        except Exception:
+            logger.exception("%s: setup failed", self.__class__.__name__)
+            self._notify_ready(False)
+            self.cleanup()
+            self.queue_out.put(PIPELINE_END)
+            return
+        self._notify_ready(True)
         while not self.stop_event.is_set():
             try:
                 # Use timeout to check stop_event periodically

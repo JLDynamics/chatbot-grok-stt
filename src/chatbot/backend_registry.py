@@ -140,6 +140,7 @@ def _factory(
             queue_out=context.queue_out,
             setup_args=(context.should_listen,) if should_listen else (),
             setup_kwargs=setup_kwargs,
+            defer_setup=True,
         )
         handler.speculative_turns = context.speculative_turns
         return handler
@@ -157,6 +158,7 @@ def _create_parakeet(context: HandlerContext, config: Mapping[str, Any]) -> Any:
             "enable_live_transcription": context.enable_live_transcription,
             "live_transcription_update_interval": context.live_transcription_update_interval,
         },
+        defer_setup=True,
     )
     handler.speculative_turns = context.speculative_turns
     return handler

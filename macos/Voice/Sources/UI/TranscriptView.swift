@@ -44,7 +44,7 @@ struct TranscriptView: View {
                     .background(theme.accentTint)
                     .clipShape(Capsule())
                     .padding(.bottom, 12)
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableButtonStyle())
             }
         }
         .accessibilityLabel("Conversation transcript")

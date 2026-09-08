@@ -68,7 +68,8 @@ class BaseTTSHandler(BaseHandler[TTSIn, TTSOut]):
         try:
             from mlx_audio.tts.utils import load_model
 
-            return load_model(self.model_name)
+            with MLXLockContext(handler_name=f"{self.backend_name}Load"):
+                return load_model(self.model_name)
         except ImportError as exc:
             raise ImportError(missing_hint) from exc
 

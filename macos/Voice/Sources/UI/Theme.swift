@@ -106,6 +106,17 @@ extension EnvironmentValues {
     }
 }
 
+/// Instant press feedback — no animation delay so controls feel like they click.
+struct PressableButtonStyle: ButtonStyle {
+    var pressedScale: CGFloat = 0.94
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
+            .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+}
+
 // The orb's fill. Diameter stays fixed; the ring around it carries the state.
 struct OrbGradient: View {
     let stops: [Color]

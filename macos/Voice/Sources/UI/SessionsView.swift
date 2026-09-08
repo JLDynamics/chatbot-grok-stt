@@ -36,7 +36,7 @@ struct SessionsView: View {
                     .background(theme.accentTint)
                     .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableButtonStyle())
                 .disabled(working)
                 .accessibilityLabel("New conversation")
 
@@ -46,7 +46,8 @@ struct SessionsView: View {
                         .foregroundStyle(theme.text3)
                         .frame(width: 24, height: 24)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableButtonStyle())
+                .contentShape(Rectangle())
                 .accessibilityLabel("Close conversations")
             }
 
@@ -120,7 +121,7 @@ struct SessionsView: View {
                 .background(isActive ? theme.accentTint : theme.surface2)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .disabled(working)
             .accessibilityLabel("Open \(row.title)")
 
@@ -130,7 +131,7 @@ struct SessionsView: View {
                     .foregroundStyle(theme.danger)
                     .frame(width: 26, height: 26)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .disabled(working)
             .accessibilityLabel("Delete \(row.title)")
             .help("Delete conversation")

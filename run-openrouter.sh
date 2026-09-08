@@ -3,6 +3,11 @@
 # Parakeet MLX -> Responses API -> VibeVoice (Microsoft) TTS.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Prefer this checkout's sources so a shared .venv (git worktree) still runs
+# the code you just edited.
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+
 CHATBOT_ENV="$HOME/.config/chatbot/env"
 if [[ -f "$CHATBOT_ENV" ]]; then
   saved_openrouter="${OPENROUTER_API_KEY:-}"
@@ -29,8 +34,8 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   exit 1
 fi
 
-if [[ -x ".venv/bin/chatbot" ]]; then
-  CHATBOT_BIN=".venv/bin/chatbot"
+if [[ -x "$ROOT/.venv/bin/chatbot" ]]; then
+  CHATBOT_BIN="$ROOT/.venv/bin/chatbot"
 elif command -v chatbot >/dev/null 2>&1; then
   CHATBOT_BIN="chatbot"
 else

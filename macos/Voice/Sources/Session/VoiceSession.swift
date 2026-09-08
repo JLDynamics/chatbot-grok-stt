@@ -9,6 +9,19 @@ enum SessionState: Equatable {
     case failed(String)
 }
 
+/// Mic/speaker meters update ~30 Hz. Keep them off SessionController so the
+/// rest of the panel (buttons, settings, transcript) does not rebuild every tick.
+@MainActor
+final class AudioLevels: ObservableObject {
+    @Published var input: Float = 0
+    @Published var output: Float = 0
+
+    func reset() {
+        input = 0
+        output = 0
+    }
+}
+
 struct Turn: Identifiable, Equatable {
     enum Speaker { case you, agent }
 
@@ -53,11 +66,14 @@ protocol VoiceBackend: AnyObject {
     func setHistory(_ messages: [(role: String, text: String, name: String?)])
     /// Re-read the stored memory profile into live instructions.
     func refreshMemory() async
+    /// Push the current Settings tool toggles into a live session.
+    func refreshTools()
 }
 
 extension VoiceBackend {
     func setHistory(_ messages: [(role: String, text: String, name: String?)]) {}
     func refreshMemory() async {}
+    func refreshTools() {}
 }
 
 /// What the interface observes. Owns the transcript and the visible state; the
@@ -69,8 +85,7 @@ final class SessionController: ObservableObject {
     @Published private(set) var turns: [Turn] = []
     @Published private(set) var interim: String?
     @Published private(set) var activeTool: String?
-    @Published private(set) var inputLevel: Float = 0
-    @Published private(set) var outputLevel: Float = 0
+    let levels = AudioLevels()
     @Published private(set) var isMuted = false
     @Published var showSettings = false
 
@@ -129,8 +144,8 @@ final class SessionController: ObservableObject {
             self.state = state
             if case .failed(let message) = state { self.errorText = message }
         }
-        backend.onInputLevel = { [weak self] level in self?.inputLevel = level }
-        backend.onOutputLevel = { [weak self] level in self?.outputLevel = level }
+        backend.onInputLevel = { [weak self] level in self?.levels.input = level }
+        backend.onOutputLevel = { [weak self] level in self?.levels.output = level }
 
         backend.onAudioStatus = { [weak self] note in self?.audioStatus = note }
         backend.onToolsCancelled = { [weak self] in self?.activeTool = nil }
@@ -220,17 +235,21 @@ final class SessionController: ObservableObject {
             return
         }
         guard !isTransitioning else { return }
-        Task {
-            isLive ? await end() : await begin()
+        if isLive {
+            Task { await end() }
+            return
         }
+        errorText = nil
+        state = .connecting
+        Task { await begin() }
     }
 
     func begin() async {
         guard !isTransitioning else { return }
         userTurnOpen = false
         isTransitioning = true
-        defer { isTransitioning = false }
         errorText = nil
+        if state != .connecting { state = .connecting }
         beginTask?.cancel()
         // Hand the saved transcript to the backend so the live session opens
         // with the saved context.
@@ -249,12 +268,9 @@ final class SessionController: ObservableObject {
         beginTask = task
         await task.value
         beginTask = nil
-        if !task.isCancelled, errorText == nil {
-            await loadMemory()
-            await refreshSessions()
-            await refreshConfig()
-        }
-        if task.isCancelled {
+        let cancelled = task.isCancelled
+        isTransitioning = false
+        if cancelled {
             // Tap-to-cancel won during connecting but backend.start() still
             // ran to completion underneath: shut it back down so we never
             // leave a live mic/WS behind an idle UI.
@@ -266,9 +282,14 @@ final class SessionController: ObservableObject {
                 isMuted = false
                 backend.setMuted(false)
             }
-            inputLevel = 0
-            outputLevel = 0
+            levels.reset()
             state = .idle
+            return
+        }
+        if errorText == nil {
+            await loadMemory()
+            await refreshSessions()
+            await refreshConfig()
         }
     }
 
@@ -290,8 +311,7 @@ final class SessionController: ObservableObject {
                 isMuted = false
                 backend.setMuted(false)
             }
-            inputLevel = 0
-            outputLevel = 0
+            levels.reset()
             state = .idle
             await flushSave()
             return
@@ -306,8 +326,7 @@ final class SessionController: ObservableObject {
             isMuted = false
             backend.setMuted(false)
         }
-        inputLevel = 0
-        outputLevel = 0
+        levels.reset()
         state = .idle
         activeTool = nil
         await flushSave()
@@ -317,7 +336,11 @@ final class SessionController: ObservableObject {
         guard isLive else { return }
         isMuted.toggle()
         backend.setMuted(isMuted)
-        if isMuted { inputLevel = 0 }
+        if isMuted { levels.input = 0 }
+    }
+
+    func applyToolSettings() {
+        backend.refreshTools()
     }
 
     /// Only wired up if Stop is a barge-in rather than an end — see SPEC.md §7.

@@ -414,9 +414,27 @@ def create_app(
         unit.session = SessionState(transport=transport)
         return unit
 
+    def _models_ready() -> bool:
+        return unit.ready_gate.ready
+
+    @app.get("/health")
+    def health() -> dict[str, Any]:
+        ready = _models_ready()
+        return {"status": "ok" if ready else "starting", "ready": ready}
+
     @app.websocket("/v1/realtime")
     async def realtime_endpoint(ws: WebSocket) -> None:
         await ws.accept()
+        if not _models_ready():
+            await send_ws_event(
+                ws,
+                build_error_event(
+                    "The voice models are still loading. Try again in a moment.",
+                    error_type="server_starting",
+                ),
+            )
+            await ws.close(code=1013, reason="Models still loading")
+            return
 
         transport = WebSocketTransport(ws)
         unit = _claim_unit(transport)

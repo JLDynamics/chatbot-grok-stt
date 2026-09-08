@@ -8,10 +8,12 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
 from queue import Queue
 from threading import Event
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
+
+if TYPE_CHECKING:
+    import torch
 
 import numpy as np
-import torch
 
 from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
 from chatbot.baseHandler import BaseHandler
@@ -21,7 +23,6 @@ from chatbot.pipeline.messages import VADAudio
 from chatbot.pipeline.queue_types import TextEventItem
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 from chatbot.utils.utils import int2float
-from chatbot.VAD.vad_iterator import VADIterator
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,12 @@ class _PendingShortSegment:
 # held for stitching, so sub-threshold bursts cannot sum past min_speech_ms
 # and fire a false barge-in.
 _SHORT_SEGMENT_MIN_FRAGMENT_MS = 100
+# min_speech_ms (600 in the Mac launcher) blocks echo barge-in. Applying that
+# same bar to an idle greeting dropped real turns: Silero reported ~550ms of
+# active speech inside a padded ~2.4s segment, then the merge window expired
+# and the utterance was discarded. Idle turns use this lower floor; barge-in
+# still requires min_speech_ms before it cancels the assistant.
+_IDLE_TURN_MIN_SPEECH_MS = 280
 
 
 class VADHandler(BaseHandler[VADIn, VADOut]):
@@ -74,8 +81,10 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         smart_turn_max_wait_ms: int = 2000,
         smart_turn_incomplete_delay_ms: int = 600,
         smart_turn_cpu_count: int = 1,
+        response_playing: Event | None = None,
     ) -> None:
         self.should_listen = should_listen
+        self.response_playing = response_playing
         self.sample_rate = sample_rate
         self.min_silence_ms = min_silence_ms
         self.min_speech_ms = min_speech_ms
@@ -118,6 +127,10 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             unanswered_reopen_ms,
             self.smart_turn_max_wait_ms if smart_turn else 0,
         )
+        import torch
+
+        from chatbot.VAD.vad_iterator import VADIterator
+
         self.model, _ = torch.hub.load(
             "snakers4/silero-vad:master",
             "silero_vad",
@@ -241,7 +254,13 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         """Duration hysteresis for speech that continues a reopenable turn."""
         if self._pending_reopen_candidate is not None or self._should_reopen_current_turn(start_ms):
             return self.min_speech_continuation_ms
-        return self.min_speech_ms
+        playing = getattr(self, "response_playing", None)
+        # Tests that omit response_playing keep the historical min_speech_ms bar.
+        # Production always passes the Event: idle greetings use a lower floor;
+        # echo while the assistant is talking still needs min_speech_ms.
+        if playing is None or playing.is_set():
+            return self.min_speech_ms
+        return min(int(self.min_speech_ms), _IDLE_TURN_MIN_SPEECH_MS)
 
     def _should_reopen_current_turn(self, audio_start_ms: int) -> bool:
         if self._current_turn_id is None or self._current_turn_revision is None or self._last_final_audio_ms is None:
@@ -564,6 +583,8 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self._total_samples += len(audio_int16)
         audio_float32 = int2float(audio_int16)
 
+        import torch
+
         vad_output = self.iterator(torch.from_numpy(audio_float32))
 
         # Deferred speech_started: only emit once active VAD speech reaches the valid speech threshold.
@@ -639,6 +660,8 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
 
             # Yield accumulated audio periodically while speaking
             if (current_time - self.last_process_time) >= progressive_pause:
+                import torch
+
                 array = torch.cat(self.iterator.speech_buffer()).cpu().numpy()
                 duration_ms = len(array) / self.sample_rate * 1000
                 active_speech_duration_ms = self._current_active_speech_duration_ms()
@@ -680,6 +703,8 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                 self._speech_started_emitted = False
                 self._discard_expired_pending_short_segment()
                 return
+
+            import torch
 
             array = torch.cat(vad_output).cpu().numpy()
             end_ms = self._audio_ms

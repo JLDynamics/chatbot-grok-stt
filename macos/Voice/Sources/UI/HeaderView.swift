@@ -15,7 +15,7 @@ enum ThemePreference: String, CaseIterable, Identifiable {
 struct HeaderView: View {
     @Binding var alwaysOnTop: Bool
     @Binding var themePreference: ThemePreference
-  var errorText: String?
+    var errorText: String?
     var onPinToggle: () -> Void
     var onSettingsToggle: () -> Void
     var onHistoryToggle: () -> Void
@@ -42,7 +42,8 @@ struct HeaderView: View {
                 .background(alwaysOnTop ? theme.accentTint : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
+            .contentShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
             .accessibilityLabel("Always on top")
             .accessibilityAddTraits(alwaysOnTop ? .isSelected : [])
 
@@ -87,7 +88,7 @@ struct HeaderView: View {
                 .padding(.vertical, 4)
                 .background(themePreference == pref ? theme.text : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
-                .buttonStyle(.plain)
+                .buttonStyle(PressableButtonStyle())
                 .accessibilityAddTraits(themePreference == pref ? .isSelected : [])
             }
         }
@@ -105,7 +106,8 @@ struct HeaderView: View {
                 .foregroundStyle(theme.text3)
                 .frame(width: 28, height: 28)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
+        .contentShape(Rectangle())
         .accessibilityLabel("Conversations")
         .help("Saved conversations")
     }
@@ -117,7 +119,8 @@ struct HeaderView: View {
                 .foregroundStyle(theme.text3)
                 .frame(width: 28, height: 28)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
+        .contentShape(Rectangle())
         .accessibilityLabel("Settings")
         .help("Tools & Settings")
     }
@@ -129,7 +132,8 @@ struct HeaderView: View {
                 .foregroundStyle(theme.text3)
                 .frame(width: 28, height: 28)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
+        .contentShape(Rectangle())
         .accessibilityLabel("Close")
         .help("Hide panel")
     }

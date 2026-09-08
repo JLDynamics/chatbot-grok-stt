@@ -10,7 +10,6 @@ from types import FrameType
 from typing import Any, Literal, Optional, Sequence
 
 from rich.console import Console
-from transformers import HfArgumentParser
 
 from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
 from chatbot.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
@@ -41,10 +40,9 @@ from chatbot.pipeline.queue_types import (
     TTSInItem,
     VADOutItem,
 )
+from chatbot.pipeline.ready import PipelineReady
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
-from chatbot.STT.transcription_notifier import TranscriptionNotifier
 from chatbot.utils.thread_manager import ThreadManager
-from chatbot.VAD.vad_handler import VADHandler
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -67,6 +65,8 @@ def parse_arguments(
 ) -> ParsedArguments:
     # transformers' DataClassType protocol does not recognise ordinary
     # @dataclass classes under mypy, even though they are the documented input.
+    from transformers import HfArgumentParser
+
     argument_types: Any = (
         ModuleArguments,
         RealtimeServerArguments,
@@ -126,8 +126,11 @@ def _build_handlers(
     tts_backend: BackendSelection,
     speculative_turns: SpeculativeTurnTracker,
     cancel_scope: CancelScope,
+    response_playing: Event,
 ) -> list[Any]:
     from chatbot.LLM.lm_output_processor import LMOutputProcessor
+    from chatbot.STT.transcription_notifier import TranscriptionNotifier
+    from chatbot.VAD.vad_handler import VADHandler
 
     vad = VADHandler(
         stop_event,
@@ -138,7 +141,9 @@ def _build_handlers(
             **{field.name: deepcopy(getattr(vad_handler_kwargs, field.name)) for field in fields(vad_handler_kwargs)},
             "text_output_queue": text_output_queue,
             "speculative_turns": speculative_turns,
+            "response_playing": response_playing,
         },
+        defer_setup=True,
     )
 
     def context(queue_in: Queue[Any], queue_out: Queue[Any]) -> HandlerContext:
@@ -162,6 +167,7 @@ def _build_handlers(
         queue_in=stt_output_queue,
         queue_out=text_prompt_queue,
         setup_kwargs={"text_output_queue": text_output_queue, "should_listen": should_listen},
+        defer_setup=True,
     )
     llm = create_backend_handler(llm_backend, context(text_prompt_queue, lm_response_queue))
     processor = LMOutputProcessor(
@@ -169,6 +175,7 @@ def _build_handlers(
         queue_in=lm_response_queue,
         queue_out=lm_processed_queue,
         setup_kwargs={"text_output_queue": text_output_queue, "speculative_turns": speculative_turns},
+        defer_setup=True,
     )
     tts = create_backend_handler(tts_backend, context(lm_processed_queue, send_audio_chunks_queue))
     return [vad, stt, notifier, llm, processor, tts]
@@ -232,9 +239,12 @@ def _build_pipeline_unit(
         tts_backend=tts_backend.copy_for_pipeline(),
         speculative_turns=speculative_turns,
         cancel_scope=cancel_scope,
+        response_playing=response_playing,
     )
+    ready_gate = PipelineReady(len(handlers))
     for handler in handlers:
         handler.pipeline_index = 0
+        handler.ready_callback = ready_gate.mark
     return PipelineUnit(
         index=0,
         service=service,
@@ -246,6 +256,7 @@ def _build_pipeline_unit(
         text_output_queue=text_output,
         text_prompt_queue=text_prompt,
         handlers=handlers,
+        ready_gate=ready_gate,
     )
 
 
@@ -267,7 +278,8 @@ def build_pipeline(args: ParsedArguments, stop_event: Event, *, host: str | None
         host=host or args.realtime_server_kwargs.host,
         port=args.realtime_server_kwargs.port,
     )
-    return ThreadManager([*unit.handlers, server])
+    # Bind HTTP first so /health is reachable while models load on handler threads.
+    return ThreadManager([server, *unit.handlers])
 
 
 def run_pipeline_command(command: Literal["serve"], argv: Sequence[str]) -> None:

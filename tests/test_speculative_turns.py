@@ -821,6 +821,52 @@ def test_vad_does_not_hold_sub_floor_fragments():
     assert handler.text_output_queue.empty()
 
 
+def test_vad_idle_greeting_below_barge_in_bar_is_still_a_turn():
+    # Live logs: ~544ms Silero-active inside a padded ~2.4s segment, discarded
+    # because min_speech_ms=600. That is a real idle "hello", not barge-in echo.
+    active_samples = 17 * 512  # 544ms at 16kHz
+    handler = _vad_handler_for_iterator(
+        _StaticVADIterator(
+            triggered=False,
+            vad_output=[torch.zeros(512) for _ in range(75)],
+            last_utterance_active_speech_samples=active_samples,
+        )
+    )
+    handler.min_speech_ms = 600
+    handler.min_speech_continuation_ms = 192
+    handler.short_segment_merge_ms = 400
+    handler.response_playing = Event()
+
+    outputs = list(handler.process(_audio_bytes()))
+
+    assert len(outputs) == 1
+    started = handler.text_output_queue.get_nowait()
+    assert isinstance(started, SpeechStartedEvent)
+    assert handler._pending_short_segment is None
+
+
+def test_vad_keeps_barge_in_bar_while_assistant_is_talking():
+    active_samples = 17 * 512
+    handler = _vad_handler_for_iterator(
+        _StaticVADIterator(
+            triggered=False,
+            vad_output=[torch.zeros(512) for _ in range(75)],
+            last_utterance_active_speech_samples=active_samples,
+        )
+    )
+    handler.min_speech_ms = 600
+    handler.min_speech_continuation_ms = 192
+    handler.short_segment_merge_ms = 400
+    handler.response_playing = Event()
+    handler.response_playing.set()
+
+    outputs = list(handler.process(_audio_bytes()))
+
+    assert outputs == []
+    assert handler._pending_short_segment is not None
+    assert handler.text_output_queue.empty()
+
+
 def test_vad_stitches_adjacent_short_segments_before_discarding():
     first_chunks = [torch.zeros(512) for _ in range(7)]
     second_chunks = [torch.zeros(512) for _ in range(8)]

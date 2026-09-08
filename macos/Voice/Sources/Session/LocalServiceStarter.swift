@@ -44,7 +44,7 @@ final class LocalServiceStarter {
 
     private func reachable(_ url: URL, expectedKey: String) async -> Bool {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 2
+        request.timeoutInterval = 0.8
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200,
@@ -57,15 +57,39 @@ final class LocalServiceStarter {
         await reachable(sidecar.appendingPathComponent("config"), expectedKey: "chatbotUrl")
     }
 
-    private func ready(voice: URL, sidecar: URL) async -> Bool {
+    /// True when models are loaded. Falls back to `/openapi.json` only when
+    /// `/health` is missing (older servers that bound after load).
+    private func voiceReady(_ voice: URL) async -> Bool {
         var address = URLComponents(url: voice, resolvingAgainstBaseURL: false)!
         address.scheme = "http"
-        address.path = "/openapi.json"
         address.query = nil
-        let healthURL = address.url!
-        async let voiceReady = reachable(healthURL, expectedKey: "openapi")
+        address.path = "/health"
+        guard let healthURL = address.url else { return false }
+        var request = URLRequest(url: healthURL)
+        request.timeoutInterval = 0.8
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 200,
+               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               json["ready"] != nil {
+                return json["ready"] as? Bool == true
+            }
+            if code == 404 {
+                address.path = "/openapi.json"
+                guard let openapi = address.url else { return false }
+                return await reachable(openapi, expectedKey: "openapi")
+            }
+            return false
+        } catch {
+            return false
+        }
+    }
+
+    private func ready(voice: URL, sidecar: URL) async -> Bool {
+        async let voiceIsReady = voiceReady(voice)
         async let toolsReady = sidecarReady(sidecar)
-        let readiness = await (voiceReady, toolsReady)
+        let readiness = await (voiceIsReady, toolsReady)
         return readiness.0 && readiness.1
     }
 
@@ -150,9 +174,9 @@ final class LocalServiceStarter {
     private func waitUntilReady(needVoice: Bool) async throws {
         let sidecar = LocalService.sidecarAPI
         let voice = LocalService.voiceWebSocket
-        let attempts = needVoice ? 180 : 45
+        let deadline = Date().addingTimeInterval(needVoice ? 180 : 45)
         let child = needVoice ? launcher : (launcher ?? sidecarLauncher)
-        for _ in 0..<attempts {
+        while Date() < deadline {
             try Task.checkCancellation()
             if needVoice {
                 if await ready(voice: voice, sidecar: sidecar) { return }
@@ -167,7 +191,7 @@ final class LocalServiceStarter {
                 }
                 throw StartupError("Local service startup failed. Check /tmp/voice-service-startup.log and /tmp/chatbot-server.log.")
             }
-            try await Task.sleep(nanoseconds: 1_000_000_000)
+            try await Task.sleep(nanoseconds: 200_000_000)
         }
         throw StartupError(needVoice
             ? "The local services are still starting. Check /tmp/chatbot-server.log, then try again."

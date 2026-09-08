@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from chatbot.api.openai_realtime.service import RealtimeService
 from chatbot.api.openai_realtime.transports import SessionTransport
 from chatbot.pipeline.cancel_scope import CancelScope
+from chatbot.pipeline.ready import PipelineReady
 
 
 class SessionState(BaseModel):
@@ -62,5 +63,6 @@ class PipelineUnit(BaseModel):
     text_output_queue: Queue
     text_prompt_queue: Queue
     handlers: list[Any]
+    ready_gate: PipelineReady = Field(default_factory=PipelineReady)
 
     session: Optional[SessionState] = None

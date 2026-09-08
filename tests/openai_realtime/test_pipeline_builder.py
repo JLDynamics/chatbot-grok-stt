@@ -24,8 +24,8 @@ def test_serve_builds_one_browser_pipeline(monkeypatch):
 
     manager = build_pipeline(args, stop_event)
 
-    assert manager.handlers[0] is handler
-    server = manager.handlers[1]
+    server = manager.handlers[0]
     assert isinstance(server, RealtimeServer)
     assert server.unit is unit
     assert server.stop_event is stop_event
+    assert manager.handlers[1] is handler

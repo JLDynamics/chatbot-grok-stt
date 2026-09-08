@@ -116,3 +116,23 @@ def test_normal_start_refuses_an_occupied_port(launcher):
     assert start().wait(timeout=5) == 1
     assert (directory / "18766").read_text() == "external-service"
     assert not (directory / "17860").exists()
+
+
+def test_sidecar_starts_without_waiting_for_voice(launcher):
+    directory, start = launcher
+    (directory / "run-openrouter.sh").write_text(
+        """#!/bin/bash
+marker="$TEST_STATE/$PORT"
+sleep 1
+echo $$ > "$marker"
+trap 'rm -f "$marker"; exit 0' TERM INT
+while :; do sleep 0.1; done
+"""
+    )
+    (directory / "run-openrouter.sh").chmod(0o755)
+    process = start("--reuse-running")
+    wait_for(lambda: (directory / "17860").exists())
+    assert not (directory / "18766").exists()
+    wait_for(lambda: (directory / "18766").exists())
+    process.terminate()
+    assert process.wait(timeout=5) == 143

@@ -68,23 +68,13 @@ if [[ "$sidecar_only" == false ]]; then
     PORT="$PORT" ./run-openrouter.sh >"$SERVER_LOG" 2>&1 &
     server_pid=$!
   fi
-  for _ in $(seq 1 120); do
-    [[ -n "$(listener "$PORT")" ]] && break
-    if [[ -n "$server_pid" ]] && ! kill -0 "$server_pid" 2>/dev/null; then
-      tail -20 "$SERVER_LOG" >&2
-      exit 1
-    fi
-    sleep 1
-  done
-  if [[ -z "$(listener "$PORT")" ]]; then
-    echo "The model server did not start. See $SERVER_LOG." >&2
-    exit 1
-  fi
   echo "Sidecar on http://localhost:$WEB_PORT (API only, no browser UI). Voice backend on port $PORT."
 else
   echo "Sidecar on http://localhost:$WEB_PORT (API only, no browser UI)."
 fi
 echo "Ctrl+C stops the services started by this launcher."
+# Sidecar is independent of model load — start it immediately so Settings,
+# memory, and history work while Parakeet/TTS warm up.
 if [[ -z "$(listener "$WEB_PORT")" ]]; then
   if [[ -x .venv/bin/uvicorn ]]; then
     sidecar_command=(.venv/bin/uvicorn)
@@ -95,6 +85,20 @@ if [[ -z "$(listener "$WEB_PORT")" ]]; then
     "${sidecar_command[@]}" --app-dir web_app server:app --host 127.0.0.1 --port "$WEB_PORT" \
     >"$WEB_LOG" 2>&1 &
   web_pid=$!
+fi
+if [[ -n "$server_pid" ]]; then
+  for _ in $(seq 1 600); do
+    [[ -n "$(listener "$PORT")" ]] && break
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+      tail -20 "$SERVER_LOG" >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
+  if [[ -z "$(listener "$PORT")" ]]; then
+    echo "The model server did not start. See $SERVER_LOG." >&2
+    exit 1
+  fi
 fi
 # Supervise only children this launcher owns. An existing external service
 # must not be killed when this launcher exits or its other child fails.

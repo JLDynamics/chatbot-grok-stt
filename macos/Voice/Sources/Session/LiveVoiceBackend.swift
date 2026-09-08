@@ -85,6 +85,11 @@ final class LiveVoiceBackend: VoiceBackend {
         await refreshInstructions()
     }
 
+    func refreshTools() {
+        guard !closed, connection == .ready || connection == .awaitingSession else { return }
+        sendSessionUpdate()
+    }
+
     func start() async throws {
         await teardown(emitIdle: false)
         closed = false

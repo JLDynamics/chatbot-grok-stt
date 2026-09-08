@@ -3,8 +3,7 @@ import SwiftUI
 struct LevelMeterView: View {
     let state: SessionState
     let isMuted: Bool
-    let inputLevel: Float
-    let outputLevel: Float
+    @ObservedObject var levels: AudioLevels
 
     @Environment(\.theme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -49,8 +48,8 @@ struct LevelMeterView: View {
 
     private var activeLevel: Float {
         switch state {
-        case .agentSpeaking: return outputLevel
-        case .listening, .connecting: return inputLevel
+        case .agentSpeaking: return levels.output
+        case .listening, .connecting: return levels.input
         default: return 0
         }
     }

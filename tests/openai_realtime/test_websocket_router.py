@@ -31,6 +31,7 @@ from chatbot.pipeline.events import (
     TokenUsageEvent,
 )
 from chatbot.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, AudioOutput
+from chatbot.pipeline.ready import PipelineReady
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -135,6 +136,47 @@ class _FakeWebSocket:
 # ===================================================================
 # Connection
 # ===================================================================
+
+
+class TestHealth:
+    def test_health_ready_by_default(self, setup):
+        app, *_ = setup
+        with TestClient(app) as client:
+            response = client.get("/health")
+            assert response.status_code == 200
+            body = response.json()
+            assert body["ready"] is True
+            assert body["status"] == "ok"
+
+    def test_health_starting_and_websocket_rejected(self):
+        text_prompt_queue: Queue = Queue()
+        should_listen = ThreadingEvent()
+        should_listen.set()
+        service = RealtimeService(
+            text_prompt_queue=text_prompt_queue,
+            should_listen=should_listen,
+        )
+        unit = PipelineUnit(
+            index=0,
+            service=service,
+            cancel_scope=CancelScope(),
+            should_listen=should_listen,
+            response_playing=ThreadingEvent(),
+            input_queue=Queue(),
+            output_queue=Queue(),
+            text_output_queue=Queue(),
+            text_prompt_queue=text_prompt_queue,
+            handlers=[],
+            ready_gate=PipelineReady(1),
+        )
+        app = create_app(unit=unit, stop_event=ThreadingEvent())
+        with TestClient(app) as client:
+            response = client.get("/health")
+            assert response.json() == {"status": "starting", "ready": False}
+            with client.websocket_connect("/v1/realtime") as ws:
+                msg = ws.receive_json()
+                assert msg["type"] == "error"
+                assert msg["error"]["type"] == "server_starting"
 
 
 class TestConnection:

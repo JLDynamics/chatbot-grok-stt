@@ -70,15 +70,15 @@ struct ConversationView: View {
             }
             if session.state == .agentSpeaking || session.activeTool != nil {
                 Button("Stop reply") { session.interrupt() }
-                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium))
+                    .buttonStyle(PressableButtonStyle())
+                    .font(.system(size: 11, weight: .medium))
                     .padding(.vertical, 4)
             }
 
             LevelMeterView(
                 state: session.state,
                 isMuted: session.isMuted,
-                inputLevel: session.inputLevel,
-                outputLevel: session.outputLevel
+                levels: session.levels
             )
             .padding(.horizontal, 16)
 
@@ -100,9 +100,9 @@ struct ConversationView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: session.showSettings)
-        .animation(.easeInOut(duration: 0.2), value: session.showSessions)
-        .animation(.easeInOut(duration: 0.2), value: session.activeTool)
+        .animation(.easeOut(duration: 0.12), value: session.showSettings)
+        .animation(.easeOut(duration: 0.12), value: session.showSessions)
+        .animation(.easeOut(duration: 0.12), value: session.activeTool)
         .preferredColorScheme(themePreference == .auto ? nil : (themePreference == .dark ? .dark : .light))
         .onChange(of: session.state) { _, newState in
             announceState(newState)

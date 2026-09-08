@@ -53,11 +53,21 @@ if LINGUA_AVAILABLE:
 
     def _build_lingua_detector():
         # Preloading can take multiple seconds on some hardware, including the
-        # deployed server. Pay that cost at startup instead of on the first user
-        # request, where it would look like slow STT.
+        # deployed server. Pay that cost during STT setup instead of on the first
+        # user request, where it would look like slow STT.
         return LanguageDetectorBuilder.from_languages(*_lingua_languages).with_preloaded_language_models().build()
 
-    _lingua_detector = _build_lingua_detector()
+
+_lingua_detector = None
+
+
+def _get_lingua_detector():
+    global _lingua_detector
+    if not LINGUA_AVAILABLE:
+        return None
+    if _lingua_detector is None:
+        _lingua_detector = _build_lingua_detector()
+    return _lingua_detector
 
 
 class ParakeetTDTSTTHandler(BaseSTTHandler):
@@ -95,6 +105,7 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         self.backend = "mlx"
         logger.info("Loading Parakeet TDT model: %s via mlx-audio", model_name)
         self._setup_mlx(model_name)
+        _get_lingua_detector()
 
         # Setup streaming handler if live transcription is enabled
         self.streaming_handler = None
@@ -122,7 +133,8 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             from mlx_audio.stt.generate import load_model
 
             self.backend = "mlx"
-            self.model = load_model(model_name)
+            with MLXLockContext(handler_name="ParakeetLoad"):
+                self.model = load_model(model_name)
             logger.info("MLX Audio Parakeet model loaded successfully")
         except ImportError as e:
             raise ImportError(
@@ -139,8 +151,9 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         try:
             import mlx.core as mx
 
-            audio_mx = mx.array(dummy_audio, dtype=mx.float32)
-            _ = self.model.decode_chunk(audio_mx, verbose=False)
+            with MLXLockContext(handler_name="ParakeetWarmup"):
+                audio_mx = mx.array(dummy_audio, dtype=mx.float32)
+                _ = self.model.decode_chunk(audio_mx, verbose=False)
 
             logger.info("Model warmed up and ready")
         except Exception as e:
@@ -318,7 +331,10 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         if not text or len(text.strip()) < 20:
             return None
 
-        detected = _lingua_detector.detect_language_of(text)
+        detector = _get_lingua_detector()
+        if detector is None:
+            return None
+        detected = detector.detect_language_of(text)
         if detected is None:
             return None
 

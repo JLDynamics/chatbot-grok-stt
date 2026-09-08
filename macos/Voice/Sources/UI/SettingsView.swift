@@ -11,7 +11,6 @@ struct SettingsView: View {
     @State private var chromeBridge: Bool = VoiceToolExecutor.shared.chromeBridgeEnabled
     @State private var codeAgent: Bool = VoiceToolExecutor.shared.codeAgentEnabled
     @State private var chromeBridgeConnected: Bool = false
-    @State private var timer: Timer?
     @State private var memoryText: String = ""
     @State private var memoryNote: String = ""
     @State private var screenCaptureAllowed = CGPreflightScreenCaptureAccess()
@@ -39,7 +38,8 @@ struct SettingsView: View {
                         .foregroundStyle(theme.text3)
                         .frame(width: 24, height: 24)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableButtonStyle())
+                .contentShape(Rectangle())
                 .accessibilityLabel("Close Settings")
             }
             .padding(.bottom, 2)
@@ -70,6 +70,7 @@ struct SettingsView: View {
                         isOn: $screenshot
                     ) { val in
                         VoiceToolExecutor.shared.screenshotEnabled = val
+                        session.applyToolSettings()
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -97,6 +98,7 @@ struct SettingsView: View {
                         isOn: $webSearch
                     ) { val in
                         VoiceToolExecutor.shared.webSearchEnabled = val
+                        session.applyToolSettings()
                     }
                     if session.sidecarConfig?.search == false {
                         availabilityNote("No search API key configured. Add one with ./set-keys.sh.")
@@ -110,6 +112,7 @@ struct SettingsView: View {
                             isOn: $chromeBridge
                         ) { val in
                             VoiceToolExecutor.shared.chromeBridgeEnabled = val
+                            session.applyToolSettings()
                         }
 
                         HStack(spacing: 6) {
@@ -130,6 +133,7 @@ struct SettingsView: View {
                         isOn: $codeAgent
                     ) { val in
                         VoiceToolExecutor.shared.codeAgentEnabled = val
+                        session.applyToolSettings()
                     }
                     if session.sidecarConfig?.codeAgent == false {
                         availabilityNote("Coding agent is turned off on the server (CODE_AGENT=off).")
@@ -141,7 +145,7 @@ struct SettingsView: View {
             Spacer(minLength: 0)
 
             // Footer note
-            Text("Changes apply when you start your next conversation.")
+            Text("Tool toggles apply on the next reply. Audio mode applies when you start the next conversation.")
                 .font(.system(size: 10.5))
                 .foregroundStyle(theme.text3)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -165,17 +169,14 @@ struct SettingsView: View {
             } else {
                 memoryNote = session.personalMemory.isEmpty ? "Nothing saved yet." : ""
             }
-            checkStatus()
+            await pollStatus()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                await pollStatus()
+            }
         }
         .onAppear {
             screenCaptureAllowed = CGPreflightScreenCaptureAccess()
-            timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
-                checkStatus()
-            }
-        }
-        .onDisappear {
-            timer?.invalidate()
-            timer = nil
         }
     }
 
@@ -251,7 +252,7 @@ struct SettingsView: View {
                         .background(theme.accentTint)
                         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableButtonStyle())
                 .accessibilityLabel("Save personal memory")
             }
         }
@@ -271,15 +272,10 @@ struct SettingsView: View {
             .padding(.top, -8)
     }
 
-    private func checkStatus() {
-        Task {
-            let connected = await VoiceToolExecutor.shared.checkChromeBridgeStatus()
-            await session.refreshConfig()
-            await MainActor.run {
-                chromeBridgeConnected = connected
-                screenCaptureAllowed = ScreenCapture.isAllowed
-            }
-        }
+    private func pollStatus() async {
+        let connected = await VoiceToolExecutor.shared.checkChromeBridgeStatus()
+        chromeBridgeConnected = connected
+        screenCaptureAllowed = ScreenCapture.isAllowed
     }
 
     private func toolRow(
