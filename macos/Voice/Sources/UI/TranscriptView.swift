@@ -7,19 +7,24 @@ struct TranscriptView: View {
 
     @Environment(\.theme) private var theme
     private let userInitial = "Y"
-    private let agentInitial = "C"
+    private let agentInitial = "V"
 
     var body: some View {
         ZStack(alignment: .bottom) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
+                    LazyVStack(alignment: .leading, spacing: 12) {
                         if session.turns.isEmpty && session.interim == nil && !session.isLive {
                             emptyState
                         }
                         ForEach(session.turns) { turn in
-                            TurnRow(turn: Turn(speaker: turn.speaker, text: session.displayedText(for: turn), at: turn.at), userInitial: userInitial, agentInitial: agentInitial)
-                                .id(turn.id)
+                            TurnRow(
+                                speaker: turn.speaker,
+                                text: session.displayedText(for: turn),
+                                userInitial: userInitial,
+                                agentInitial: agentInitial
+                            )
+                            .id(turn.id)
                         }
                         if let interim = session.interim, !session.interimHasExistingRow {
                             InterimRow(text: interim, userInitial: userInitial)
@@ -30,9 +35,10 @@ struct TranscriptView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
                 }
-                .onChange(of: session.turns.count) { _, _ in scrollIfNeeded(proxy) }
-                .onChange(of: session.interim) { _, _ in scrollIfNeeded(proxy) }
-                .onChange(of: session.turns.last?.text) { _, _ in scrollIfNeeded(proxy) }
+                .scrollIndicators(.hidden)
+                .onChange(of: session.turns.count) { _, _ in scrollIfNeeded(proxy, animated: true) }
+                .onChange(of: session.interim) { _, _ in scrollIfNeeded(proxy, animated: false) }
+                .onChange(of: session.turns.last?.text) { _, _ in scrollIfNeeded(proxy, animated: false) }
             }
 
             if showJumpToLatest {
@@ -58,10 +64,18 @@ struct TranscriptView: View {
             .padding(.top, 40)
     }
 
-    private func scrollIfNeeded(_ proxy: ScrollViewProxy) {
+    private func scrollIfNeeded(_ proxy: ScrollViewProxy, animated: Bool) {
         guard !showJumpToLatest else { return }
-        withAnimation(.easeOut(duration: 0.14)) {
-            proxy.scrollTo("bottom", anchor: .bottom)
+        if animated {
+            withAnimation(.easeOut(duration: 0.12)) {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+        } else {
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
         }
     }
 }
