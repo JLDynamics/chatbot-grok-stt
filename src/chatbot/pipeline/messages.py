@@ -93,6 +93,26 @@ class LLMResponseChunk(PipelineMessage):
     cancel_generation: int | None = None
 
 
+class ToolActivity(PipelineMessage):
+    """A tool the language model ran itself, reported so the client can show it.
+
+    Emitted twice per server-side tool call: ``started`` when the call is
+    recorded (``output`` is ``None``) and ``finished`` once its output has been
+    appended to the conversation. Side-channel only; nothing here reaches TTS.
+    """
+
+    tag: Literal["tool_activity"] = "tool_activity"
+    status: Literal["started", "finished"]
+    call_id: str
+    item_id: str
+    name: str
+    arguments: str = "{}"
+    output: str | None = None
+    turn_id: str | None = None
+    turn_revision: int | None = None
+    cancel_generation: int | None = None
+
+
 class TokenUsage(PipelineMessage):
     """Token count report (side-channel, not forwarded to TTS)."""
 

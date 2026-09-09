@@ -13,9 +13,9 @@ from collections.abc import Iterator
 from queue import Queue
 
 from chatbot.baseHandler import BaseHandler
-from chatbot.pipeline.events import AssistantTextEvent, ResponseFailedEvent, TokenUsageEvent
+from chatbot.pipeline.events import AssistantTextEvent, ResponseFailedEvent, TokenUsageEvent, ToolActivityEvent
 from chatbot.pipeline.handler_types import LLMOut, TTSIn
-from chatbot.pipeline.messages import EndOfResponse, LLMResponseChunk, TokenUsage, TTSInput
+from chatbot.pipeline.messages import EndOfResponse, LLMResponseChunk, TokenUsage, ToolActivity, TTSInput
 from chatbot.pipeline.queue_types import TextEventItem
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 from chatbot.utils.utils import response_wants_audio
@@ -76,6 +76,29 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
                         output_tokens=lm_output.output_tokens or 0,
                         turn_id=lm_output.turn_id,
                         turn_revision=lm_output.turn_revision,
+                    )
+                )
+            return
+
+        if isinstance(lm_output, ToolActivity):
+            # Server-side tool progress: side-channel only, never spoken.
+            if not self._turn_output_allowed(lm_output.turn_id, lm_output.turn_revision):
+                logger.debug(
+                    "Dropping stale tool activity for turn=%s rev=%s", lm_output.turn_id, lm_output.turn_revision
+                )
+                return
+            if self.text_output_queue is not None:
+                self.text_output_queue.put(
+                    ToolActivityEvent(
+                        status=lm_output.status,
+                        call_id=lm_output.call_id,
+                        item_id=lm_output.item_id,
+                        name=lm_output.name,
+                        arguments=lm_output.arguments,
+                        output=lm_output.output,
+                        turn_id=lm_output.turn_id,
+                        turn_revision=lm_output.turn_revision,
+                        cancel_generation=lm_output.cancel_generation,
                     )
                 )
             return

@@ -56,6 +56,7 @@ from chatbot.pipeline.events import (
     SpeechStartedEvent,
     SpeechStoppedEvent,
     TokenUsageEvent,
+    ToolActivityEvent,
     TranscriptionCompletedEvent,
 )
 from chatbot.pipeline.messages import GenerateResponseRequest
@@ -197,6 +198,7 @@ class RealtimeService:
             TranscriptionCompletedEvent: self._on_transcription_completed,
             AudioInputCompletedEvent: self._on_audio_input_completed,
             ResponseFailedEvent: self._on_response_failed,
+            ToolActivityEvent: self.response.on_tool_activity,
         }
 
     # ── Connection lifecycle ─────────────────────
@@ -373,6 +375,7 @@ class RealtimeService:
                 AudioInputCompletedEvent,
                 AssistantTextEvent,
                 TokenUsageEvent,
+                ToolActivityEvent,
             ),
         ):
             return False

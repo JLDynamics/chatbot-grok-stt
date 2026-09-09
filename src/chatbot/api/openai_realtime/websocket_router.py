@@ -36,6 +36,7 @@ from chatbot.pipeline.events import (
     SpeechStartedEvent,
     SpeechStoppedEvent,
     TokenUsageEvent,
+    ToolActivityEvent,
     TranscriptionCompletedEvent,
 )
 from chatbot.pipeline.log_context import pipeline_log_ctx
@@ -525,7 +526,7 @@ def create_app(
                         was_in_response = st.in_response
                         was_response_pending = st.response_pending
 
-                    if isinstance(text_msg, AssistantTextEvent) and _generation_is_discardable(
+                    if isinstance(text_msg, (AssistantTextEvent, ToolActivityEvent)) and _generation_is_discardable(
                         unit, text_msg.cancel_generation
                     ):
                         pass

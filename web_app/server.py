@@ -1678,6 +1678,64 @@ async def put_personal_memory(req: ProfileUpdateRequest) -> JSONResponse:
     return JSONResponse({"content": content, "max_chars": PERSONAL_MEMORY_MAX_CHARS})
 
 
+class RememberRequest(BaseModel):
+    fact: str
+
+
+class ForgetRequest(BaseModel):
+    memory: str
+
+
+def _profile_text_locked() -> str:
+    _migrate_legacy_memories()
+    return PERSONAL_MEMORY_PATH.read_text(encoding="utf-8") if PERSONAL_MEMORY_PATH.exists() else ""
+
+
+@app.post("/api/personal-memory/remember")
+async def remember_fact(req: RememberRequest) -> JSONResponse:
+    """Append one fact to the profile (the model's ``remember`` tool).
+
+    Read-modify-write under the history lock, so two tool calls in one turn
+    cannot clobber each other the way a client-side GET/PUT pair could.
+    """
+    fact = re.sub(r"^[-*]\s*", "", req.fact.strip())
+    if not fact:
+        raise HTTPException(status_code=400, detail="No fact provided.")
+    async with history_lock:
+        current = _profile_text_locked()
+        needle = fact.lower()
+        if any(needle in line.strip().lower() for line in current.splitlines()):
+            return JSONResponse({"ok": True, "changed": False, "message": "That is already in the personal profile."})
+        content = _dedupe_profile_lines("\n".join(part for part in (current.strip(), f"- {fact}") if part))
+        if len(content) > PERSONAL_MEMORY_MAX_CHARS:
+            raise HTTPException(
+                status_code=400, detail="The personal profile is full; consolidate it before adding more."
+            )
+        _atomic_write(PERSONAL_MEMORY_PATH, content + "\n")
+    return JSONResponse({"ok": True, "changed": True, "message": "Saved to the personal profile."})
+
+
+@app.post("/api/personal-memory/forget")
+async def forget_memory(req: ForgetRequest) -> JSONResponse:
+    """Remove every profile line mentioning ``memory`` (the model's ``forget`` tool)."""
+    needle = req.memory.strip().lower()
+    if len(needle) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least three characters so forget does not remove unrelated profile lines.",
+        )
+    async with history_lock:
+        current = _profile_text_locked()
+        lines = [line for line in current.splitlines() if line.strip()]
+        kept = [line for line in lines if needle not in line.lower()]
+        removed = len(lines) - len(kept)
+        if removed:
+            content = "\n".join(kept)
+            _atomic_write(PERSONAL_MEMORY_PATH, content + ("\n" if content else ""))
+    message = "Removed it from the personal profile." if removed else "No matching personal memory found."
+    return JSONResponse({"ok": True, "removed": removed, "message": message})
+
+
 @app.get("/")
 def index() -> dict:
     """No browser UI remains; the native macOS app uses /api/* on this sidecar."""

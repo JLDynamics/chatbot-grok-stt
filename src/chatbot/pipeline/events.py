@@ -97,6 +97,26 @@ class AssistantTextEvent(PipelineEvent):
     cancel_generation: int | None = None
 
 
+class ToolActivityEvent(PipelineEvent):
+    """A server-side tool call the model made; the client shows it as activity.
+
+    ``started`` carries the call's name/arguments; ``finished`` adds ``output``.
+    The service turns both into ``conversation.item.created`` events (a
+    ``function_call`` item, then its ``function_call_output``).
+    """
+
+    type: Literal["tool_activity"] = "tool_activity"
+    status: Literal["started", "finished"]
+    call_id: str
+    item_id: str
+    name: str
+    arguments: str = "{}"
+    output: str | None = None
+    turn_id: str | None = None
+    turn_revision: int | None = None
+    cancel_generation: int | None = None
+
+
 class TokenUsageEvent(PipelineEvent):
     type: Literal["token_usage"] = "token_usage"
     input_tokens: int = 0

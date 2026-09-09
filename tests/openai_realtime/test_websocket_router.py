@@ -604,6 +604,8 @@ class TestSendLoop:
                 text_output_queue.put(TokenUsageEvent(input_tokens=10, output_tokens=5))
                 output_queue.put(AUDIO_RESPONSE_DONE)
 
+                # The first output of an implicit response announces it.
+                assert ws.receive_json()["type"] == "response.created"
                 assert ws.receive_json()["type"] == "response.function_call_arguments.done"
                 assert ws.receive_json()["type"] == "response.done"
 

@@ -5,7 +5,9 @@ from typing import TYPE_CHECKING, Literal, Optional
 
 from openai.types.realtime import (
     ConversationItem,
+    ConversationItemCreatedEvent,
     RealtimeConversationItemFunctionCall,
+    RealtimeConversationItemFunctionCallOutput,
     RealtimeResponse,
     ResponseAudioDoneEvent,
     ResponseAudioTranscriptDeltaEvent,
@@ -25,7 +27,7 @@ from openai.types.realtime.realtime_response_usage import RealtimeResponseUsage
 
 from chatbot.api.openai_realtime.handlers.base import RealtimeBaseHandler
 from chatbot.LLM.chat import ChatItemError
-from chatbot.pipeline.events import AssistantTextEvent
+from chatbot.pipeline.events import AssistantTextEvent, ToolActivityEvent
 from chatbot.pipeline.messages import GenerateResponseRequest
 from chatbot.utils.utils import _generate_id, is_out_of_band, response_wants_audio
 
@@ -49,6 +51,30 @@ class ResponseHandler(RealtimeBaseHandler):
             st.in_response = True
         st.response_pending = False
         return st.current_response_id, self._current_item_id(conn_id)
+
+    def open_response(self, conn_id: str) -> tuple[str, str, list[ServerEvent]]:
+        """Like :meth:`_ensure_response`, also emitting ``response.created`` once.
+
+        ``handle_response_create`` announces explicit responses itself. The
+        implicit path (VAD → STT → LLM → TTS) has nobody to do that, so the
+        first output of the response — assistant text, a tool call, or audio —
+        must announce it. Without this the client never learns the response id
+        and cannot tell "still streaming" from "finished", which is how a tool
+        follow-up used to collide with the response that requested it.
+        """
+        st = self._state(conn_id)
+        need_created = st.current_response_id is None
+        resp_id, item_id = self._ensure_response(conn_id)
+        events: list[ServerEvent] = []
+        if need_created:
+            events.append(
+                ResponseCreatedEvent(
+                    type="response.created",
+                    event_id=self._next_event_id(),
+                    response=self._build_response(conn_id, "in_progress"),
+                )
+            )
+        return resp_id, item_id, events
 
     def _end_response(self, conn_id: str, status: _ResponseStatus = "completed") -> None:
         st = self._state(conn_id)
@@ -376,8 +402,7 @@ class ResponseHandler(RealtimeBaseHandler):
                 logger.debug("Dropping stale assistant text for turn=%s rev=%s", event.turn_id, event.turn_revision)
                 return []
         st = self._state(conn_id)
-        events: list[ServerEvent] = []
-        resp_id, item_id = self._ensure_response(conn_id)
+        resp_id, item_id, events = self.open_response(conn_id)
         wants_audio = response_wants_audio(st.current_response_params)
         if event.text and (not wants_audio or event.text.strip()):
             assistant_item_id, assistant_output_index = self._ensure_assistant_output_item(conn_id, item_id)
@@ -446,4 +471,48 @@ class ResponseHandler(RealtimeBaseHandler):
                     )
                 )
                 st.last_item_id = function_item_id
+        return events
+
+    def on_tool_activity(self, conn_id: str, event: ToolActivityEvent) -> list[ServerEvent]:
+        """Report a tool the server ran itself as the conversation items it created.
+
+        The client sees a ``function_call`` item when the call starts and its
+        ``function_call_output`` when it finishes — the same items a client-run
+        tool would have produced, minus the round trip — so it can show
+        "Searching…" and then the result without executing anything. These
+        items are not added to ``response.output``: they were already answered
+        inside the response, nothing is pending for the client.
+        """
+        st = self._state(conn_id)
+        _, _, events = self.open_response(conn_id)
+        item: ConversationItem
+        if event.status == "started":
+            st.response_usage.tool_calls += 1
+            item = RealtimeConversationItemFunctionCall(
+                type="function_call",
+                object="realtime.item",
+                id=event.item_id,
+                call_id=event.call_id,
+                name=event.name,
+                arguments=event.arguments,
+                status="in_progress",
+            )
+        else:
+            item = RealtimeConversationItemFunctionCallOutput(
+                type="function_call_output",
+                object="realtime.item",
+                id=event.item_id,
+                call_id=event.call_id,
+                output=event.output or "",
+                status="completed",
+            )
+        events.append(
+            ConversationItemCreatedEvent(
+                type="conversation.item.created",
+                event_id=self._next_event_id(),
+                previous_item_id=st.last_item_id,
+                item=item,
+            )
+        )
+        st.last_item_id = event.item_id
         return events
