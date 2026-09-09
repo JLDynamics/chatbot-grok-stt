@@ -5,6 +5,9 @@ enum SessionState: Equatable {
     case idle
     case connecting
     case listening
+    /// The user's turn ended and the model is working (transcribing,
+    /// reasoning, running a search) but has not started speaking yet.
+    case thinking
     case agentSpeaking
     case failed(String)
 }
@@ -116,7 +119,7 @@ final class SessionController: ObservableObject {
     var isLive: Bool {
         switch state {
         case .idle, .failed: return false
-        case .connecting, .listening, .agentSpeaking: return true
+        case .connecting, .listening, .thinking, .agentSpeaking: return true
         }
     }
 
@@ -281,9 +284,11 @@ final class SessionController: ObservableObject {
             return
         }
         if errorText == nil {
-            await loadMemory()
-            await refreshSessions()
-            await refreshConfig()
+            // Three independent sidecar reads; none of them gates the mic.
+            async let memory: Void = loadMemory()
+            async let sessions: Void = refreshSessions()
+            async let config: Void = refreshConfig()
+            _ = await (memory, sessions, config)
         }
     }
 

@@ -333,6 +333,25 @@ class TestClientEventDispatch:
                 assert not response_playing.is_set()
                 assert cancel_scope.discarding
 
+    def test_response_cancel_while_the_model_is_still_thinking_cancels_the_turn(self, setup):
+        """Stop pressed before the first token (no response open yet) must land.
+
+        The LLM captures its generation when the turn starts, so a pending turn
+        is cancelled by bumping the generation exactly like a barge-in does.
+        """
+        app, service, _, _, _, _, _, _, cancel_scope = setup
+        with TestClient(app) as client:
+            with client.websocket_connect("/v1/realtime") as ws:
+                ws.receive_json()  # session.created
+                conn_id = list(service._conns.keys())[0]
+                st = service._state(conn_id)
+                st.response_pending = True
+                before = cancel_scope.generation
+                ws.send_json({"type": "response.cancel"})
+                time.sleep(0.1)
+                assert cancel_scope.is_stale(before)
+                assert not st.response_pending
+
     def test_response_cancel_spurious_does_not_set_discarding(self, setup):
         """response.cancel when no response is active must NOT enable discarding,
         otherwise it would stick True forever (no __RESPONSE_DONE__ to clear it)."""

@@ -358,9 +358,15 @@ async def _dispatch_client_event(
             await transport.send_events([result])
 
     elif isinstance(event, ResponseCancelEvent):
-        was_active = service._state(session_id).in_response
-        if was_active:
+        # Same condition as barge-in: a turn is in flight when a response is
+        # open *or* one is pending (the LLM captured its generation before its
+        # first token), so "Stop" pressed while the model is still thinking or
+        # a server-side search is running lands too. A truly spurious cancel
+        # must not set the discard guard.
+        st = service._state(session_id)
+        if st.in_response or st.response_pending:
             unit.cancel_scope.cancel()
+            st.response_pending = False
         _flush_queue(unit.output_queue, preserve=_keep_audio_sentinel)
         _flush_queue(unit.text_output_queue, preserve=_keep_user_text_event)
         # Drop any LLM request still waiting to be processed so it can't

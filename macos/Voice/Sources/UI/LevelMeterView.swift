@@ -49,7 +49,7 @@ struct LevelMeterView: View {
     private var activeLevel: Float {
         switch state {
         case .agentSpeaking: return levels.output
-        case .listening, .connecting: return levels.input
+        case .listening, .thinking, .connecting: return levels.input
         default: return 0
         }
     }
@@ -57,7 +57,7 @@ struct LevelMeterView: View {
     private var barColor: Color {
         switch state {
         case .agentSpeaking: return theme.accentDeep
-        case .listening, .connecting: return theme.accent
+        case .listening, .thinking, .connecting: return theme.accent
         default: return theme.border
         }
     }

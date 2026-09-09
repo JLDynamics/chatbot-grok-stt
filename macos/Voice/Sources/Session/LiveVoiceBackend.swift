@@ -103,18 +103,22 @@ final class LiveVoiceBackend: VoiceBackend {
         guard !closed, connectionGeneration == generation, !Task.isCancelled else { return }
         onAudioStatus?(nil)
 
+        // Open the socket before the audio engine: the TCP/WebSocket handshake
+        // and session.created happen on the network while voice-processing
+        // setup (a few hundred ms) runs on this actor, instead of one after
+        // the other. Mic frames only flow once `connection == .ready`, and a
+        // socket failure meanwhile tears everything down via fail().
+        openWebSocket(generation: generation)
+
         do {
             try await audio.start()
         } catch {
-            connection = .idle
-            closed = true
-            onState?(.failed(error.localizedDescription))
+            fail(error.localizedDescription)
             throw error
         }
 
         if closed || generation != connectionGeneration || Task.isCancelled {
             audio.stop()
-            connection = .idle
             return
         }
 
@@ -144,9 +148,10 @@ final class LiveVoiceBackend: VoiceBackend {
                 self.appendMicPCM(bytes)
             }
         }
+    }
 
-        let session = URLSession.shared
-        let task = session.webSocketTask(with: wsURL)
+    private func openWebSocket(generation: UUID) {
+        let task = URLSession.shared.webSocketTask(with: wsURL)
         webSocket = task
         connection = .awaitingSession
         task.resume()
@@ -339,6 +344,12 @@ final class LiveVoiceBackend: VoiceBackend {
             }
             if !closed, !audio.isPlaying { onState?(.listening) }
 
+        case "input_audio_buffer.speech_stopped":
+            // The turn is over on the server's side: show that the model is
+            // working, not that the panel is idly listening. speech_started,
+            // turn_ignored, audio or response.done all move it on.
+            if !closed, !audio.isPlaying, activeResponseId.isEmpty { onState?(.thinking) }
+
         case "conversation.item.input_audio_transcription.delta":
             if let delta = json["delta"] as? String, !delta.isEmpty {
                 let itemId = json["item_id"] as? String
@@ -382,6 +393,12 @@ final class LiveVoiceBackend: VoiceBackend {
                     audio.clearPlayback()
                 }
             }
+            if !serverToolNames.isEmpty {
+                // A server-run tool whose output never arrived (the turn was
+                // interrupted mid-call) must not leave the pill spinning.
+                serverToolNames.removeAll()
+                onToolsCancelled?()
+            }
             finishAgentTurn()
             if !audio.isPlaying {
                 onOutputLevel?(0)
@@ -420,7 +437,10 @@ final class LiveVoiceBackend: VoiceBackend {
 
         case "error":
             // Transport close is fatal; server events like turn_ignored are not.
-            break
+            if let error = json["error"] as? [String: Any], error["code"] as? String == "turn_ignored",
+               !closed, !audio.isPlaying, activeResponseId.isEmpty {
+                onState?(.listening)
+            }
 
         default:
             break
