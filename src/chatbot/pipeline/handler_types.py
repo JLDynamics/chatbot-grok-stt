@@ -21,6 +21,7 @@ from chatbot.pipeline.messages import (
     PartialTranscription,
     TTSInput,
     TokenUsage,
+    ToolActivity,
     Transcription,
     VADAudio,
 )
@@ -37,7 +38,7 @@ STTOut: TypeAlias = PartialTranscription | Transcription
 
 # ── LLM stage ─────────────────────────────────────────────────────────
 LLMIn: TypeAlias = GenerateResponseRequest
-LLMOut: TypeAlias = LLMResponseChunk | TokenUsage | EndOfResponse
+LLMOut: TypeAlias = LLMResponseChunk | ToolActivity | TokenUsage | EndOfResponse
 
 # ── TTS stage ─────────────────────────────────────────────────────────
 TTSIn: TypeAlias = TTSInput | EndOfResponse

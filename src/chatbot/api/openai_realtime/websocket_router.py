@@ -36,6 +36,7 @@ from chatbot.pipeline.events import (
     SpeechStartedEvent,
     SpeechStoppedEvent,
     TokenUsageEvent,
+    ToolActivityEvent,
     TranscriptionCompletedEvent,
 )
 from chatbot.pipeline.log_context import pipeline_log_ctx
@@ -357,9 +358,15 @@ async def _dispatch_client_event(
             await transport.send_events([result])
 
     elif isinstance(event, ResponseCancelEvent):
-        was_active = service._state(session_id).in_response
-        if was_active:
+        # Same condition as barge-in: a turn is in flight when a response is
+        # open *or* one is pending (the LLM captured its generation before its
+        # first token), so "Stop" pressed while the model is still thinking or
+        # a server-side search is running lands too. A truly spurious cancel
+        # must not set the discard guard.
+        st = service._state(session_id)
+        if st.in_response or st.response_pending:
             unit.cancel_scope.cancel()
+            st.response_pending = False
         _flush_queue(unit.output_queue, preserve=_keep_audio_sentinel)
         _flush_queue(unit.text_output_queue, preserve=_keep_user_text_event)
         # Drop any LLM request still waiting to be processed so it can't
@@ -512,10 +519,15 @@ def create_app(
                 session = unit.session
                 transport = session.transport if session is not None else None
                 session_id = session.session_id if session is not None else None
+                had_work = False
 
                 # Text events first (speech_started cancels active response).
-                try:
-                    text_msg = unit.text_output_queue.get_nowait()
+                while True:
+                    try:
+                        text_msg = unit.text_output_queue.get_nowait()
+                    except Empty:
+                        break
+                    had_work = True
                     is_speech_start = isinstance(text_msg, SpeechStartedEvent)
 
                     was_in_response = False
@@ -525,7 +537,7 @@ def create_app(
                         was_in_response = st.in_response
                         was_response_pending = st.response_pending
 
-                    if isinstance(text_msg, AssistantTextEvent) and _generation_is_discardable(
+                    if isinstance(text_msg, (AssistantTextEvent, ToolActivityEvent)) and _generation_is_discardable(
                         unit, text_msg.cancel_generation
                     ):
                         pass
@@ -564,8 +576,6 @@ def create_app(
                                 logger.info(
                                     f"Pipeline {unit.index}: speech during response: interrupt_response disabled, ignoring"
                                 )
-                except Empty:
-                    pass
 
                 try:
                     if session is not None and session.pending_output_item is not None:
@@ -573,6 +583,7 @@ def create_app(
                         session.pending_output_item = None
                     else:
                         audio_chunk = unit.output_queue.get_nowait()
+                    had_work = True
 
                     if _is_pipeline_end(audio_chunk):
                         await _drain_pending_response_events(transport, unit, session_id)
@@ -656,7 +667,8 @@ def create_app(
                 except Empty:
                     pass
 
-                await asyncio.sleep(0.01)
+                if not had_work:
+                    await asyncio.sleep(0.01)
 
             except asyncio.CancelledError:
                 break

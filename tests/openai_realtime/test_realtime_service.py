@@ -52,6 +52,7 @@ from chatbot.pipeline.events import (
     SpeechStartedEvent,
     SpeechStoppedEvent,
     TokenUsageEvent,
+    ToolActivityEvent,
     TranscriptionCompletedEvent,
 )
 from chatbot.pipeline.messages import GenerateResponseRequest
@@ -1194,6 +1195,19 @@ class TestResponseDoneOutputItems:
 # ===================================================================
 
 
+def _after_created(events):
+    """Split off the ``response.created`` that opens an implicit response.
+
+    The first assistant text (or tool activity, or audio) of a VAD-triggered
+    response announces the response; explicit ``response.create`` turns already
+    did that in ``handle_response_create``. Returns the remaining events.
+    """
+    assert events, "expected response.created followed by the output events"
+    assert isinstance(events[0], ResponseCreatedEvent), events[0]
+    assert events[0].response.status == "in_progress"
+    return events[1:]
+
+
 class TestDispatchPipelineEvent:
     # -- speech_started --
 
@@ -1323,9 +1337,11 @@ class TestDispatchPipelineEvent:
     # -- assistant_text --
 
     def test_assistant_text_emits_transcript_delta(self, service, conn_id):
-        events = service.dispatch_pipeline_event(
-            conn_id,
-            AssistantTextEvent(text="Hello there"),
+        events = _after_created(
+            service.dispatch_pipeline_event(
+                conn_id,
+                AssistantTextEvent(text="Hello there"),
+            )
         )
         assert len(events) == 1
         evt = events[0]
@@ -1380,7 +1396,7 @@ class TestDispatchPipelineEvent:
         assert transcript_done.transcript == "".join(event.delta for event in deltas) == "Hello there. How are you?"
 
     def test_cancelled_audio_transcript_emits_single_terminal_done(self, service, conn_id):
-        delta = service.dispatch_pipeline_event(conn_id, AssistantTextEvent(text="partial"))[0]
+        delta = _after_created(service.dispatch_pipeline_event(conn_id, AssistantTextEvent(text="partial")))[0]
 
         terminal = service.finish_response(conn_id, status="cancelled", reason="client_cancelled")
         transcript_done = [event for event in terminal if isinstance(event, ResponseAudioTranscriptDoneEvent)]
@@ -1394,7 +1410,7 @@ class TestDispatchPipelineEvent:
 
     @pytest.mark.parametrize("status", ["failed", "incomplete"])
     def test_non_completed_audio_transcript_emits_single_terminal_done(self, service, conn_id, status):
-        delta = service.dispatch_pipeline_event(conn_id, AssistantTextEvent(text="partial"))[0]
+        delta = _after_created(service.dispatch_pipeline_event(conn_id, AssistantTextEvent(text="partial")))[0]
 
         terminal = service.finish_response(conn_id, status=status)
         transcript_done = [event for event in terminal if isinstance(event, ResponseAudioTranscriptDoneEvent)]
@@ -1421,6 +1437,7 @@ class TestDispatchPipelineEvent:
                 ],
             ),
         )
+        events = _after_created(events)
         assert len(events) == 3
         assert isinstance(events[0], ResponseAudioTranscriptDeltaEvent)
         assert events[0].output_index == 0
@@ -1440,6 +1457,7 @@ class TestDispatchPipelineEvent:
                 tools=[{"type": "function_call", "call_id": "c1", "name": "f1", "arguments": "{}"}],
             ),
         )
+        events = _after_created(events)
         assert len(events) == 1
         assert isinstance(events[0], ResponseFunctionCallArgumentsDoneEvent)
         assert events[0].output_index == 0
@@ -1450,9 +1468,11 @@ class TestDispatchPipelineEvent:
         service._state(conn_id).current_response_params = RealtimeResponseCreateParams(
             output_modalities=["text"],
         )
-        events = service.dispatch_pipeline_event(
-            conn_id,
-            AssistantTextEvent(text="Hello there"),
+        events = _after_created(
+            service.dispatch_pipeline_event(
+                conn_id,
+                AssistantTextEvent(text="Hello there"),
+            )
         )
         # on_assistant_text streams only the delta now; the matching done is
         # emitted once at close in finish_response.
@@ -1496,6 +1516,74 @@ class TestDispatchPipelineEvent:
         assert not any(isinstance(e, ResponseTextDoneEvent) for e in done_events)
         assert any(isinstance(e, ResponseDoneEvent) for e in done_events)
 
+    # -- tool_activity (tools the server ran itself) --
+
+    def test_tool_activity_started_opens_the_response_and_creates_a_function_call_item(self, service, conn_id):
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            ToolActivityEvent(
+                status="started", call_id="call_1", item_id="fc_1", name="web_search", arguments='{"query": "x"}'
+            ),
+        )
+        events = _after_created(events)
+        assert len(events) == 1
+        created = events[0]
+        assert isinstance(created, ConversationItemCreatedEvent)
+        assert created.item.type == "function_call"
+        assert created.item.id == "fc_1"
+        assert created.item.call_id == "call_1"
+        assert created.item.name == "web_search"
+        assert created.item.status == "in_progress"
+        st = service._state(conn_id)
+        assert st.in_response
+        assert st.response_usage.tool_calls == 1
+        assert st.last_item_id == "fc_1"
+        # Nothing is left for the client to run.
+        assert st.pending_function_calls == []
+        assert not any(isinstance(e, ResponseFunctionCallArgumentsDoneEvent) for e in events)
+
+    def test_tool_activity_finished_creates_the_output_item_after_the_call(self, service, conn_id):
+        service.dispatch_pipeline_event(
+            conn_id, ToolActivityEvent(status="started", call_id="call_1", item_id="fc_1", name="web_search")
+        )
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            ToolActivityEvent(
+                status="finished", call_id="call_1", item_id="fco_1", name="web_search", output="[1] result"
+            ),
+        )
+        assert len(events) == 1
+        created = events[0]
+        assert isinstance(created, ConversationItemCreatedEvent)
+        assert created.item.type == "function_call_output"
+        assert created.item.call_id == "call_1"
+        assert created.item.output == "[1] result"
+        assert created.previous_item_id == "fc_1"
+
+        # The response closes normally; the answered call is not in response.output.
+        done = next(e for e in service.finish_response(conn_id) if isinstance(e, ResponseDoneEvent))
+        assert [item.type for item in done.response.output] == []
+
+    def test_tool_activity_after_confirmed_reopen_is_dropped(self, runtime_config, should_listen):
+        tracker = SpeculativeTurnTracker()
+        service = RealtimeService(should_listen=should_listen, speculative_turns=tracker)
+        conn_id = service.register()
+        service._state(conn_id).runtime_config = runtime_config
+        tracker.observe("turn_1", 0)
+        candidate_revision = tracker.begin_reopen_candidate("turn_1", 0)
+        assert tracker.confirm_reopen_candidate("turn_1", 0, candidate_revision)
+
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            ToolActivityEvent(
+                status="started", call_id="c", item_id="fc", name="web_search", turn_id="turn_1", turn_revision=0
+            ),
+        )
+
+        assert events == []
+        assert service._state(conn_id).current_response_id is None
+        service.unregister(conn_id)
+
     def test_assistant_text_text_only_keeps_tool_events(self, service, conn_id):
         from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 
@@ -1509,6 +1597,7 @@ class TestDispatchPipelineEvent:
                 tools=[{"type": "function_call", "call_id": "c1", "name": "get_weather", "arguments": "{}"}],
             ),
         )
+        events = _after_created(events)
         # No per-chunk done anymore: delta, then the tool event at output_index 1.
         assert isinstance(events[0], ResponseTextDeltaEvent)
         assert not any(isinstance(e, ResponseTextDoneEvent) for e in events)
@@ -1551,9 +1640,11 @@ class TestDispatchPipelineEvent:
         tracker.observe("turn_1", 0)
         tracker.begin_reopen_candidate("turn_1", 0)
 
-        events = service.dispatch_pipeline_event(
-            conn_id,
-            AssistantTextEvent(text="latest", turn_id="turn_1", turn_revision=0),
+        events = _after_created(
+            service.dispatch_pipeline_event(
+                conn_id,
+                AssistantTextEvent(text="latest", turn_id="turn_1", turn_revision=0),
+            )
         )
 
         assert len(events) == 1
@@ -1602,6 +1693,7 @@ class TestDispatchPipelineEvent:
         events = service.try_dispatch_pipeline_event(conn_id, event)
 
         assert events is not None
+        events = _after_created(events)
         assert len(events) == 1
         assert isinstance(events[0], ResponseAudioTranscriptDeltaEvent)
         assert events[0].delta == "latest"
@@ -1626,6 +1718,7 @@ class TestDispatchPipelineEvent:
         events = service.try_dispatch_pipeline_event(conn_id, event)
 
         assert events is not None
+        events = _after_created(events)
         assert len(events) == 1
         assert isinstance(events[0], ResponseAudioTranscriptDeltaEvent)
         assert events[0].delta == "latest"

@@ -26,9 +26,7 @@ def test_remove_unspeechable_strips_markdown_asterisks() -> None:
     assert remove_unspeechable("**Mistral AI**") == "Mistral AI"
     assert remove_unspeechable("**OpenAI** is claiming") == "OpenAI is claiming"
     assert (
-        remove_unspeechable(
-            "**NVIDIA** is in the news about acquiring **Hugging Face**"
-        )
+        remove_unspeechable("**NVIDIA** is in the news about acquiring **Hugging Face**")
         == "NVIDIA is in the news about acquiring Hugging Face"
     )
     assert remove_unspeechable("**Coca-Cola** is using AI") == "Coca-Cola is using AI"
@@ -41,12 +39,7 @@ def test_remove_unspeechable_strips_asterisks_split_across_chunks() -> None:
 
 
 def test_remove_unspeechable_strips_markdown_list_markers() -> None:
-    assert (
-        remove_unspeechable(
-            "- **Mistral AI** — the French AI company"
-        )
-        == "Mistral AI — the French AI company"
-    )
+    assert remove_unspeechable("- **Mistral AI** — the French AI company") == "Mistral AI — the French AI company"
     assert (
         remove_unspeechable("It goes through. - On the robotics side, **Arm** launched")
         == "It goes through. On the robotics side, Arm launched"

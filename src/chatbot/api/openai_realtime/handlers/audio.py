@@ -10,7 +10,6 @@ from openai.types.realtime import (
     InputAudioBufferSpeechStoppedEvent,
     RealtimeErrorEvent,
     ResponseAudioDeltaEvent,
-    ResponseCreatedEvent,
 )
 
 from chatbot.api.openai_realtime.handlers.base import RealtimeBaseHandler
@@ -175,21 +174,7 @@ class AudioHandler(RealtimeBaseHandler):
         Returns ``(response_id, item_id, events)``. The WebSocket path appends
         the base64 audio delta to the returned events.
         """
-        response = self._service.response
-        st = self._state(conn_id)
-
-        events: list[ServerEvent] = []
-        need_created = st.current_response_id is None
-        resp_id, item_id = response._ensure_response(conn_id)
-        if need_created:
-            events.append(
-                ResponseCreatedEvent(
-                    type="response.created",
-                    event_id=self._next_event_id(),
-                    response=response._build_response(conn_id, "in_progress"),
-                )
-            )
-        return resp_id, item_id, events
+        return self._service.response.open_response(conn_id)
 
     def begin_audio_output(self, conn_id: str) -> tuple[str, str, int, list[ServerEvent]]:
         """Ensure an audio response and reserve its assistant output identity."""

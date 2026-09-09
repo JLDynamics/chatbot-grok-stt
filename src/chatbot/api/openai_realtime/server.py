@@ -22,7 +22,7 @@ class RealtimeServer:
         stop_event: Event,
         unit: PipelineUnit,
         host: str = "0.0.0.0",
-        port: int = 8765,
+        port: int = 8766,
     ) -> None:
         self.stop_event = stop_event
         self.unit = unit

@@ -42,28 +42,16 @@ the session and shows the red badge.
 ## What to ask the chatbot
 
 - “Read/summarize/analyze the article, news, webpage, or page on my screen” uses
-  the native client's `read_page` workflow, starting with this extension's DOM text.
-  X/Twitter links also prefer the bridge. Other URLs start with web fetch, unless
-  the assistant identifies a known login-dependent page already open in Chrome.
-  Explicit bridge requests can still use `read_article` directly.
+  `read_page`. The server tries this extension's DOM text and public fetch, and
+  prefers the bridge for X/Twitter and for the page already open in Chrome.
 - “Check my screen,” “look at this app/window,” or requests about a layout,
-  image, chart, visual appearance, or front page use an explicit Desktop
-  screenshot when Desktop Control is enabled.
+  image, chart, or appearance use the in-app screenshot tool.
 - “Take a screenshot” always means a screenshot.
-- If the wording does not distinguish article text from visual screen state,
-  the chatbot first runs a metadata-only context preflight. It checks whether
-  this bridge has a fresh readable page and, only when Desktop Control is
-  enabled, the frontmost app/window name. It returns no page body, labels,
-  form values, or pixels and takes no screenshot. The chatbot then routes
-  automatically when the context is clear, otherwise it asks one short question.
 
-The extension itself only extracts text. The native reading workflow tries each
-enabled text method at most once, including when the first result is partial.
-It verifies that a bridge result matches the requested URL and retains failure
-details. If text methods fail, the assistant can use Desktop screenshots and
-scrolling on the requested visible page, with a six-capture limit and repeated-image
-detection. Screen excerpts must be identified as partial; login forms and paywall
-teasers are not the article. Clicking or typing is a separate desktop-control request.
+The extension itself only extracts text. `read_page` tries each enabled text
+method at most once, including when the first result is partial, and keeps
+failure details. If both text methods fail, say so; a screenshot is not a
+substitute for the article. Clicking or typing is not part of page reading.
 
 ## Safety boundary
 

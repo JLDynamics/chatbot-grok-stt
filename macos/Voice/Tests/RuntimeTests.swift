@@ -83,118 +83,20 @@ struct RuntimeTests {
         assert(scope.contains("old"), "A stale completion must not remove new work")
         scope.cancel()
 
-        let blocked = VoiceToolFormatting.page(["gated": true, "text": "Subscribe", "url": "https://example.com"], source: "fetch")
-        let decoded = try JSONSerialization.jsonObject(with: Data(blocked.utf8)) as! [String: Any]
-        assert(decoded["status"] as? String == "blocked")
-        assert(decoded["complete"] as? Bool == false)
-        let partial = VoiceToolFormatting.page(["text": "Article", "truncated": true], source: "fetch")
-        let partialResult = try JSONSerialization.jsonObject(with: Data(partial.utf8)) as! [String: Any]
-        assert(partialResult["complete"] as? Bool == false)
-
-        var methods = [String]()
-        let recovered = try await PageReadWorkflow.read(url: "https://example.com/story", allowFetch: true, allowBridge: true) { method, _ in
-            methods.append(method)
-            return method == "web_fetch"
-                ? ["gated": true, "text": "Subscribe"]
-                : ["url": "https://example.com/story#heading", "text": "The requested article"]
+        // The page ladder and the screen-read budget moved to the server: the
+        // client only publishes definitions and runs screenshot / code_agent.
+        let names = VoiceToolExecutor.shared.activeToolDefinitions().compactMap { $0["name"] as? String }
+        assert(Set(names).count == names.count, "Tool names must be unique")
+        assert(names.contains("remember") && names.contains("forget") && names.contains("search_chat_history"))
+        assert(!names.contains("web_fetch") && !names.contains("read_article"), "Legacy page tools are gone")
+        for name in names where VoiceToolExecutor.serverSideTools.contains(name) {
+            assert(["web_search", "read_page", "remember", "forget", "search_chat_history"].contains(name))
         }
-        assert(methods == ["web_fetch", "chrome_bridge"])
-        assert(recovered["text"] as? String == "The requested article")
-        let mismatch = try await PageReadWorkflow.read(url: "https://example.com/story", allowFetch: false, allowBridge: true) { _, _ in
-            ["url": "https://example.com/other", "text": "Unrelated page"]
-        }
-        assert(mismatch["text"] == nil, "Never substitute a different Chrome page")
-        methods = []
-        _ = try await PageReadWorkflow.read(url: nil, allowFetch: true, allowBridge: true) { method, url in
-            methods.append(method)
-            if method == "chrome_bridge" { return ["status": "failed", "url": "https://example.com/old"] }
-            assert(url == "https://example.com/old")
-            return ["text": "Recovered page"]
-        }
-        assert(methods == ["chrome_bridge", "web_fetch"])
-        let missingBridge = try await PageReadWorkflow.read(url: "https://x.com/user/status/123", allowFetch: false, allowBridge: true) { _, _ in
-            ["status": "failed", "reason": "bridge_never_enabled"]
-        }
-        let missingAttempts = missingBridge["attempts"] as! [[String: Any]]
-        assert(missingAttempts[0]["reason"] as? String == "bridge_never_enabled")
-        assert(missingAttempts[0]["status"] as? String == "failed")
-        methods = []
-        _ = try await PageReadWorkflow.read(url: nil, allowFetch: false, allowBridge: false) { method, _ in
-            methods.append(method); return [:]
-        }
-        assert(methods.isEmpty, "Disabled tools must not execute")
-
-        assert(!PageReadWorkflow.prefersBrowser("https://x.com.example.org/story"))
-        assert(PageReadWorkflow.samePage("https://twitter.com/user/status/123", "https://x.com/user/status/123#body"))
-        methods = []
-        let xArticle = try await PageReadWorkflow.read(url: "https://twitter.com/user/status/123", allowFetch: true, allowBridge: true) { method, _ in
-            methods.append(method)
-            return ["url": "https://x.com/user/status/123", "text": "Full X article", "complete": true]
-        }
-        assert(methods == ["chrome_bridge"] && xArticle["complete"] as? Bool == true)
-        methods = []
-        _ = try await PageReadWorkflow.read(url: "https://x.com/user/status/123", allowFetch: true, allowBridge: true) { method, address in
-            methods.append(method)
-            assert(address == "https://x.com/user/status/123")
-            return method == "chrome_bridge"
-                ? ["url": "https://x.com/other/status/456", "text": "Wrong post"]
-                : ["text": "Requested post"]
-        }
-        assert(methods == ["chrome_bridge", "web_fetch"])
-        methods = []
-        _ = try await PageReadWorkflow.read(url: "https://x.com/user/status/123", allowFetch: true, allowBridge: false) { method, _ in
-            methods.append(method)
-            return ["text": "Public post"]
-        }
-        assert(methods == ["web_fetch"], "Browser preference must respect disabled bridge")
-        methods = []
-        _ = try await PageReadWorkflow.read(url: "https://example.com/member/story", allowFetch: true, allowBridge: true, preferBrowser: true) { method, url in
-            methods.append(method)
-            return ["url": url!, "text": "Member article"]
-        }
-        assert(methods == ["chrome_bridge"])
-
-        methods = []
-        let completePage = try await PageReadWorkflow.read(url: "https://example.com/story", allowFetch: true, allowBridge: true) { method, url in
-            methods.append(method)
-            return method == "web_fetch"
-                ? ["text": "Only the beginning", "truncated": true]
-                : ["url": url!, "text": "Complete article", "complete": true]
-        }
-        assert(methods == ["web_fetch", "chrome_bridge"])
-        assert(completePage["text"] as? String == "Complete article")
-        let retainedPartial = try await PageReadWorkflow.read(url: "https://example.com/story", allowFetch: true, allowBridge: true) { method, _ in
-            method == "web_fetch" ? ["text": "Available beginning", "complete": false] : ["status": "failed"]
-        }
-        assert(retainedPartial["text"] as? String == "Available beginning")
-        assert(retainedPartial["complete"] as? Bool == false)
-        assert((retainedPartial["attempts"] as? [[String: Any]])?.count == 2)
-        let blockedText = try await PageReadWorkflow.read(url: "https://example.com/story", allowFetch: true, allowBridge: false) { _, _ in
-            ["status": "blocked", "text": "Please subscribe"]
-        }
-        assert(blockedText["text"] == nil)
-
-        let cancelledRead = Task {
-            try await PageReadWorkflow.read(url: "https://example.com/story", allowFetch: true, allowBridge: true) { _, _ in
-                withUnsafeCurrentTask { $0?.cancel() }
-                return ["gated": true]
-            }
-        }
-        do {
-            _ = try await cancelledRead.value
-            assertionFailure("Cancellation must stop page fallback")
-        } catch is CancellationError { }
-
-        var screens = ScreenReadBudget()
-        assert(screens.accept(signature: "one"))
-        assert(!screens.accept(signature: "one"))
-        assert(screens.stopped)
-        screens = ScreenReadBudget()
-        for number in 0..<8 { assert(screens.accept(signature: String(number))) }
-        assert(screens.stopped && !screens.accept(signature: "ninth"))
+        let unavailable = await VoiceToolExecutor.shared.run(name: "web_search", argsJson: "{\"query\":\"x\"}")
+        assert(unavailable.output.contains("runs on the server"), "Research tools never execute in the app")
 
         testTranscript()
-        print("Native runtime checks passed: playback, cancellation, page recovery, screen bounds, transcript revisions")
+        print("Native runtime checks passed: playback, cancellation, tool definitions, transcript revisions")
     }
 
     @MainActor

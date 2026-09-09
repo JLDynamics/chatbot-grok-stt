@@ -109,3 +109,43 @@ def test_session_retention_prunes_oldest(isolated_client):
 
 def test_memories_api_removed(isolated_client):
     assert isolated_client.get("/api/memories").status_code == 404
+
+
+def test_remember_appends_a_fact_once(isolated_client):
+    first = isolated_client.post("/api/personal-memory/remember", json={"fact": "- Jack works at Costco"})
+    assert first.status_code == 200
+    assert first.json() == {"ok": True, "changed": True, "message": "Saved to the personal profile."}
+
+    again = isolated_client.post("/api/personal-memory/remember", json={"fact": "jack works at costco"})
+    assert again.json()["changed"] is False
+    assert "already" in again.json()["message"]
+
+    content = isolated_client.get("/api/personal-memory").json()["content"]
+    assert content.splitlines() == ["- Jack works at Costco"]
+
+    assert isolated_client.post("/api/personal-memory/remember", json={"fact": "   "}).status_code == 400
+
+
+def test_remember_refuses_when_the_profile_is_full(isolated_client, monkeypatch):
+    monkeypatch.setattr(server, "PERSONAL_MEMORY_MAX_CHARS", 30)
+    isolated_client.put("/api/personal-memory", json={"content": "- Jack likes strong black tea"})
+    response = isolated_client.post("/api/personal-memory/remember", json={"fact": "Jack has a dog named Biscuit"})
+    assert response.status_code == 400
+    assert "consolidate" in response.json()["detail"]
+
+
+def test_forget_removes_matching_lines_only(isolated_client):
+    isolated_client.put("/api/personal-memory", json={"content": "- Jack likes tea\n- Jack has a dog\n- Nicole is 12"})
+
+    removed = isolated_client.post("/api/personal-memory/forget", json={"memory": "DOG"})
+    assert removed.json() == {"ok": True, "removed": 1, "message": "Removed it from the personal profile."}
+    content = isolated_client.get("/api/personal-memory").json()["content"]
+    assert content.splitlines() == ["- Jack likes tea", "- Nicole is 12"]
+
+    nothing = isolated_client.post("/api/personal-memory/forget", json={"memory": "cat"})
+    assert nothing.json()["removed"] == 0
+    assert "No matching" in nothing.json()["message"]
+
+    short = isolated_client.post("/api/personal-memory/forget", json={"memory": "ab"})
+    assert short.status_code == 400
+    assert "three characters" in short.json()["detail"]

@@ -67,6 +67,12 @@ struct OrbView: View {
                 .strokeBorder(theme.orbRing, lineWidth: 2)
                 .padding(-ringSpread(for: levels.input))
                 .animation(.linear(duration: 0.09), value: levels.input)
+        case .thinking:
+            if reduceMotion {
+                Circle().strokeBorder(theme.orbRing, lineWidth: 2).padding(-4)
+            } else {
+                ConnectingRing(color: theme.orbRing)
+            }
         case .agentSpeaking:
             if reduceMotion {
                 Circle().strokeBorder(theme.orbRing, lineWidth: 6)
@@ -82,7 +88,7 @@ struct OrbView: View {
     }
 
     private enum DisplayMode {
-        case idle, connecting, listening, agentSpeaking, muted, error
+        case idle, connecting, listening, thinking, agentSpeaking, muted, error
     }
 
     private var displayMode: DisplayMode {
@@ -92,6 +98,7 @@ struct OrbView: View {
         case .idle: return .idle
         case .connecting: return .connecting
         case .listening: return .listening
+        case .thinking: return .thinking
         case .agentSpeaking: return .agentSpeaking
         case .failed: return .error
         }

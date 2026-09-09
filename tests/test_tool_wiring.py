@@ -32,14 +32,17 @@ def test_chrome_bridge_reports_disconnected_without_extension():
     status = client.get("/api/browser/status").json()
     assert "connected" in status
     response = client.post("/api/browser/read")
-    assert response.status_code in {404, 409, 422, 503} or (
-        response.status_code == 200 and response.json().get("status") == "failed"
-    ) or (
-        isinstance(response.json().get("detail"), dict)
-        and response.json()["detail"].get("reason") in {
-            "bridge_never_enabled",
-            "bridge_expired",
-        }
+    assert (
+        response.status_code in {404, 409, 422, 503}
+        or (response.status_code == 200 and response.json().get("status") == "failed")
+        or (
+            isinstance(response.json().get("detail"), dict)
+            and response.json()["detail"].get("reason")
+            in {
+                "bridge_never_enabled",
+                "bridge_expired",
+            }
+        )
     )
 
 

@@ -68,7 +68,7 @@ struct ConversationView: View {
                 Text(note).font(.system(size: 10)).foregroundStyle(resolvedTheme.text3)
                     .padding(.horizontal, 16)
             }
-            if session.state == .agentSpeaking || session.activeTool != nil {
+            if session.state == .agentSpeaking || session.state == .thinking || session.activeTool != nil {
                 Button("Stop reply") { session.interrupt() }
                     .buttonStyle(PressableButtonStyle())
                     .font(.system(size: 11, weight: .medium))
@@ -115,6 +115,7 @@ struct ConversationView: View {
         case .idle: message = "Session ended"
         case .connecting: message = "Connecting"
         case .listening: message = session.isMuted ? "Muted" : "Listening"
+        case .thinking: message = "Thinking"
         case .agentSpeaking: message = "Agent speaking"
         case .failed: message = nil
         }

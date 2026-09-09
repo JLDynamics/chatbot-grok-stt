@@ -4,7 +4,7 @@ A Mac-first live voice chatbot that runs its ears and voice locally, while a Res
 
 `native panel microphone → Parakeet MLX → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → speakers`
 
-It keeps realtime WebSocket turn-taking, interruption/cancellation, partial transcripts, long-term memory, web search and fetch, the Chrome page bridge, in-app screenshots, camera, and optional coding-agent delegation.
+It keeps realtime WebSocket turn-taking, interruption/cancellation, partial transcripts, long-term memory, in-response web search and page reading (including the Chrome page bridge for logged-in or paywalled tabs), in-app screenshots, and optional coding-agent delegation.
 
 In the default **Speakers (echo cancellation)** mode, the mic stays open while the assistant speaks. The panel uses matched mono capture/render formats for Apple's voice processing, with Silero VAD detecting interruptions. If voice processing cannot start, the panel visibly reports compatibility mode, which suppresses microphone capture during playback. **Headphones** mode keeps capture open without echo cancellation. **Stop reply** stops playback and pending tools without ending the conversation. Saved conversations are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. VibeVoice runs locally without an AI watermark.
 
@@ -73,11 +73,12 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 
 ### Search, fetch, and the Chrome bridge
 
-These solve different jobs:
+The model searches and reads pages **inside the same reply** — it does not wait for the Mac app to round-trip each hop.
 
-- **Local web search**: TinyFish (preferred), Tavily, or Serper returns result titles, short snippets, and URLs to the OpenRouter model when a search key is configured. Page fetch uses TinyFish when its key is set.
-- **Web fetch**: reads the bounded text of one known public HTTP(S) URL. It does not discover pages, and it refuses localhost/private-network addresses.
-- **Chrome page bridge**: reads bounded, reader-style main text from the visible public webpage, news story, documentation, blog post, dedicated X long-form Article, or individual X status post, including pages that a normal fetch cannot access. It is read-only and excludes X replies/timelines.
+- **Local web search**: TinyFish (preferred), Tavily, or Serper. Use when a fact may be outdated or the model is not sure.
+- **`read_page`**: one tool that tries public fetch, then the live Chrome tab when fetch is gated, login-only, or the page is already on screen. X/Twitter links start with Chrome. TinyFish fetch falls back to a direct HTTP read if the provider fails.
+- **Chrome page bridge**: bounded reader-style text from the visible public tab, including pages a normal fetch cannot open. Read-only; no replies/timelines on X. The extension still has to be enabled on the tab.
+- **Screenshot** stays in Voice.app (Screen Recording is per app). It is for visual questions, not for reading articles.
 
 ## Chrome page bridge
 
@@ -104,25 +105,12 @@ unsupported page clears stale text but leaves the green session state on. The
 toolbar icon is the enable control; it does not turn an active session off.
 The bridge publishes only the currently visible HTTP(S) tab, blocks login/password/payment contexts, never reads the chatbot page itself, limits text to 60,000 characters, and keeps a fresh page for five minutes. For an individual X status URL it returns only the primary post and excludes replies; image-only posts remain visual requests. It does not scroll or take screenshots. See the [extension notes](web_app/chrome_article_bridge/README.md).
 
-Natural article wording routes to the bridge: “read/summarize/analyze the
-article, news, webpage, or page on my screen.” Generic visual wording such as
-“check my screen,” “look at this app/window,” or requests about a layout, image,
-chart, appearance, or explicit screenshot instead use Desktop Control's
-screenshot action when enabled. Ambiguous wording produces one short
-metadata-only preflight: it checks for a fresh readable Chrome page and, when
-Desktop Control is enabled, the frontmost app/window name. It does not return
-page body text, screen labels, form values, or pixels. Clear context routes
-automatically; unresolved or conflicting context produces one short clarifying
-question. Article extraction never automatically falls back to a screenshot.
-Reading a public page is read-only: the request itself is sufficient authorization,
-so the chatbot does not ask for approval. If the bridge is not ready, it asks you
-to reload the extension/page instead of offering a screenshot. Desktop actions and
-screenshots remain limited to explicit control or visual requests.
+Natural article wording uses `read_page` (fetch, then Chrome when needed). Generic visual wording such as “check my screen,” “look at this app/window,” or an explicit screenshot uses the in-app screenshot tool. Article extraction never automatically falls back to a screenshot. Reading a public page is read-only: the request itself is sufficient authorization. If the bridge is not ready, the assistant says so and can still try a public fetch when it has a URL.
 
 ## Optional tools
 
-- **Coding agent** runs the locally installed [Grok Build](https://x.ai/cli) `grok` CLI (model `grok-4.6`), which also has the `desktop-harness` skill for Mac control.
-- **Desktop control** uses `~/.local/bin/desktop-harness` and requires macOS Accessibility permission for actions plus Screen Recording permission for screenshots. The server kill switch defaults on, and the panel starts with the tool on when desktop-harness is available; disable it in Settings if you prefer. It acts or captures only when explicitly requested. A screenshot can target the main display or a named visible app/window; sensitive sign-in/payment scopes remain blocked.
+- **Coding agent** runs the locally installed [Grok Build](https://x.ai/cli) `grok` CLI (model `grok-4.6`) on this Mac when you ask it to inspect or change files.
+- **Screenshot** captures the main display from Voice.app. Screen Recording permission is required. Sensitive sign-in/payment windows stay blocked.
 - **Memory** uses an editable personal Markdown profile and saved conversations. The assistant can update it when you say “remember…” or “forget…”.
 
 ## Development

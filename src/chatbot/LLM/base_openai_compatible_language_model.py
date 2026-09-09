@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterator
 from typing import Any, Optional
@@ -12,6 +13,7 @@ from openai import OpenAI
 from openai.types.realtime.conversation_item import (
     RealtimeConversationItemAssistantMessage,
     RealtimeConversationItemFunctionCall,
+    RealtimeConversationItemFunctionCallOutput,
 )
 from openai.types.realtime.realtime_conversation_item_assistant_message import (
     Content as AssistantContent,
@@ -23,6 +25,7 @@ from chatbot.baseHandler import BaseHandler
 from chatbot.LLM.chat import Chat, ChatItemError, SupportedItem
 from chatbot.LLM.chat_factories import build_active_chat, make_system_message, make_user_message
 from chatbot.LLM.compaction_prompt import CompactGenerateFn, build_compactor
+from chatbot.LLM.server_tools import MAX_TOOL_ROUNDS, TOOL_TIME_BUDGET_S, ServerToolExecutor
 from chatbot.LLM.text_prompt import build_text_system_prompt
 from chatbot.LLM.utils import remove_unspeechable, resolve_auto_language
 from chatbot.LLM.voice_prompt import build_voice_system_prompt
@@ -32,6 +35,7 @@ from chatbot.pipeline.messages import (
     EndOfResponse,
     LLMResponseChunk,
     TokenUsage,
+    ToolActivity,
 )
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 from chatbot.utils.utils import is_out_of_band, response_wants_audio
@@ -100,12 +104,16 @@ class _GenState(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    # The chat serialised for each model call this response. Items recorded
+    # mid-response (assistant text, tool calls, tool outputs) are appended here
+    # so the next server-side tool round sees them.
+    active_chat: Chat | None = None
     tools: list[ResponseFunctionToolCall] = Field(default_factory=list)
     pending: list[SupportedItem] = Field(default_factory=list)
     recorded_item_ids: set[str] = Field(default_factory=set)
     recorded_call_ids: set[str] = Field(default_factory=set)
     clean_text: str = ""  # filtered text, kept only for the debug log
-    input_tokens: int = 0
+    input_tokens: int = 0  # summed over every model call in the response
     output_tokens: int = 0
 
 
@@ -140,6 +148,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         stream_batch_sentences: int = 3,
         enable_lang_prompt: bool = False,
         compact_history: bool = False,
+        sidecar_url: str = "",
         **_kwargs: Any,
     ) -> None:
         self.cancel_scope = cancel_scope
@@ -160,9 +169,19 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         if api_key is None:
             api_key = os.environ.get("OPENROUTER_API_KEY")
         self.client = OpenAI(api_key=api_key, base_url=base_url)
-        self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort)
+        self._reasoning_effort = (reasoning_effort or "").strip().lower() or None
+        self._extra_body = self._build_extra_body(base_url, disable_thinking, self._reasoning_effort)
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
+        self.server_tools = ServerToolExecutor(sidecar_url) if sidecar_url.strip() else None
+        if self.server_tools is not None:
+            logger.info("Server-side research tools enabled via %s", self.server_tools.base_url)
         self.warmup()
+
+    # Class-level defaults so partially-initialised handlers (tests build them
+    # with object.__new__) still have every attribute _request() reads.
+    _reasoning_effort: Optional[str] = None
+    _extra_body: Optional[dict[str, Any]] = None
+    server_tools: ServerToolExecutor | None = None
 
     @classmethod
     def _build_extra_body(
@@ -171,16 +190,16 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         disable_thinking: bool,
         reasoning_effort: Optional[str],
     ) -> Optional[dict[str, Any]]:
-        """Build the provider-specific ``extra_body`` used to disable reasoning.
+        """Build the provider-specific ``extra_body`` used to turn reasoning off.
 
-        Providers differ in how reasoning is turned off: vLLM/Qwen honour
-        ``chat_template_kwargs.enable_thinking=false``, while others (e.g. GLM via
-        the HF router) ignore that and require ``reasoning_effort='none'``. A
-        non-empty ``reasoning_effort`` therefore takes precedence; otherwise we fall
-        back to the chat-template flag.
+        When a ``reasoning_effort`` is configured it is sent as the standard
+        ``reasoning: {effort}`` request parameter (see :meth:`_request`) and no
+        extra body is needed. Otherwise, for providers that only understand the
+        chat-template flag (vLLM/Qwen), ``disable_thinking`` sends
+        ``chat_template_kwargs.enable_thinking=false``.
         """
         if reasoning_effort:
-            return {"reasoning_effort": reasoning_effort}
+            return None
         if disable_thinking:
             return {"chat_template_kwargs": {"enable_thinking": False}}
         return None
@@ -241,6 +260,13 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return True
         return self.speculative_turns.is_latest(turn_id, turn_revision)
 
+    def _memory_profile(self) -> str:
+        """Personal memory to fold into the system prompt; empty when unavailable."""
+        return self.server_tools.memory_profile() if self.server_tools is not None else ""
+
+    def _runs_server_side(self, tool_name: str) -> bool:
+        return self.server_tools is not None and self.server_tools.handles(tool_name)
+
     def _apply_config(
         self,
         chat: Chat,
@@ -249,7 +275,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
     ) -> None:
         if instructions:
             builder = build_voice_system_prompt if wants_audio else build_text_system_prompt
-            full_instructions = builder(instructions)
+            full_instructions = builder(instructions, memory=self._memory_profile())
             logger.info(
                 "Applied %s system prompt (%d chars, conversation_partner=%s)",
                 "voice" if wants_audio else "text",
@@ -280,9 +306,29 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             cancel_generation=turn.gen,
         )
 
+    def _record_items(self, state: _GenState, turn: _Turn, items: list[SupportedItem]) -> None:
+        """Append items to the chat the model reads next round and, for in-band
+        turns, to the default conversation.
+
+        ``state.active_chat`` is the per-response working copy: server-side tool
+        rounds re-serialise it, so it must see assistant text, function calls and
+        their outputs as they happen. Out-of-band turns stop there (their context
+        is a throwaway); in-band turns also persist to the default conversation
+        so a client ``function_call_output`` can pair with its call."""
+        for item in items:
+            recorded = state.active_chat.add_item(item) if state.active_chat is not None else item
+            if not is_out_of_band(turn.response):
+                recorded = turn.runtime_config.chat.add_item(item)
+            if recorded.id is not None:
+                state.recorded_item_ids.add(recorded.id)
+            if (
+                isinstance(recorded, (RealtimeConversationItemFunctionCall, RealtimeConversationItemFunctionCallOutput))
+                and recorded.call_id
+            ):
+                state.recorded_call_ids.add(recorded.call_id)
+
     def _record_tool_call(self, state: _GenState, turn: _Turn, item: ResponseFunctionToolCall) -> Iterator[LLMOut]:
-        """Emit a tool call, persisting it (and any assistant text seen so far)
-        to history *before* it is forwarded to the client.
+        """Persist a tool call (and any assistant text seen so far) and announce it.
 
         The function_call must already exist in the conversation by the time the
         client returns its ``function_call_output``; otherwise a fast client
@@ -291,8 +337,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         model re-issue the same tool call. The call lands in ``_pending_tool_calls``
         (not serialized until its output pairs it), so eager recording is safe.
 
-        Out-of-band turns never touch the default conversation, and a stale turn
-        records nothing (it is not forwarded to the client either)."""
+        Tools the server runs itself are announced as :class:`ToolActivity`
+        (the client shows them, it does not execute them); everything else is
+        forwarded in a chunk for the client to run. A stale turn records nothing."""
         state.tools.append(item)
         fc_item = RealtimeConversationItemFunctionCall(
             type="function_call",
@@ -305,21 +352,66 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         if self._generation_is_stale(turn.gen) or not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
             logger.info("LLM generation cancelled (stale speculative turn)")
             return
-        if not is_out_of_band(turn.response):
-            # Flush assistant text accumulated before this call first (so history
-            # order matches what the client received), then persist the call —
-            # all before the chunk leaves for the client.
-            chat = turn.runtime_config.chat
-            for pending_item in state.pending:
-                recorded = chat.add_item(pending_item)
-                if recorded.id is not None:
-                    state.recorded_item_ids.add(recorded.id)
-            state.pending.clear()
-            recorded_call = chat.add_item(fc_item)
-            if recorded_call.id is not None:
-                state.recorded_item_ids.add(recorded_call.id)
-            state.recorded_call_ids.add(item.call_id)
+        # Flush assistant text accumulated before this call first (so history
+        # order matches what the client received), then persist the call —
+        # all before anything leaves for the client.
+        self._record_items(state, turn, [*state.pending, fc_item])
+        state.pending.clear()
+        if self._runs_server_side(item.name):
+            yield ToolActivity(
+                status="started",
+                call_id=item.call_id,
+                item_id=fc_item.id or "",
+                name=item.name,
+                arguments=item.arguments or "{}",
+                turn_id=turn.turn_id,
+                turn_revision=turn.turn_revision,
+                cancel_generation=turn.gen,
+            )
+            return
         yield self._chunk(turn, tools=[item])
+
+    def _run_server_tools(
+        self,
+        calls: list[ResponseFunctionToolCall],
+        state: _GenState,
+        turn: _Turn,
+    ) -> Generator[LLMOut, None, bool]:
+        """Execute this round's server-side calls, append their outputs, report them.
+
+        Returns False when the turn was interrupted while tools were running; the
+        outputs are then dropped and the response ends without another model call."""
+        assert self.server_tools is not None
+
+        def interrupted() -> bool:
+            return self._generation_is_stale(turn.gen) or not self._turn_output_allowed(
+                turn.turn_id, turn.turn_revision
+            )
+
+        outputs = self.server_tools.run_many(calls, is_cancelled=interrupted)
+        if any(output is None for output in outputs) or interrupted():
+            logger.info("LLM generation cancelled while tools were running")
+            return False
+        for call, output in zip(calls, outputs, strict=True):
+            assert output is not None
+            output_item = RealtimeConversationItemFunctionCallOutput(
+                type="function_call_output",
+                call_id=call.call_id,
+                output=output,
+            )
+            self._record_items(state, turn, [output_item])
+            yield ToolActivity(
+                status="finished",
+                call_id=call.call_id,
+                item_id=output_item.id or "",
+                name=call.name,
+                arguments=call.arguments or "{}",
+                output=output,
+                turn_id=turn.turn_id,
+                turn_revision=turn.turn_revision,
+                cancel_generation=turn.gen,
+            )
+        return True
 
     # ── consumption ─────────────────────────────────────────────────────────--
 
@@ -332,6 +424,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         cancelled = False
         printable_text = ""
         sentence_batch: list[str] = []
+        # The first complete sentence goes to TTS on its own so speech starts as
+        # early as possible; later sentences are batched (stream_batch_sentences)
+        # for better prosody once audio is already playing.
+        first_flush_pending = True
 
         def _flush(batch: list[str]) -> Iterator[LLMOut]:
             if not batch:
@@ -348,8 +444,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 break
 
             if isinstance(event, Usage):
-                state.input_tokens = event.input_tokens
-                state.output_tokens = event.output_tokens
+                state.input_tokens += event.input_tokens
+                state.output_tokens += event.output_tokens
             elif isinstance(event, AssistantMessage):
                 state.pending.append(
                     RealtimeConversationItemAssistantMessage(type="message", role="assistant", content=event.content)
@@ -387,16 +483,22 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 if len(sentences) > 1:
                     for s in sentences[:-1]:
                         sentence_batch.append(s)
-                        if len(sentence_batch) >= self.stream_batch_sentences:
+                        threshold = 1 if first_flush_pending else self.stream_batch_sentences
+                        if len(sentence_batch) >= threshold:
                             if not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
                                 logger.info("LLM generation cancelled (stale speculative turn)")
                                 cancelled = True
                                 break
                             yield from _flush(sentence_batch)
                             sentence_batch = []
+                            first_flush_pending = False
                     if cancelled:
                         break
-                    printable_text = sentences[-1]
+                    # Keep the raw tail (sent_tokenize strips its trailing space)
+                    # so the next delta cannot glue onto it as "one.Here" and
+                    # hide a sentence boundary from the tokenizer.
+                    tail_start = printable_text.rfind(sentences[-1])
+                    printable_text = printable_text[tail_start:] if tail_start >= 0 else sentences[-1]
 
         if not cancelled:
             if printable_text.strip():
@@ -425,8 +527,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return False
         for event in events:
             if isinstance(event, Usage):
-                state.input_tokens = event.input_tokens
-                state.output_tokens = event.output_tokens
+                state.input_tokens += event.input_tokens
+                state.output_tokens += event.output_tokens
             elif isinstance(event, AssistantMessage):
                 state.pending.append(
                     RealtimeConversationItemAssistantMessage(type="message", role="assistant", content=event.content)
@@ -465,7 +567,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         history_commit_fn: Callable[[], None] | None = None,
     ) -> Generator[LLMOut, None, bool]:
         api_response: Any = None
-        state = _GenState()
+        state = _GenState(active_chat=active_chat)
         error_message: str | None = None
         generation_completed = False
         history_committed = False
@@ -485,24 +587,63 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         try:
             try:
-                api_input = (serialize_fn or self._serialize)(active_chat)
-                # Images the model actually sees this turn; only these are stripped on
-                # write-back, so an image a fast client injects mid-generation for the
-                # next turn survives (it is not in this serialized snapshot).
-                consumed_image_ids = active_chat.image_message_ids()
-                if not api_input:
-                    # Nothing to send: empty `instructions` and no `input` (in the response,
-                    # the default conversation, or the out-of-band context). The provider
-                    # would reject this; fail with a clear message instead of an opaque error.
-                    error_message = "Cannot generate a response: no instructions and no input were provided."
-                else:
-                    api_response = (request_fn or self._request)(api_input, optional_kwargs)
-                if api_response is not None:
+                # One response may take several model calls: each round streams text
+                # (spoken as it arrives) and may end in tool calls. Tools the server
+                # runs itself are executed here and the loop continues with their
+                # outputs in context; a tool the client must run ends the loop (the
+                # client posts its output and asks for a new response).
+                research_started = time.monotonic()
+                for tool_round in range(MAX_TOOL_ROUNDS + 1):
+                    api_input = (serialize_fn or self._serialize)(active_chat)
+                    # Images the model actually sees this turn; only these are stripped on
+                    # write-back, so an image a fast client injects mid-generation for the
+                    # next turn survives (it is not in this serialized snapshot).
+                    consumed_image_ids |= active_chat.image_message_ids()
+                    if not api_input:
+                        # Nothing to send: empty `instructions` and no `input` (in the response,
+                        # the default conversation, or the out-of-band context). The provider
+                        # would reject this; fail with a clear message instead of an opaque error.
+                        error_message = "Cannot generate a response: no instructions and no input were provided."
+                        break
+                    round_kwargs = optional_kwargs
+                    research_s = time.monotonic() - research_started
+                    out_of_rounds = tool_round == MAX_TOOL_ROUNDS
+                    out_of_time = tool_round > 0 and research_s > TOOL_TIME_BUDGET_S
+                    if (out_of_rounds or out_of_time) and "tools" in optional_kwargs:
+                        # Out of rounds or time: the model must answer with what it has.
+                        logger.warning(
+                            "Research budget reached (round %d, %.1fs); forcing a final answer", tool_round, research_s
+                        )
+                        round_kwargs = {**optional_kwargs, "tool_choice": "none"}
+                    api_response = (request_fn or self._request)(api_input, round_kwargs)
+                    if api_response is None:
+                        break
                     events = (event_iterator_fn or self._iter_events)(api_response)
+                    first_new_tool = len(state.tools)
                     if self.stream:
                         generation_completed = yield from self._consume_streaming(events, state, turn)
                     else:
                         generation_completed = yield from self._consume_nonstreaming(events, state, turn)
+                    self._close_response(api_response)
+                    api_response = None
+                    if not generation_completed:
+                        break
+                    new_tools = state.tools[first_new_tool:]
+                    server_calls = [call for call in new_tools if self._runs_server_side(call.name)]
+                    client_calls = [call for call in new_tools if not self._runs_server_side(call.name)]
+                    if server_calls:
+                        logger.info(
+                            "Tool round %d: running %s server-side",
+                            tool_round + 1,
+                            ", ".join(call.name for call in server_calls),
+                        )
+                        generation_completed = yield from self._run_server_tools(server_calls, state, turn)
+                        if not generation_completed:
+                            break
+                    # A screenshot / code_agent in the same round still has to
+                    # finish on the client before the model can continue.
+                    if client_calls or not server_calls:
+                        break
             except httpx.ReadTimeout:
                 logger.warning(
                     "OpenAI API read timed out after %.1fs; ending the current response",
@@ -572,12 +713,16 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             )
             return history_committed
         finally:
-            if api_response is not None and hasattr(api_response, "close"):
-                try:
-                    api_response.close()
-                except Exception:
-                    pass
+            self._close_response(api_response)
             rollback_transaction()
+
+    @staticmethod
+    def _close_response(api_response: Any) -> None:
+        if api_response is not None and hasattr(api_response, "close"):
+            try:
+                api_response.close()
+            except Exception:
+                pass
 
     def process(self, request: LLMIn) -> Iterator[LLMOut]:
         """Process a language model request and yield LLMResponseChunks."""

@@ -18,6 +18,11 @@ fi
 
 MODEL="${MODEL:-openai/gpt-5.6-luna}"
 PORT="${PORT:-8766}"
+WEB_PORT="${WEB_PORT:-7860}"
+SIDECAR_URL="${SIDECAR_URL:-http://127.0.0.1:$WEB_PORT/api}"
+# none | minimal | low | medium | high. Low keeps replies quick while still
+# letting the model reason briefly about whether it needs to search.
+REASONING_EFFORT="${REASONING_EFFORT:-low}"
 BATCH_SENTENCES="${BATCH_SENTENCES:-3}"
 CHAT_SIZE="${CHAT_SIZE:-20}"
 DEFAULT_PROMPT='You are an AI conversation partner: perceptive, relaxed, warm, and quietly playful. You enjoy exploring ideas and have something thoughtful to contribute. Speak with the ease of someone comfortable in the conversation.'
@@ -99,6 +104,8 @@ args+=(
   --model_name "$MODEL"
   --responses_api_stream
   --no_responses_api_disable_thinking
+  --responses_api_reasoning_effort "$REASONING_EFFORT"
+  --sidecar_url "$SIDECAR_URL"
   --init_chat_prompt "$PROMPT"
   --stream_batch_sentences "$BATCH_SENTENCES"
   --chat_size "$CHAT_SIZE"

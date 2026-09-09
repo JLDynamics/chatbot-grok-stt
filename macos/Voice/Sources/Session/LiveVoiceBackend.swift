@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import CryptoKit
 
 /// Realtime WebSocket backend for the Chatbot voice server
 /// (`ws://127.0.0.1:8766/v1/realtime`).
@@ -46,8 +45,9 @@ final class LiveVoiceBackend: VoiceBackend {
     private var responseCreateRequested = false
     private var partialItemId: String?
     private var partialText = ""
-    private var screenReads = ScreenReadBudget()
-    private var readingPage = false
+    /// Server-run tool calls in flight, by call_id, so the matching output can
+    /// be reported under the tool's name.
+    private var serverToolNames: [String: String] = [:]
 
     private var agentText = ""
     private var activeResponseId = ""
@@ -61,9 +61,8 @@ final class LiveVoiceBackend: VoiceBackend {
     private var lastResponseCreatedAt = Date.distantPast
     private var cancelledIds = Set<String>()
     private var lastOutputLevelAt = Date.distantPast
-    /// Personal memory profile + saved transcript, set by the controller
-    /// before start() so the live session opens with the same context as web.
-    var memoryProfile = ""
+    /// Saved transcript, set by the controller before start() so the live
+    /// session opens with the recent conversation in context.
     var historyMessages: [(role: String, text: String, name: String?)] = []
 
     init(
@@ -80,10 +79,6 @@ final class LiveVoiceBackend: VoiceBackend {
 
     func setHistory(_ messages: [(role: String, text: String, name: String?)]) {
         historyMessages = messages
-    }
-
-    func refreshMemory() async {
-        await refreshInstructions()
     }
 
     func refreshTools() {
@@ -108,25 +103,22 @@ final class LiveVoiceBackend: VoiceBackend {
         guard !closed, connectionGeneration == generation, !Task.isCancelled else { return }
         onAudioStatus?(nil)
 
-        // Best-effort personal memory so the assistant knows the user like web.
-        // Never blocks voice: failure just means an empty profile this session.
-        if let profile = try? await ChatStore.shared.getPersonalMemory() {
-            memoryProfile = profile
-        }
+        // Open the socket before the audio engine: the TCP/WebSocket handshake
+        // and session.created happen on the network while voice-processing
+        // setup (a few hundred ms) runs on this actor, instead of one after
+        // the other. Mic frames only flow once `connection == .ready`, and a
+        // socket failure meanwhile tears everything down via fail().
+        openWebSocket(generation: generation)
 
-        guard !closed, connectionGeneration == generation, !Task.isCancelled else { return }
         do {
             try await audio.start()
         } catch {
-            connection = .idle
-            closed = true
-            onState?(.failed(error.localizedDescription))
+            fail(error.localizedDescription)
             throw error
         }
 
         if closed || generation != connectionGeneration || Task.isCancelled {
             audio.stop()
-            connection = .idle
             return
         }
 
@@ -156,14 +148,16 @@ final class LiveVoiceBackend: VoiceBackend {
                 self.appendMicPCM(bytes)
             }
         }
+    }
 
-        let session = URLSession.shared
-        let task = session.webSocketTask(with: wsURL)
+    private func openWebSocket(generation: UUID) {
+        let task = URLSession.shared.webSocketTask(with: wsURL)
         webSocket = task
         connection = .awaitingSession
         task.resume()
+        let decoder = pcm
         receiveTask = Task.detached { [weak self] in
-            await Self.pump(task, owner: self, generation: generation)
+            await Self.pump(task, owner: self, pcm: decoder, generation: generation)
         }
         handshakeTimeout = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 8_000_000_000)
@@ -282,15 +276,41 @@ final class LiveVoiceBackend: VoiceBackend {
 
     /// Receive off the MainActor. URLSession delivers on the session queue;
     /// awaiting receive() on MainActor deadlocks connecting forever.
-    private static func pump(_ ws: URLSessionWebSocketTask, owner: LiveVoiceBackend?, generation: UUID) async {
+    /// Audio deltas are decoded here so JSON/base64/resample do not hitch the panel.
+    private static func pump(
+        _ ws: URLSessionWebSocketTask,
+        owner: LiveVoiceBackend?,
+        pcm: PCMBridge,
+        generation: UUID
+    ) async {
         while !Task.isCancelled {
             let closed = await MainActor.run { owner?.closed != false || owner?.connectionGeneration != generation }
             if closed { break }
             do {
                 let message = try await ws.receive()
-                await MainActor.run {
-                    guard owner?.connectionGeneration == generation else { return }
-                    owner?.handle(message)
+                let text: String?
+                switch message {
+                case .string(let value): text = value
+                case .data(let data): text = String(data: data, encoding: .utf8)
+                @unknown default: text = nil
+                }
+                guard let text else { continue }
+                if let delta = parseAudioDelta(text) {
+                    let dest = await MainActor.run { () -> AVAudioFormat? in
+                        guard let owner, owner.connectionGeneration == generation, !owner.closed else { return nil }
+                        if owner.shouldDropAudio(responseId: delta.responseId) { return nil }
+                        return owner.audio.playbackFormat
+                    }
+                    guard let dest, let buffer = pcm.playbackBuffer(base64: delta.b64, dest: dest) else { continue }
+                    let level = pcm.rmsLevel(buffer)
+                    await MainActor.run {
+                        owner?.playDecodedAudio(buffer, level: level, responseId: delta.responseId, generation: generation)
+                    }
+                } else {
+                    await MainActor.run {
+                        guard owner?.connectionGeneration == generation else { return }
+                        owner?.handle(.string(text))
+                    }
                 }
             } catch {
                 NSLog("[LiveVoice] receive failed: \(error.localizedDescription)")
@@ -301,6 +321,45 @@ final class LiveVoiceBackend: VoiceBackend {
                 break
             }
         }
+    }
+
+    private struct AudioDelta {
+        let responseId: String
+        let b64: String
+    }
+
+    private static func parseAudioDelta(_ text: String) -> AudioDelta? {
+        guard let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = json["type"] as? String,
+              type == "response.audio.delta" || type == "response.output_audio.delta",
+              let b64 = json["delta"] as? String, !b64.isEmpty
+        else { return nil }
+        let responseId: String
+        if let id = json["response_id"] as? String {
+            responseId = id
+        } else if let response = json["response"] as? [String: Any], let id = response["id"] as? String {
+            responseId = id
+        } else {
+            responseId = ""
+        }
+        return AudioDelta(responseId: responseId, b64: b64)
+    }
+
+    private func shouldDropAudio(responseId: String) -> Bool {
+        !responseId.isEmpty && cancelledIds.contains(responseId)
+    }
+
+    private func playDecodedAudio(
+        _ buffer: AVAudioPCMBuffer,
+        level: Float,
+        responseId: String,
+        generation: UUID
+    ) {
+        guard connectionGeneration == generation, !closed, !shouldDropAudio(responseId: responseId) else { return }
+        publishOutputLevel(level)
+        audio.play(buffer)
+        onState?(.agentSpeaking)
     }
 
     private func handle(_ message: URLSessionWebSocketTask.Message) {
@@ -351,6 +410,12 @@ final class LiveVoiceBackend: VoiceBackend {
             }
             if !closed, !audio.isPlaying { onState?(.listening) }
 
+        case "input_audio_buffer.speech_stopped":
+            // The turn is over on the server's side: show that the model is
+            // working, not that the panel is idly listening. speech_started,
+            // turn_ignored, audio or response.done all move it on.
+            if !closed, !audio.isPlaying, activeResponseId.isEmpty { onState?(.thinking) }
+
         case "conversation.item.input_audio_transcription.delta":
             if let delta = json["delta"] as? String, !delta.isEmpty {
                 let itemId = json["item_id"] as? String
@@ -394,6 +459,12 @@ final class LiveVoiceBackend: VoiceBackend {
                     audio.clearPlayback()
                 }
             }
+            if !serverToolNames.isEmpty {
+                // A server-run tool whose output never arrived (the turn was
+                // interrupted mid-call) must not leave the pill spinning.
+                serverToolNames.removeAll()
+                onToolsCancelled?()
+            }
             finishAgentTurn()
             if !audio.isPlaying {
                 onOutputLevel?(0)
@@ -416,9 +487,26 @@ final class LiveVoiceBackend: VoiceBackend {
             let argsJson = json["arguments"] as? String ?? "{}"
             executeTool(name: name, argsJson: argsJson, callId: callId)
 
+        case "conversation.item.created":
+            // Tools the server ran inside the response arrive as the items they
+            // created: a function_call when the call starts, its
+            // function_call_output when it finishes. Show them; never run them.
+            guard let item = json["item"] as? [String: Any],
+                  let callId = item["call_id"] as? String else { break }
+            if item["type"] as? String == "function_call", let name = item["name"] as? String {
+                serverToolNames[callId] = name
+                onToolActive?(name)
+            } else if item["type"] as? String == "function_call_output",
+                      let name = serverToolNames.removeValue(forKey: callId) {
+                onToolDone?(name, item["output"] as? String ?? "")
+            }
+
         case "error":
             // Transport close is fatal; server events like turn_ignored are not.
-            break
+            if let error = json["error"] as? [String: Any], error["code"] as? String == "turn_ignored",
+               !closed, !audio.isPlaying, activeResponseId.isEmpty {
+                onState?(.listening)
+            }
 
         default:
             break
@@ -471,12 +559,13 @@ final class LiveVoiceBackend: VoiceBackend {
     }
 
     private func sendSessionUpdate() {
+        // Persona only. The server's system prompt adds the research guidance,
+        // the date and the personal-memory profile; the sidecar owns the page
+        // ladder. Nothing about tools needs to be re-sent from here.
         let tools = VoiceToolExecutor.shared.activeToolDefinitions()
-        let inst = VoiceToolExecutor.shared.effectiveInstructions(
-            base: instructions, memoryProfile: memoryProfile)
         var sess: [String: Any] = [
             "type": "realtime",
-            "instructions": inst,
+            "instructions": instructions,
             "audio": ["output": ["voice": voice]],
         ]
         if !tools.isEmpty {
@@ -487,15 +576,6 @@ final class LiveVoiceBackend: VoiceBackend {
             "type": "session.update",
             "session": sess,
         ])
-    }
-
-    /// Push fresh instructions (e.g. after remember/forget changed memory).
-    private func refreshInstructions() async {
-        let generation = connectionGeneration
-        let profile = try? await ChatStore.shared.getPersonalMemory()
-        guard !closed, generation == connectionGeneration, !Task.isCancelled else { return }
-        if let profile { memoryProfile = profile }
-        sendSessionUpdate()
     }
 
     /// Replay the saved transcript tail into the live conversation, mirroring
@@ -536,43 +616,28 @@ final class LiveVoiceBackend: VoiceBackend {
             }
         }
         toolScope.cancel()
+        serverToolNames.removeAll()
         onToolsCancelled?()
-        screenReads = ScreenReadBudget()
-        readingPage = false
         responseRequestPending = false
     }
 
+    /// Run a tool the server forwarded to the client (screenshot, code_agent),
+    /// post its output and ask the model to continue.
     private func executeTool(name: String, argsJson: String, callId: String) {
         guard !closed, seenToolCalls.insert(callId).inserted else { return }
         let generation = toolScope.generation
         NSLog("[LiveVoice] tool call: %@ id=%@", name, callId)
-        if ["read_page", "web_fetch", "read_article"].contains(name) { readingPage = true }
         onToolActive?(name)
         let task = Task {
-            let screenReadAction = name == "screenshot"
-            var result: VoiceToolResult
-            if self.readingPage && self.screenReads.stopped && screenReadAction {
-                result = VoiceToolResult(output: "Screen reading is finished for this turn. Use the partial content already obtained; do not repeat capture or scroll.")
-            } else {
-                result = await VoiceToolExecutor.shared.run(name: name, argsJson: argsJson)
-            }
+            let result = await VoiceToolExecutor.shared.run(name: name, argsJson: argsJson)
             guard !Task.isCancelled, !self.closed, self.toolScope.generation == generation else {
                 NSLog("[LiveVoice] tool %@ dropping result pre-send: cancelled=%@ closed=%@ genMatch=%@",
                       name, "\(Task.isCancelled)", "\(!self.closed)", "\(self.toolScope.generation == generation)")
                 return
             }
-            if self.readingPage, let image = result.image {
-                let digest = SHA256.hash(data: Data(image.utf8)).map { String(format: "%02x", $0) }.joined()
-                if !self.screenReads.accept(signature: digest) {
-                    result = VoiceToolResult(output: "Screen reading stopped: the capture repeated or eight screenfuls were reached. Available content is partial; no further scrolling is needed.")
-                }
-            }
             NSLog("[LiveVoice] tool %@ done: output=%d chars image=%@", name, result.output.count, result.image == nil ? "no" : "yes")
             self.sendToolOutput(callId: callId, output: result.output)
             if let image = result.image { self.sendUserImage(dataUrl: image) }
-            if name == "remember" || name == "forget" {
-                await self.refreshInstructions()
-            }
             guard !Task.isCancelled, !self.closed, self.toolScope.generation == generation else {
                 NSLog("[LiveVoice] tool %@ dropping follow-up post-send: cancelled=%@ closed=%@ genMatch=%@",
                       name, "\(Task.isCancelled)", "\(!self.closed)", "\(self.toolScope.generation == generation)")

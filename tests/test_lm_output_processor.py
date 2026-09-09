@@ -3,7 +3,8 @@ from queue import Queue
 from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 
 from chatbot.LLM.lm_output_processor import LMOutputProcessor
-from chatbot.pipeline.messages import EndOfResponse, LLMResponseChunk, TTSInput
+from chatbot.pipeline.events import ToolActivityEvent
+from chatbot.pipeline.messages import EndOfResponse, LLMResponseChunk, ToolActivity, TTSInput
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 
 
@@ -175,6 +176,51 @@ def test_confirmed_reopen_drops_stale_assistant_chunk():
                 text="hello",
                 turn_id="turn_1",
                 turn_revision=0,
+            )
+        )
+    )
+
+    assert outputs == []
+    assert processor.text_output_queue.empty()
+
+
+def test_tool_activity_is_a_side_channel_event_and_never_reaches_tts():
+    tracker = SpeculativeTurnTracker()
+    tracker.observe("turn_1", 1)
+    processor = _processor(tracker)
+
+    outputs = list(
+        processor.process(
+            ToolActivity(
+                status="finished",
+                call_id="call_1",
+                item_id="fco_1",
+                name="web_search",
+                arguments='{"query": "x"}',
+                output="[1] result",
+                turn_id="turn_1",
+                turn_revision=1,
+                cancel_generation=3,
+            )
+        )
+    )
+
+    assert outputs == []
+    event = processor.text_output_queue.get_nowait()
+    assert isinstance(event, ToolActivityEvent)
+    assert (event.status, event.name, event.call_id, event.output) == ("finished", "web_search", "call_1", "[1] result")
+    assert event.cancel_generation == 3
+
+
+def test_stale_tool_activity_is_dropped():
+    tracker = SpeculativeTurnTracker()
+    tracker.observe("turn_1", 1)
+    processor = _processor(tracker)
+
+    outputs = list(
+        processor.process(
+            ToolActivity(
+                status="started", call_id="c", item_id="fc", name="web_search", turn_id="turn_1", turn_revision=0
             )
         )
     )

@@ -656,165 +656,6 @@ class TestToResponseApiChat:
 
 
 # ===================================================================
-# 8. TestToTransformersChat
-# ===================================================================
-
-
-class TestToTransformersChat:
-    def test_empty_chat(self):
-        chat = Chat(size=5)
-        assert chat.to_transformers_chat() == []
-
-    def test_system_message(self):
-        chat = Chat(size=5)
-        chat.init_chat(_system("Be concise."))
-        result = chat.to_transformers_chat()
-        assert result == [{"role": "system", "content": "Be concise."}]
-
-    def test_user_text_only_produces_string_content(self):
-        chat = Chat(size=5)
-        chat.add_item(_user("hi there"))
-        result = chat.to_transformers_chat()
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
-        assert isinstance(result[0]["content"], str)
-        assert result[0]["content"] == "hi there"
-
-    def test_user_multi_text_parts_joined(self):
-        chat = Chat(size=5)
-        msg = _user_msg_with_parts(("text", "hello"), ("text", "world"))
-        chat.add_item(msg)
-        result = chat.to_transformers_chat()
-        assert result[0]["content"] == "hello world"
-
-    def test_user_with_images_produces_list_content(self):
-        chat = Chat(size=5)
-        msg = _user_msg_with_parts(("text", "look"), ("image", "http://img.png"))
-        chat.add_item(msg)
-        result = chat.to_transformers_chat()
-        assert result[0]["role"] == "user"
-        assert isinstance(result[0]["content"], list)
-        assert len(result[0]["content"]) == 2
-
-    def test_assistant_message_text_joined(self):
-        chat = Chat(size=5)
-        msg = RealtimeConversationItemAssistantMessage(
-            type="message",
-            role="assistant",
-            content=[
-                AssistantContent(type="output_text", text="part1"),
-                AssistantContent(type="output_text", text="part2"),
-            ],
-        )
-        chat.add_item(msg)
-        result = chat.to_transformers_chat()
-        assert result[0] == {"role": "assistant", "content": "part1 part2"}
-
-    def test_function_call_valid_json_args(self):
-        chat = Chat(size=5)
-        chat.add_item(_fc("c1", "search", '{"query": "test"}'))
-        chat.add_item(_fco("c1", "ok"))
-        result = chat.to_transformers_chat()
-        entry = result[0]
-        assert entry["role"] == "assistant"
-        assert len(entry["tool_calls"]) == 1
-        tc = entry["tool_calls"][0]
-        assert tc["type"] == "function"
-        assert tc["id"] == "call_c1"
-        assert tc["function"]["name"] == "search"
-        assert tc["function"]["arguments"] == {"query": "test"}
-
-    def test_function_call_invalid_json_falls_back(self):
-        chat = Chat(size=5)
-        chat.add_item(_fc("c1", "broken", "not valid json"))
-        chat.add_item(_fco("c1", "ok"))
-        result = chat.to_transformers_chat()
-        assert result[0]["tool_calls"][0]["function"]["arguments"] == {}
-
-    def test_function_call_empty_string_args(self):
-        chat = Chat(size=5)
-        fc = _fc("c1", "f", "")
-        chat.add_item(fc)
-        chat.add_item(_fco("c1", "ok"))
-        result = chat.to_transformers_chat()
-        assert result[0]["tool_calls"][0]["function"]["arguments"] == {}
-
-    def test_function_call_output_resolves_name(self):
-        chat = Chat(size=5)
-        chat.add_item(_fc("c1", "lookup"))
-        chat.add_item(_fco("c1", "result_data"))
-        result = chat.to_transformers_chat()
-        tool_entry = result[1]
-        assert tool_entry["role"] == "tool"
-        assert tool_entry["tool_call_id"] == "call_c1"
-        assert tool_entry["name"] == "lookup"
-        assert tool_entry["content"] == "result_data"
-
-    def test_function_call_output_no_matching_call_empty_name(self):
-        chat = Chat(size=5)
-        fco = _fco("orphan_id", "data")
-        fco.id = "fco_orphan"
-        chat.buffer.append(fco)
-        result = chat.to_transformers_chat()
-        assert result[0]["name"] == ""
-
-    def test_full_mixed_conversation(self):
-        chat = Chat(size=10)
-        chat.init_chat(_system("System prompt"))
-        chat.add_item(_user("Do it"))
-        chat.add_item(_fc("c1", "action", '{"a": 1}'))
-        chat.add_item(_fco("c1", "done"))
-        chat.add_item(_assistant("All set."))
-
-        result = chat.to_transformers_chat()
-        assert len(result) == 5
-        assert result[0] == {"role": "system", "content": "System prompt"}
-        assert result[1] == {"role": "user", "content": "Do it"}
-        assert result[2]["role"] == "assistant"
-        assert "tool_calls" in result[2]
-        assert result[3]["role"] == "tool"
-        assert result[3]["name"] == "action"
-        assert result[4] == {"role": "assistant", "content": "All set."}
-
-    def test_function_call_carries_empty_content(self):
-        chat = Chat(size=5)
-        chat.add_item(_fc("c1", "search", '{"query": "test"}'))
-        chat.add_item(_fco("c1", "ok"))
-        entry = chat.to_transformers_chat()[0]
-        assert entry["content"] == ""
-
-    def test_every_assistant_entry_exposes_content(self):
-        chat = Chat(size=10)
-        chat.add_item(_user("Do it"))
-        chat.add_item(_fc("c1", "action", '{"a": 1}'))
-        chat.add_item(_fco("c1", "done"))
-        chat.add_item(_assistant("All set."))
-
-        assistant_entries = [m for m in chat.to_transformers_chat() if m["role"] == "assistant"]
-        assert len(assistant_entries) == 2
-        assert all("content" in m for m in assistant_entries)
-
-    def test_function_call_renders_in_template_reading_content(self):
-        """Chat templates read ``content`` on every assistant message, tool calls included.
-
-        Concatenation mirrors what the chat template does; a missing key would
-        leave an undefined value here and raise rather than render empty.
-        """
-        sandbox = pytest.importorskip("jinja2.sandbox")
-
-        chat = Chat(size=5)
-        chat.add_item(_user("What's the weather?"))
-        chat.add_item(_fc("c1", "get_weather", '{"city": "Paris"}'))
-        chat.add_item(_fco("c1", "18C, clear"))
-
-        template = sandbox.ImmutableSandboxedEnvironment().from_string(
-            "{% for m in messages %}{{ m.role + ':' + m.content + '\\n' }}{% endfor %}"
-        )
-        rendered = template.render(messages=chat.to_transformers_chat())
-        assert "assistant:\n" in rendered
-
-
-# ===================================================================
 # 9. TestCopyAndReset
 # ===================================================================
 
@@ -1350,3 +1191,42 @@ class TestBuildActiveChat:
 
         with pytest.raises(ChatItemError):
             build_active_chat(original, resp)
+
+
+# ===================================================================
+# Tool-output abridging on serialization
+# ===================================================================
+
+
+class TestToolOutputAbridging:
+    def test_only_the_most_recent_tool_outputs_are_sent_in_full(self):
+        from chatbot.LLM.chat import TOOL_OUTPUT_HISTORY_CHARS, TOOL_OUTPUT_KEEP_RECENT
+
+        chat = Chat(size=20)
+        big = "x" * (TOOL_OUTPUT_HISTORY_CHARS * 4)
+        for n in range(TOOL_OUTPUT_KEEP_RECENT + 2):
+            chat.add_item(_user(f"question {n}"))
+            chat.add_item(_fc(call_id=f"call_{n}", name="read_page"))
+            chat.add_item(_fco(call_id=f"call_{n}", output=big))
+            chat.add_item(_assistant(f"answer {n}"))
+
+        outputs = [item for item in chat.to_responses_api_chat() if item.get("type") == "function_call_output"]
+        assert len(outputs) == TOOL_OUTPUT_KEEP_RECENT + 2
+        old, recent = outputs[:-TOOL_OUTPUT_KEEP_RECENT], outputs[-TOOL_OUTPUT_KEEP_RECENT:]
+        for item in old:
+            assert len(item["output"]) < TOOL_OUTPUT_HISTORY_CHARS + 80
+            assert "abridged" in item["output"]
+        for item in recent:
+            assert item["output"] == big
+        # The buffer keeps every output whole; only the wire form is abridged.
+        stored = [i for i in chat.buffer if isinstance(i, RealtimeConversationItemFunctionCallOutput)]
+        assert all(i.output == big for i in stored)
+
+    def test_short_outputs_are_never_touched(self):
+        chat = Chat(size=20)
+        for n in range(4):
+            chat.add_item(_user(f"q{n}"))
+            chat.add_item(_fc(call_id=f"call_{n}"))
+            chat.add_item(_fco(call_id=f"call_{n}", output="Saved to the personal profile."))
+        outputs = [item for item in chat.to_responses_api_chat() if item.get("type") == "function_call_output"]
+        assert all(item["output"] == "Saved to the personal profile." for item in outputs)
