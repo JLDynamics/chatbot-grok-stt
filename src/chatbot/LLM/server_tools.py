@@ -46,6 +46,11 @@ SERVER_TOOL_NAMES: frozenset[str] = frozenset(
 # One response may chain this many tool rounds (search → read → read → answer
 # is four). The cap exists so a confused model cannot loop forever in silence.
 MAX_TOOL_ROUNDS = 6
+# ...and this is how long, from the first model call, the loop keeps letting
+# the model start *new* tool rounds. A spoken answer that is still researching
+# after this must be given from what was found; the model can offer to dig
+# deeper. Measured: one search round costs 1–3 s, a chatty model ran five.
+TOOL_TIME_BUDGET_S = 15.0
 # Longest single tool the sidecar runs: read_page may try both rungs
 # (15 s fetch + bridge) so the client timeout must sit outside that.
 TOOL_TIMEOUT_S = 45.0
@@ -59,6 +64,8 @@ MEMORY_CACHE_TTL_S = 5.0
 # fetches, this only guards the Chrome bridge path (up to 60k chars).
 PAGE_TEXT_MAX_CHARS = 16_000
 SEARCH_RESULTS_SHOWN = 5
+SEARCH_CACHE_TTL_S = 45.0
+SEARCH_CACHE_MAX = 32
 
 ToolOutput = str
 
@@ -89,6 +96,8 @@ class ServerToolExecutor:
         self._memory_lock = threading.Lock()
         self._memory_cached_at = 0.0
         self._memory_text = ""
+        self._search_lock = threading.Lock()
+        self._search_cache: dict[str, tuple[float, ToolOutput]] = {}
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -197,9 +206,21 @@ class ServerToolExecutor:
         query = query.strip()
         if not query:
             return "No search query provided."
+        cache_key = query.casefold()
+        now = time.monotonic()
+        with self._search_lock:
+            hit = self._search_cache.get(cache_key)
+            if hit is not None and now - hit[0] < SEARCH_CACHE_TTL_S:
+                return hit[1]
         response = self._client.post("/search", json={"query": query})
         response.raise_for_status()
-        return format_search_results(response.json())
+        output = format_search_results(response.json())
+        with self._search_lock:
+            self._search_cache[cache_key] = (time.monotonic(), output)
+            if len(self._search_cache) > SEARCH_CACHE_MAX:
+                oldest = min(self._search_cache, key=lambda key: self._search_cache[key][0])
+                self._search_cache.pop(oldest, None)
+        return output
 
     def _read_page(self, url: Any, prefer_browser: bool) -> ToolOutput:
         cleaned = str(url or "").strip() or None

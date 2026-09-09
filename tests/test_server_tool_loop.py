@@ -62,13 +62,13 @@ def _message_done(text: str, item_id: str = "msg"):
     )
 
 
-def _tool_done(name: str, **arguments):
+def _tool_done(name: str, call_id: str = "call_x", **arguments):
     return ResponseOutputItemDoneEvent(
         type="response.output_item.done",
         output_index=1,
         sequence_number=2,
         item=ResponseFunctionToolCall(
-            type="function_call", call_id="call_x", name=name, arguments=json.dumps(arguments)
+            type="function_call", call_id=call_id, name=name, arguments=json.dumps(arguments)
         ),
     )
 
@@ -329,6 +329,34 @@ def test_client_tool_ends_the_response_for_the_client_to_run():
     assert isinstance(outputs[-1], EndOfResponse)
 
 
+def test_search_then_screenshot_in_one_round_still_stops_for_the_client():
+    """A mixed round must run research here, then end so the Mac can screenshot."""
+    executor = FakeExecutor({"web_search": "found it"})
+    handler, requests = _handler(
+        [
+            [
+                *_speak(
+                    "Checking.",
+                    _tool_done("web_search", query="x"),
+                    _tool_done("screenshot", call_id="call_shot"),
+                ),
+                _completed(),
+            ],
+            [*_speak("should not run", item_id="m2"), _completed()],
+        ],
+        executor=executor,
+    )
+
+    outputs = list(handler.process(_request()))
+
+    assert executor.calls == [("web_search", {"query": "x"})]
+    assert len(requests) == 1
+    tool_chunk = next(o for o in outputs if isinstance(o, LLMResponseChunk) and o.tools)
+    assert [t.name for t in tool_chunk.tools] == ["screenshot"]
+    assert [o.name for o in outputs if isinstance(o, ToolActivity) and o.status == "finished"] == ["web_search"]
+    assert not any(isinstance(o, LLMResponseChunk) and o.text == "should not run" for o in outputs)
+
+
 def test_without_a_sidecar_every_tool_goes_to_the_client():
     handler, requests = _handler(
         [[*_speak("Let me check.", _tool_done("web_search", query="x")), _completed()]], executor=None
@@ -381,6 +409,27 @@ def test_round_cap_forces_a_final_answer_without_tools(monkeypatch):
     assert requests[1].get("tool_choice") is None
     assert requests[2]["tool_choice"] == "none"
     assert [o.text for o in outputs if isinstance(o, LLMResponseChunk)] == ["One.", "Two.", "Final answer."]
+
+
+def test_time_budget_forces_a_final_answer_after_the_first_round(monkeypatch):
+    """A spoken answer cannot research for a minute: once the budget is spent
+    the next model call runs with tools disabled, however many rounds remain."""
+    monkeypatch.setattr("chatbot.LLM.base_openai_compatible_language_model.TOOL_TIME_BUDGET_S", 0.0)
+    executor = FakeExecutor()
+    handler, requests = _handler(
+        [
+            [*_speak("Let me check.", _tool_done("web_search", query="1")), _completed()],
+            [*_speak("Here is what I found.", item_id="m2"), _completed()],
+        ],
+        executor=executor,
+    )
+
+    outputs = list(handler.process(_request()))
+
+    assert len(requests) == 2
+    assert requests[0].get("tool_choice") is None, "the first call is never constrained by the budget"
+    assert requests[1]["tool_choice"] == "none"
+    assert [o.text for o in outputs if isinstance(o, LLMResponseChunk)] == ["Let me check.", "Here is what I found."]
 
 
 def test_out_of_band_tool_rounds_never_touch_the_default_conversation():

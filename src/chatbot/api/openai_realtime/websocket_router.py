@@ -519,10 +519,15 @@ def create_app(
                 session = unit.session
                 transport = session.transport if session is not None else None
                 session_id = session.session_id if session is not None else None
+                had_work = False
 
                 # Text events first (speech_started cancels active response).
-                try:
-                    text_msg = unit.text_output_queue.get_nowait()
+                while True:
+                    try:
+                        text_msg = unit.text_output_queue.get_nowait()
+                    except Empty:
+                        break
+                    had_work = True
                     is_speech_start = isinstance(text_msg, SpeechStartedEvent)
 
                     was_in_response = False
@@ -571,8 +576,6 @@ def create_app(
                                 logger.info(
                                     f"Pipeline {unit.index}: speech during response: interrupt_response disabled, ignoring"
                                 )
-                except Empty:
-                    pass
 
                 try:
                     if session is not None and session.pending_output_item is not None:
@@ -580,6 +583,7 @@ def create_app(
                         session.pending_output_item = None
                     else:
                         audio_chunk = unit.output_queue.get_nowait()
+                    had_work = True
 
                     if _is_pipeline_end(audio_chunk):
                         await _drain_pending_response_events(transport, unit, session_id)
@@ -663,7 +667,8 @@ def create_app(
                 except Empty:
                     pass
 
-                await asyncio.sleep(0.01)
+                if not had_work:
+                    await asyncio.sleep(0.01)
 
             except asyncio.CancelledError:
                 break

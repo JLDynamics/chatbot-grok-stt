@@ -76,6 +76,25 @@ def _record_lock_released(handler_name: str) -> tuple[int, float | None]:
         return depth, hold_s
 
 
+def _synchronize_gpu() -> None:
+    """Wait for queued Metal work before another handler may touch the GPU.
+
+    ``mx.eval`` only waits for the arrays it was asked for; command buffers for
+    other lazily built arrays can still be in flight when the lock is handed
+    over, and Metal aborts the process when a second thread starts encoding
+    into that state (``_status < MTLCommandBufferStatusCommitted``, seen at
+    startup when Kokoro's warmup handed the lock to Parakeet's load).
+    """
+    try:
+        import mlx.core as mx
+    except ImportError:  # the lock is also used on machines without MLX
+        return
+    try:
+        mx.synchronize()
+    except Exception as exc:  # noqa: BLE001 - never turn a sync into a crash
+        logger.debug("mx.synchronize failed: %s", exc)
+
+
 def acquire_mlx_lock(timeout: float | None = None, handler_name: str = "Unknown") -> bool:
     """
     Acquire the global MLX lock.
@@ -91,7 +110,10 @@ def acquire_mlx_lock(timeout: float | None = None, handler_name: str = "Unknown"
         owner_before = _owner_snapshot()
     logger.debug("%s: Attempting to acquire MLX lock (owner=%s)", handler_name, owner_before)
     start = perf_counter()
-    acquired = _mlx_lock.acquire(timeout=timeout) if timeout else _mlx_lock.acquire(blocking=True)
+    if timeout is None:
+        acquired = _mlx_lock.acquire(blocking=True)
+    else:
+        acquired = _mlx_lock.acquire(timeout=timeout)
     wait_s = perf_counter() - start
 
     if acquired:
@@ -135,6 +157,8 @@ def release_mlx_lock(handler_name: str = "Unknown") -> None:
     """
     try:
         depth, hold_s = _record_lock_released(handler_name)
+        if depth == 0 and hold_s is not None:
+            _synchronize_gpu()
         _mlx_lock.release()
         if hold_s is not None and depth == 0 and hold_s >= 0.25:
             logger.info("%s: MLX lock released after holding %.2fs", handler_name, hold_s)

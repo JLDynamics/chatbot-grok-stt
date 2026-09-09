@@ -17,10 +17,6 @@ class ModuleArguments:
         default=0.5,
         metadata={"help": "Seconds between partial transcript updates."},
     )
-    live_transcription_min_silence_ms: int = field(
-        default=500,
-        metadata={"help": "Silence required to end a live-transcribed turn."},
-    )
     turn_quality_gate: bool = field(
         default=True,
         metadata={

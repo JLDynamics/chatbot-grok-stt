@@ -833,6 +833,49 @@ async def test_fetch_uses_tinyfish_when_configured(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_falls_back_to_direct_http_when_tinyfish_fails(monkeypatch):
+    monkeypatch.setattr(server, "TINYFISH_KEY", "sk-tinyfish-test")
+    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
+    failed = httpx.Response(
+        502,
+        json={"errors": [{"message": "provider down"}]},
+        request=httpx.Request("POST", server.TINYFISH_FETCH_URL),
+    )
+    html = httpx.Response(
+        200,
+        headers={"content-type": "text/html; charset=utf-8"},
+        text="<html><head><title>Local</title></head><body><main>"
+        + ("Readable sentence. " * 20)
+        + "</main></body></html>",
+        request=httpx.Request("GET", "https://example.com"),
+    )
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def post(self, url, headers=None, json=None, **_kwargs):
+            assert url == server.TINYFISH_FETCH_URL
+            return failed
+
+        async def get(self, url, **_kwargs):
+            assert url == "https://example.com"
+            return html
+
+    monkeypatch.setattr(server, "_client", lambda: FakeClient())
+    body = client.post("/api/fetch", json={"url": "https://example.com"}).json()
+    assert body["title"] == "Local"
+    assert "Readable sentence" in body["text"]
+    assert body["gated"] is False
+
+
+@pytest.mark.asyncio
 async def test_search_prefers_user_tavily_key(monkeypatch):
     monkeypatch.setattr(server, "SERPER_KEY", "server-serper")
     monkeypatch.setattr(server, "TAVILY_KEY", "")

@@ -650,10 +650,12 @@ async def _fetch(raw_url: str) -> dict:
     if TINYFISH_KEY:
         try:
             return await _tinyfish_fetch(client, url, TINYFISH_KEY)
-        except HTTPException:
-            raise
+        except HTTPException as exc:
+            if exc.status_code != 502:
+                raise
+            logger.warning("TinyFish fetch failed (%s); trying a direct HTTP fetch", exc.detail)
         except httpx.RequestError as exc:
-            raise HTTPException(status_code=502, detail="Could not reach the fetch provider.") from exc
+            logger.warning("TinyFish fetch unreachable (%r); trying a direct HTTP fetch", exc)
     try:
         # Re-validate every redirect hop: the client must never follow a
         # public URL into a private or loopback address.
@@ -775,15 +777,18 @@ def _bridge_result(requested_url: str | None) -> dict:
             "message": "Chrome has a different page open than the one requested.",
             "open_url": page.url,
         }
+    gated_reason = _looks_gated(200, page.text)
     return {
-        "status": "read",
+        "status": "blocked" if gated_reason else "read",
         "source": "chrome_bridge",
         "url": page.url,
         "title": page.title,
         "text": page.text,
         "content_type": page.content_type,
         "truncated": page.truncated,
-        "complete": page.complete,
+        "complete": False if gated_reason else page.complete,
+        "gated": gated_reason is not None,
+        "gated_reason": gated_reason,
     }
 
 

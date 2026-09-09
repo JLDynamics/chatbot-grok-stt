@@ -155,8 +155,9 @@ final class LiveVoiceBackend: VoiceBackend {
         webSocket = task
         connection = .awaitingSession
         task.resume()
+        let decoder = pcm
         receiveTask = Task.detached { [weak self] in
-            await Self.pump(task, owner: self, generation: generation)
+            await Self.pump(task, owner: self, pcm: decoder, generation: generation)
         }
         handshakeTimeout = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 8_000_000_000)
@@ -275,15 +276,41 @@ final class LiveVoiceBackend: VoiceBackend {
 
     /// Receive off the MainActor. URLSession delivers on the session queue;
     /// awaiting receive() on MainActor deadlocks connecting forever.
-    private static func pump(_ ws: URLSessionWebSocketTask, owner: LiveVoiceBackend?, generation: UUID) async {
+    /// Audio deltas are decoded here so JSON/base64/resample do not hitch the panel.
+    private static func pump(
+        _ ws: URLSessionWebSocketTask,
+        owner: LiveVoiceBackend?,
+        pcm: PCMBridge,
+        generation: UUID
+    ) async {
         while !Task.isCancelled {
             let closed = await MainActor.run { owner?.closed != false || owner?.connectionGeneration != generation }
             if closed { break }
             do {
                 let message = try await ws.receive()
-                await MainActor.run {
-                    guard owner?.connectionGeneration == generation else { return }
-                    owner?.handle(message)
+                let text: String?
+                switch message {
+                case .string(let value): text = value
+                case .data(let data): text = String(data: data, encoding: .utf8)
+                @unknown default: text = nil
+                }
+                guard let text else { continue }
+                if let delta = parseAudioDelta(text) {
+                    let dest = await MainActor.run { () -> AVAudioFormat? in
+                        guard let owner, owner.connectionGeneration == generation, !owner.closed else { return nil }
+                        if owner.shouldDropAudio(responseId: delta.responseId) { return nil }
+                        return owner.audio.playbackFormat
+                    }
+                    guard let dest, let buffer = pcm.playbackBuffer(base64: delta.b64, dest: dest) else { continue }
+                    let level = pcm.rmsLevel(buffer)
+                    await MainActor.run {
+                        owner?.playDecodedAudio(buffer, level: level, responseId: delta.responseId, generation: generation)
+                    }
+                } else {
+                    await MainActor.run {
+                        guard owner?.connectionGeneration == generation else { return }
+                        owner?.handle(.string(text))
+                    }
                 }
             } catch {
                 NSLog("[LiveVoice] receive failed: \(error.localizedDescription)")
@@ -294,6 +321,45 @@ final class LiveVoiceBackend: VoiceBackend {
                 break
             }
         }
+    }
+
+    private struct AudioDelta {
+        let responseId: String
+        let b64: String
+    }
+
+    private static func parseAudioDelta(_ text: String) -> AudioDelta? {
+        guard let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = json["type"] as? String,
+              type == "response.audio.delta" || type == "response.output_audio.delta",
+              let b64 = json["delta"] as? String, !b64.isEmpty
+        else { return nil }
+        let responseId: String
+        if let id = json["response_id"] as? String {
+            responseId = id
+        } else if let response = json["response"] as? [String: Any], let id = response["id"] as? String {
+            responseId = id
+        } else {
+            responseId = ""
+        }
+        return AudioDelta(responseId: responseId, b64: b64)
+    }
+
+    private func shouldDropAudio(responseId: String) -> Bool {
+        !responseId.isEmpty && cancelledIds.contains(responseId)
+    }
+
+    private func playDecodedAudio(
+        _ buffer: AVAudioPCMBuffer,
+        level: Float,
+        responseId: String,
+        generation: UUID
+    ) {
+        guard connectionGeneration == generation, !closed, !shouldDropAudio(responseId: responseId) else { return }
+        publishOutputLevel(level)
+        audio.play(buffer)
+        onState?(.agentSpeaking)
     }
 
     private func handle(_ message: URLSessionWebSocketTask.Message) {

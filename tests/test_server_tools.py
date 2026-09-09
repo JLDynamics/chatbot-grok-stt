@@ -56,6 +56,23 @@ def test_web_search_posts_query_and_formats_results():
     assert "[2] Second\nTavily content\nURL: https://two.example" in output
 
 
+def test_web_search_reuses_a_fresh_result_instead_of_calling_again():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={"results": [{"title": "Once", "snippet": "Only once", "url": "https://example.com"}]},
+        )
+
+    executor = _executor(handler)
+    first = executor.run("web_search", '{"query": "Paris weather"}')
+    second = executor.run("web_search", '{"query": "PARIS WEATHER"}')
+    assert len(seen) == 1
+    assert first == second
+
+
 def test_web_search_without_query_does_not_hit_the_sidecar():
     def handler(_request: httpx.Request) -> httpx.Response:
         raise AssertionError("no request expected")

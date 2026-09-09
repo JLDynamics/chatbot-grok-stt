@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterator
 from typing import Any, Optional
@@ -24,7 +25,7 @@ from chatbot.baseHandler import BaseHandler
 from chatbot.LLM.chat import Chat, ChatItemError, SupportedItem
 from chatbot.LLM.chat_factories import build_active_chat, make_system_message, make_user_message
 from chatbot.LLM.compaction_prompt import CompactGenerateFn, build_compactor
-from chatbot.LLM.server_tools import MAX_TOOL_ROUNDS, ServerToolExecutor
+from chatbot.LLM.server_tools import MAX_TOOL_ROUNDS, TOOL_TIME_BUDGET_S, ServerToolExecutor
 from chatbot.LLM.text_prompt import build_text_system_prompt
 from chatbot.LLM.utils import remove_unspeechable, resolve_auto_language
 from chatbot.LLM.voice_prompt import build_voice_system_prompt
@@ -591,6 +592,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 # runs itself are executed here and the loop continues with their
                 # outputs in context; a tool the client must run ends the loop (the
                 # client posts its output and asks for a new response).
+                research_started = time.monotonic()
                 for tool_round in range(MAX_TOOL_ROUNDS + 1):
                     api_input = (serialize_fn or self._serialize)(active_chat)
                     # Images the model actually sees this turn; only these are stripped on
@@ -604,9 +606,14 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                         error_message = "Cannot generate a response: no instructions and no input were provided."
                         break
                     round_kwargs = optional_kwargs
-                    if tool_round == MAX_TOOL_ROUNDS and "tools" in optional_kwargs:
-                        # Out of rounds: the model must answer with what it has.
-                        logger.warning("Tool round cap (%d) reached; forcing a final answer", MAX_TOOL_ROUNDS)
+                    research_s = time.monotonic() - research_started
+                    out_of_rounds = tool_round == MAX_TOOL_ROUNDS
+                    out_of_time = tool_round > 0 and research_s > TOOL_TIME_BUDGET_S
+                    if (out_of_rounds or out_of_time) and "tools" in optional_kwargs:
+                        # Out of rounds or time: the model must answer with what it has.
+                        logger.warning(
+                            "Research budget reached (round %d, %.1fs); forcing a final answer", tool_round, research_s
+                        )
                         round_kwargs = {**optional_kwargs, "tool_choice": "none"}
                     api_response = (request_fn or self._request)(api_input, round_kwargs)
                     if api_response is None:
@@ -621,16 +628,21 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     api_response = None
                     if not generation_completed:
                         break
-                    server_calls = [call for call in state.tools[first_new_tool:] if self._runs_server_side(call.name)]
-                    if not server_calls:
-                        break
-                    logger.info(
-                        "Tool round %d: running %s server-side",
-                        tool_round + 1,
-                        ", ".join(call.name for call in server_calls),
-                    )
-                    generation_completed = yield from self._run_server_tools(server_calls, state, turn)
-                    if not generation_completed:
+                    new_tools = state.tools[first_new_tool:]
+                    server_calls = [call for call in new_tools if self._runs_server_side(call.name)]
+                    client_calls = [call for call in new_tools if not self._runs_server_side(call.name)]
+                    if server_calls:
+                        logger.info(
+                            "Tool round %d: running %s server-side",
+                            tool_round + 1,
+                            ", ".join(call.name for call in server_calls),
+                        )
+                        generation_completed = yield from self._run_server_tools(server_calls, state, turn)
+                        if not generation_completed:
+                            break
+                    # A screenshot / code_agent in the same round still has to
+                    # finish on the client before the model can continue.
+                    if client_calls or not server_calls:
                         break
             except httpx.ReadTimeout:
                 logger.warning(

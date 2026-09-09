@@ -181,6 +181,39 @@ def test_truncated_fetch_is_kept_as_partial_unless_bridge_completes_it(monkeypat
     assert [attempt["status"] for attempt in body["attempts"]] == ["partial", "read"]
 
 
+def test_chrome_paywall_teaser_is_gated_and_fetch_is_tried(monkeypatch):
+    teaser = _bridge_page()
+    teaser["text"] = "Subscribe to continue reading this article. " * 8
+    assert client.post("/api/browser/page", headers=BRIDGE, json=teaser).status_code == 200
+    calls: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "_fetch",
+        _fake_fetch(_fetched("https://example.com/article", "Full article from the public fetch."), calls),
+    )
+
+    body = client.post("/api/read_page", json={"prefer_browser": True}).json()
+    assert calls == ["https://example.com/article"]
+    assert body["status"] == "read"
+    assert body["source"] == "web_fetch"
+    assert body["text"] == "Full article from the public fetch."
+    assert body["attempts"][0]["method"] == "chrome_bridge"
+    assert body["attempts"][0]["status"] == "blocked"
+    assert body["attempts"][0]["reason"] == "paywall_or_interstitial"
+
+
+def test_long_chrome_article_mentioning_subscribe_is_not_gated(monkeypatch):
+    page = _bridge_page()
+    page["text"] = "Subscribe to our newsletter. " + ARTICLE_TEXT
+    assert client.post("/api/browser/page", headers=BRIDGE, json=page).status_code == 200
+    monkeypatch.setattr(server, "_fetch", _fake_fetch(AssertionError("a complete Chrome article must not fall through")))
+
+    body = client.post("/api/read_page", json={"prefer_browser": True}).json()
+    assert body["status"] == "read"
+    assert body["source"] == "chrome_bridge"
+    assert body["attempts"] == [{"method": "chrome_bridge", "status": "read", "reason": ""}]
+
+
 def test_x_links_go_to_the_bridge_first(monkeypatch):
     monkeypatch.setattr(server, "_fetch", _fake_fetch(AssertionError("x.com must not be fetched first")))
     x_post = {
