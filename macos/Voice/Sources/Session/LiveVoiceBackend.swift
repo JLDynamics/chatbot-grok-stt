@@ -69,8 +69,9 @@ final class LiveVoiceBackend: VoiceBackend {
     init(
         url: URL,
         voice: String = "en-Emma_woman",
-        instructions: String =
-            "You are a spoken assistant. Short sentences. No lists, markdown, or emoji."
+        instructions: String = """
+        You are an AI conversation partner: perceptive, relaxed, warm, and quietly playful. You enjoy exploring ideas and have something thoughtful to contribute. Speak with the ease of someone comfortable in the conversation.
+        """
     ) {
         self.wsURL = url
         self.voice = voice

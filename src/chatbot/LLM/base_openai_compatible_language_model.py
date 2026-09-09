@@ -250,6 +250,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         if instructions:
             builder = build_voice_system_prompt if wants_audio else build_text_system_prompt
             full_instructions = builder(instructions)
+            logger.info(
+                "Applied %s system prompt (%d chars, conversation_partner=%s)",
+                "voice" if wants_audio else "text",
+                len(full_instructions),
+                "conversation partner" in full_instructions.lower(),
+            )
             chat.add_item(make_system_message(full_instructions))
 
     # ── output helpers ──────────────────────────────────────────────────────--

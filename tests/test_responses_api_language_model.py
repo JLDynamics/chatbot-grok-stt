@@ -454,6 +454,36 @@ def test_empty_context_fails_with_clear_message_without_calling_provider():
     assert "input" in eors[0].error
 
 
+def test_voice_persona_is_sent_as_system_message_and_identity_is_last():
+    handler = _make_handler()
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _make_stream(
+            [
+                _make_text_delta_event("Ok"),
+                _make_output_item_done_event(content="Ok"),
+            ]
+        )
+
+    handler.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+    cfg = _make_runtime_config(
+        instructions="You are an AI conversation partner: perceptive, relaxed, warm, and quietly playful.",
+    )
+    cfg.chat.add_item(make_user_message("who are you"))
+    list(handler.process(GenerateResponseRequest(runtime_config=cfg)))
+
+    system_items = [item for item in captured["input"] if item.get("role") == "system"]
+    assert len(system_items) == 1
+    text = system_items[0]["content"][0]["text"]
+    assert "perceptive, relaxed, warm, and quietly playful" in text
+    assert "Speech is the default." in text
+    assert "Do not take on a branded product name" in text
+    assert text.find("perceptive, relaxed, warm") < text.rfind("Do not take on a branded product name")
+    assert "who are you" in captured["input"][-1]["content"][0]["text"]
+
+
 def test_disable_thinking_passes_extra_body():
     handler = _make_handler(disable_thinking=True)
     captured = {}
