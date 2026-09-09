@@ -27,6 +27,7 @@ from chatbot.api.openai_realtime.transports import (
     WebSocketTransport,
     send_ws_event,
 )
+from chatbot.build_info import BACKEND_SOURCES, SourceSnapshot
 from chatbot.pipeline.control import SESSION_END, PipelineControlMessage, is_control_message
 from chatbot.pipeline.events import (
     AssistantTextEvent,
@@ -400,6 +401,9 @@ def create_app(
                 pass
 
     app = FastAPI(lifespan=lifespan)
+    # Taken once at startup; /health compares it against disk so a launcher
+    # can tell this process is running code that has since changed.
+    source_snapshot = SourceSnapshot(BACKEND_SOURCES)
 
     def _claim_unit(transport: SessionTransport | None) -> PipelineUnit | None:
         """Atomically (between asyncio yield points) reserve the first idle unit.
@@ -424,10 +428,21 @@ def create_app(
     def _models_ready() -> bool:
         return unit.ready_gate.ready
 
+    def _server_tools_enabled() -> bool:
+        # The LLM handler owns a ServerToolExecutor once it is set up with a
+        # sidecar URL. The app only executes screenshot/code_agent itself, so
+        # a backend without this is one it cannot research with.
+        return any(getattr(handler, "server_tools", None) is not None for handler in unit.handlers)
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         ready = _models_ready()
-        return {"status": "ok" if ready else "starting", "ready": ready}
+        return {
+            "status": "ok" if ready else "starting",
+            "ready": ready,
+            "server_tools": _server_tools_enabled(),
+            **source_snapshot.describe(),
+        }
 
     @app.websocket("/v1/realtime")
     async def realtime_endpoint(ws: WebSocket) -> None:

@@ -13,6 +13,26 @@ struct RuntimeTests {
         assert(!LocalServiceStarter.manages(voice: standardVoice, sidecar: URL(string: "http://127.0.0.1:7960/api")!))
         assert(!LocalServiceStarter.managesSidecar(URL(string: "http://127.0.0.1:7960/api")!))
 
+        // A running service is reused only while it runs this checkout's current code.
+        let root = "/Users/me/chatbot"
+        let voiceHealth: [String: Any] = ["ready": true, "server_tools": true, "fingerprint": "abc", "stale": false, "source": root]
+        assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth, root: root) == .ready)
+        assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["ready": false]) { $1 }, root: root) == .starting)
+        // Still loading: the LLM handler has not set server_tools yet.
+        assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["ready": false, "server_tools": false]) { $1 }, root: root) == .starting)
+        assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["stale": true]) { $1 }, root: root) == .stale)
+        assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["server_tools": false]) { $1 }, root: root) == .stale)
+        assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["source": "/Users/me/chatbot-refactor"]) { $1 }, root: root) == .stale)
+        assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["source": root + "/"]) { $1 }, root: root) == .ready)
+        // Pre-fingerprint servers answer without the contract; they cannot be current.
+        assert(LocalServiceStarter.voiceStatus(code: 200, json: ["status": "ok", "ready": true], root: root) == .stale)
+        assert(LocalServiceStarter.voiceStatus(code: 404, json: nil, root: root) == .stale)
+        let sidecarConfig: [String: Any] = ["chatbotUrl": "ws://x", "fingerprint": "abc", "stale": false, "source": root]
+        assert(LocalServiceStarter.sidecarStatus(code: 200, json: sidecarConfig, root: root) == .ready)
+        assert(LocalServiceStarter.sidecarStatus(code: 200, json: ["chatbotUrl": "ws://x"], root: root) == .stale)
+        assert(LocalServiceStarter.sidecarStatus(code: 200, json: sidecarConfig.merging(["stale": true]) { $1 }, root: root) == .stale)
+        assert(LocalServiceStarter.sidecarStatus(code: 500, json: nil, root: root) == .stale)
+
         let summary = try JSONDecoder().decode(
             ChatSessionSummary.self,
             from: Data(#"{"id":"abc","title":"hello","preview":"hi","message_count":2,"updated_at":"2026-09-08T15:24:07+00:00","created_at":"2026-09-08"}"#.utf8)

@@ -6,7 +6,34 @@ from chatbot.LLM.utils import (
     WHISPER_LANGUAGE_TO_LLM_LANGUAGE,
     remove_unspeechable,
     resolve_auto_language,
+    split_sentences,
 )
+
+
+def test_split_sentences_matches_nltk_for_english() -> None:
+    text = "First one. Second one? Third"
+    assert split_sentences(text) == ["First one.", "Second one?", "Third"]
+
+
+def test_split_sentences_ends_sentences_at_cjk_full_stops() -> None:
+    # punkt alone would return this as a single sentence and TTS would wait
+    # for the whole reply.
+    assert split_sentences("华为是一家中国公司。它成立于1987年！你知道吗？还没完") == [
+        "华为是一家中国公司。",
+        "它成立于1987年！",
+        "你知道吗？",
+        "还没完",
+    ]
+
+
+def test_split_sentences_handles_mixed_punctuation_and_keeps_substrings() -> None:
+    text = "Huawei is 华为。 It is big. 对吧？"
+    sentences = split_sentences(text)
+    assert sentences == ["Huawei is 华为。", "It is big.", "对吧？"]
+    # The streaming loop finds the tail by substring search.
+    assert all(sentence in text for sentence in sentences)
+    assert split_sentences("") == []
+    assert split_sentences("   ") == []
 
 
 def test_remove_unspeechable_normalizes_smart_apostrophes() -> None:

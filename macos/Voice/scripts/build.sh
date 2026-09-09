@@ -17,6 +17,8 @@ done < <(find "$ROOT/Sources" -name '*.swift' | sort)
 
 rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
+# Keep this build tree out of Spotlight/Launchpad so only /Applications/Voice.app shows.
+touch "$(dirname "$OUT")/.metadata_never_index"
 cp "$ROOT/Resources/Info.plist" "$OUT/Contents/Info.plist"
 cp "$ROOT/Resources/Voice.entitlements" "$OUT/Contents/Resources/Voice.entitlements"
 printf '%s\n' "$(cd "$ROOT/../.." && pwd)" > "$OUT/Contents/Resources/RepositoryPath.txt"

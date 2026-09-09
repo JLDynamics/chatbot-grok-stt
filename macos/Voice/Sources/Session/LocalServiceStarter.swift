@@ -42,55 +42,102 @@ final class LocalServiceStarter {
             && sidecar.port == 7860 && sidecar.path == "/api"
     }
 
-    private func reachable(_ url: URL, expectedKey: String) async -> Bool {
+    /// What a probe of one local service found.
+    enum ServiceStatus: Equatable {
+        /// Running this checkout's current code and (for voice) models loaded.
+        case ready
+        /// Current code, still loading.
+        case starting
+        /// Answering, but not something this app can use: code on disk has
+        /// changed since it started, it belongs to another checkout, it
+        /// predates the health contract, or it cannot run the research tools.
+        case stale
+        /// Nothing answered.
+        case unreachable
+    }
+
+    private func fetchJSON(_ url: URL) async -> (code: Int, json: [String: Any]?)? {
         var request = URLRequest(url: url)
         request.timeoutInterval = 0.8
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200,
-                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
-            return json[expectedKey] != nil
-        } catch { return false }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            return (code, try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        } catch { return nil }
     }
 
-    private func sidecarReady(_ sidecar: URL) async -> Bool {
-        await reachable(sidecar.appendingPathComponent("config"), expectedKey: "chatbotUrl")
+    /// Whether a health payload describes this checkout's current code.
+    /// Older servers report no fingerprint, so they cannot be current.
+    static func runsCurrentCode(_ json: [String: Any], root: String?) -> Bool {
+        guard let fingerprint = json["fingerprint"] as? String, !fingerprint.isEmpty,
+              json["stale"] as? Bool == false,
+              let source = json["source"] as? String, let root else { return false }
+        return samePath(source, root)
     }
 
-    /// True when models are loaded. Falls back to `/openapi.json` only when
-    /// `/health` is missing (older servers that bound after load).
-    private func voiceReady(_ voice: URL) async -> Bool {
+    static func samePath(_ a: String, _ b: String) -> Bool {
+        URL(fileURLWithPath: a).resolvingSymlinksInPath().standardizedFileURL.path
+            == URL(fileURLWithPath: b).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    static func sidecarStatus(code: Int, json: [String: Any]?, root: String?) -> ServiceStatus {
+        guard code == 200, let json, json["chatbotUrl"] != nil else { return .stale }
+        return runsCurrentCode(json, root: root) ? .ready : .stale
+    }
+
+    static func voiceStatus(code: Int, json: [String: Any]?, root: String?) -> ServiceStatus {
+        guard code == 200, let json, json["ready"] != nil else { return .stale }
+        guard runsCurrentCode(json, root: root) else { return .stale }
+        let ready = json["ready"] as? Bool == true
+        // HTTP binds before handler threads finish setup. server_tools is
+        // only false-as-a-problem once models are loaded: a still-starting
+        // backend has not constructed the LLM handler yet.
+        if ready && json["server_tools"] as? Bool != true { return .stale }
+        return ready ? .ready : .starting
+    }
+
+    private func sidecarStatus(_ sidecar: URL) async -> ServiceStatus {
+        guard let reply = await fetchJSON(sidecar.appendingPathComponent("config")) else { return .unreachable }
+        return Self.sidecarStatus(code: reply.code, json: reply.json, root: try? repositoryRoot())
+    }
+
+    private func voiceStatus(_ voice: URL) async -> ServiceStatus {
         var address = URLComponents(url: voice, resolvingAgainstBaseURL: false)!
         address.scheme = "http"
         address.query = nil
         address.path = "/health"
-        guard let healthURL = address.url else { return false }
-        var request = URLRequest(url: healthURL)
-        request.timeoutInterval = 0.8
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if code == 200,
-               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               json["ready"] != nil {
-                return json["ready"] as? Bool == true
-            }
-            if code == 404 {
-                address.path = "/openapi.json"
-                guard let openapi = address.url else { return false }
-                return await reachable(openapi, expectedKey: "openapi")
-            }
-            return false
-        } catch {
-            return false
+        guard let healthURL = address.url, let reply = await fetchJSON(healthURL) else { return .unreachable }
+        return Self.voiceStatus(code: reply.code, json: reply.json, root: try? repositoryRoot())
+    }
+
+    private struct Readiness {
+        var voice: ServiceStatus
+        var sidecar: ServiceStatus
+
+        /// A conversation needs both services on current code. Settings,
+        /// history and memory only need a sidecar that answers: replacing a
+        /// stale one there could take a live conversation's backend down with
+        /// it, so stale services are replaced at conversation start instead.
+        func satisfied(needVoice: Bool) -> Bool {
+            if needVoice { return sidecar == .ready && voice == .ready }
+            return sidecar != .unreachable
+        }
+
+        /// A running service that must be replaced before waiting on it helps.
+        func needsRestart(needVoice: Bool) -> Bool {
+            needVoice && (sidecar == .stale || voice == .stale)
         }
     }
 
-    private func ready(voice: URL, sidecar: URL) async -> Bool {
-        async let voiceIsReady = voiceReady(voice)
-        async let toolsReady = sidecarReady(sidecar)
-        let readiness = await (voiceIsReady, toolsReady)
-        return readiness.0 && readiness.1
+    private func probe(needVoice: Bool) async -> Readiness {
+        let sidecar = LocalService.sidecarAPI
+        let voice = LocalService.voiceWebSocket
+        async let sidecarState = sidecarStatus(sidecar)
+        if needVoice {
+            async let voiceState = voiceStatus(voice)
+            return await Readiness(voice: voiceState, sidecar: sidecarState)
+        }
+        return Readiness(voice: .unreachable, sidecar: await sidecarState)
     }
 
     /// Bring up the FastAPI sidecar so saved chats and personal memory load
@@ -98,32 +145,24 @@ final class LocalServiceStarter {
     func ensureSidecar() async throws {
         let sidecar = LocalService.sidecarAPI
         guard Self.managesSidecar(sidecar) else { return }
-        if await sidecarReady(sidecar) { return }
+        if await probe(needVoice: false).satisfied(needVoice: false) { return }
         try await bringUp(needVoice: false)
     }
 
     func ensureReady(voice: URL, sidecar: URL) async throws {
         guard Self.manages(voice: voice, sidecar: sidecar) else { return }
-        if await ready(voice: voice, sidecar: sidecar) { return }
+        if await probe(needVoice: true).satisfied(needVoice: true) { return }
         try await bringUp(needVoice: true)
     }
 
     private func bringUp(needVoice: Bool) async throws {
         try Task.checkCancellation()
-        let sidecar = LocalService.sidecarAPI
-        let voice = LocalService.voiceWebSocket
-        if needVoice {
-            if await ready(voice: voice, sidecar: sidecar) { return }
-        } else if await sidecarReady(sidecar) {
-            return
-        }
+        var state = await probe(needVoice: needVoice)
+        if state.satisfied(needVoice: needVoice) { return }
         if starting {
             try await withCheckedThrowingContinuation { waiters.append($0) }
-            if needVoice {
-                if await ready(voice: voice, sidecar: sidecar) { return }
-            } else if await sidecarReady(sidecar) {
-                return
-            }
+            state = await probe(needVoice: needVoice)
+            if state.satisfied(needVoice: needVoice) { return }
         }
         starting = true
         defer {
@@ -132,8 +171,26 @@ final class LocalServiceStarter {
             waiters = []
             pending.forEach { $0.resume() }
         }
+        if state.needsRestart(needVoice: needVoice) {
+            // The launcher replaces stale services it finds, but a launcher
+            // of ours would otherwise keep supervising the ones it replaces.
+            await stopOwnLaunchers()
+        }
         try spawnLauncher(needVoice: needVoice)
         try await waitUntilReady(needVoice: needVoice)
+    }
+
+    /// Terminate launchers this app started and wait for them to exit; their
+    /// EXIT traps stop the services they own.
+    private func stopOwnLaunchers() async {
+        let running = [launcher, sidecarLauncher].compactMap { $0 }.filter(\.isRunning)
+        running.forEach { $0.terminate() }
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline, running.contains(where: \.isRunning) {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        launcher = nil
+        sidecarLauncher = nil
     }
 
     private func spawnLauncher(needVoice: Bool) throws {
@@ -172,23 +229,13 @@ final class LocalServiceStarter {
     }
 
     private func waitUntilReady(needVoice: Bool) async throws {
-        let sidecar = LocalService.sidecarAPI
-        let voice = LocalService.voiceWebSocket
         let deadline = Date().addingTimeInterval(needVoice ? 180 : 45)
         let child = needVoice ? launcher : (launcher ?? sidecarLauncher)
         while Date() < deadline {
             try Task.checkCancellation()
-            if needVoice {
-                if await ready(voice: voice, sidecar: sidecar) { return }
-            } else if await sidecarReady(sidecar) {
-                return
-            }
+            if await probe(needVoice: needVoice).satisfied(needVoice: needVoice) { return }
             if let child, !child.isRunning {
-                if needVoice {
-                    if await ready(voice: voice, sidecar: sidecar) { return }
-                } else if await sidecarReady(sidecar) {
-                    return
-                }
+                if await probe(needVoice: needVoice).satisfied(needVoice: needVoice) { return }
                 throw StartupError("Local service startup failed. Check /tmp/voice-service-startup.log and /tmp/chatbot-server.log.")
             }
             try await Task.sleep(nanoseconds: 200_000_000)

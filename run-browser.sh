@@ -44,13 +44,139 @@ ports=("$WEB_PORT")
 if [[ "$sidecar_only" == false ]]; then
   ports=("$PORT" "$WEB_PORT")
 fi
+
+# --reuse-running keeps a service only while it runs this checkout's current
+# code. Each service reports the fingerprint of the sources it loaded and
+# whether disk has since changed; anything older than that contract, from
+# another checkout, or unable to answer is stopped and started again here.
+# Processes that are not Chatbot services are never touched.
+HERE_PHYSICAL="$(pwd -P)"
+PYTHON=""
+if [[ -x .venv/bin/python3 ]]; then
+  PYTHON=.venv/bin/python3
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+fi
+
+health_url() {
+  if [[ "$1" == "$WEB_PORT" ]]; then
+    echo "http://127.0.0.1:$1/api/config"
+  else
+    echo "http://127.0.0.1:$1/health"
+  fi
+}
+
+# current | stale | foreign | unknown | unreachable, from one health probe.
+service_state() {
+  if [[ -z "$PYTHON" ]]; then
+    echo unreachable
+    return
+  fi
+  "$PYTHON" scripts/service_state.py "$1" "$HERE_PHYSICAL" 2>/dev/null || echo unreachable
+}
+
+# Only this project's two services may be stopped by this launcher.
+ours() {
+  local cmd
+  cmd="$(ps -o command= -p "$1" 2>/dev/null || true)"
+  [[ "$cmd" == *"chatbot serve"* || "$cmd" == *"server:app"* ]]
+}
+
+# current | stale | foreign | unknown | hung | other for the service on port $1
+# (pid $2). A listener that never answers gets a moment to finish binding
+# before it counts as hung; both services serve their health route from the
+# instant they listen, so a longer wait only delays the restart.
+probe_service() {
+  local port="$1" pid="$2" state=unreachable attempt
+  for attempt in $(seq 1 5); do
+    state="$(service_state "$(health_url "$port")")"
+    [[ "$state" != unreachable ]] && break
+    sleep 0.2
+  done
+  if [[ "$state" == unreachable ]]; then
+    if ours "$pid"; then echo hung; else echo other; fi
+  elif [[ "$state" == unknown ]] && ! ours "$pid"; then
+    echo other
+  else
+    echo "$state"
+  fi
+}
+
+# The launcher supervising pid $1, else $1 itself. Stopping a launcher runs
+# its EXIT trap, which stops every service it owns without leaving orphans.
+stop_target() {
+  local pid="$1" parent cmd
+  parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  if [[ -n "$parent" && "$parent" != 1 ]]; then
+    cmd="$(ps -o command= -p "$parent" 2>/dev/null || true)"
+    if [[ "$cmd" == *run-browser.sh* ]]; then
+      echo "$parent"
+      return
+    fi
+  fi
+  echo "$pid"
+}
+
+wait_port_free() {
+  local port="$1" pid="$2"
+  for _ in $(seq 1 50); do
+    [[ -z "$(listener "$port")" ]] && return 0
+    sleep 0.2
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  for _ in $(seq 1 25); do
+    [[ -z "$(listener "$port")" ]] && return 0
+    sleep 0.2
+  done
+  echo "Error: could not free port $port (pid $pid)." >&2
+  return 1
+}
+
+held_ports=()
+held_pids=()
+held_targets=()
+held_states=()
 for port in "${ports[@]}"; do
   pid="$(listener "$port")"
-  if [[ -n "$pid" && "$reuse_running" == false ]]; then
+  [[ -z "$pid" ]] && continue
+  if [[ "$reuse_running" == false ]]; then
     echo "Error: port $port is already in use by pid $pid." >&2
     exit 1
   fi
+  held_ports+=("$port")
+  held_pids+=("$pid")
+  held_targets+=("$(stop_target "$pid")")
+  held_states+=("$(probe_service "$port" "$pid")")
 done
+
+stop_targets=""
+for i in ${held_ports[@]+"${!held_ports[@]}"}; do
+  case "${held_states[$i]}" in
+    current) ;;
+    other)
+      echo "Warning: port ${held_ports[$i]} is held by pid ${held_pids[$i]}, which is not a Chatbot service; leaving it alone." >&2
+      ;;
+    *)
+      echo "The service on port ${held_ports[$i]} (pid ${held_pids[$i]}) is ${held_states[$i]}; restarting it from $HERE."
+      stop_targets="$stop_targets ${held_targets[$i]} "
+      ;;
+  esac
+done
+if [[ -n "$stop_targets" ]]; then
+  for target in $(printf '%s\n' $stop_targets | sort -u); do
+    kill -TERM "$target" 2>/dev/null || true
+  done
+  # A stopped launcher takes every service it owns with it, current or not,
+  # so wait for each port that is about to clear rather than reuse a listener
+  # that is already on its way out.
+  for i in ${held_ports[@]+"${!held_ports[@]}"}; do
+    [[ "$stop_targets" == *" ${held_targets[$i]} "* ]] || continue
+    if [[ "${held_states[$i]}" == current ]]; then
+      echo "The service on port ${held_ports[$i]} shares that launcher and restarts with it."
+    fi
+    wait_port_free "${held_ports[$i]}" "${held_pids[$i]}"
+  done
+fi
 
 server_pid=""
 web_pid=""

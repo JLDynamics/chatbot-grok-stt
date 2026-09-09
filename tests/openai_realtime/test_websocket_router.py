@@ -11,6 +11,7 @@ import base64
 import time
 from queue import Empty, Queue
 from threading import Event as ThreadingEvent
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -147,6 +148,37 @@ class TestHealth:
             body = response.json()
             assert body["ready"] is True
             assert body["status"] == "ok"
+            # Launchers reuse this process only while these say it is current.
+            assert isinstance(body["fingerprint"], str) and body["fingerprint"]
+            assert body["stale"] is False
+            assert body["source"] and body["pid"] > 0
+            # The test pipeline's handlers carry no ServerToolExecutor.
+            assert body["server_tools"] is False
+
+    def test_health_reports_server_tools_when_the_llm_handler_has_them(self):
+        text_prompt_queue: Queue = Queue()
+        should_listen = ThreadingEvent()
+        should_listen.set()
+        service = RealtimeService(text_prompt_queue=text_prompt_queue, should_listen=should_listen)
+        llm_handler = SimpleNamespace(server_tools=object())
+        unit = PipelineUnit(
+            index=0,
+            service=service,
+            cancel_scope=CancelScope(),
+            should_listen=should_listen,
+            response_playing=ThreadingEvent(),
+            input_queue=Queue(),
+            output_queue=Queue(),
+            text_output_queue=Queue(),
+            text_prompt_queue=text_prompt_queue,
+            handlers=[SimpleNamespace(), llm_handler],
+        )
+        app = create_app(unit=unit, stop_event=ThreadingEvent())
+        with TestClient(app) as client:
+            assert client.get("/health").json()["server_tools"] is True
+        llm_handler.server_tools = None
+        with TestClient(app) as client:
+            assert client.get("/health").json()["server_tools"] is False
 
     def test_health_starting_and_websocket_rejected(self):
         text_prompt_queue: Queue = Queue()
@@ -172,7 +204,8 @@ class TestHealth:
         app = create_app(unit=unit, stop_event=ThreadingEvent())
         with TestClient(app) as client:
             response = client.get("/health")
-            assert response.json() == {"status": "starting", "ready": False}
+            body = response.json()
+            assert (body["status"], body["ready"]) == ("starting", False)
             with client.websocket_connect("/v1/realtime") as ws:
                 msg = ws.receive_json()
                 assert msg["type"] == "error"

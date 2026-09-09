@@ -230,6 +230,35 @@ def drop_queued_tts_inputs(queue_in: Any, turn_id: str | None, turn_revision: in
     return dropped
 
 
+def trim_edge_silence(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    keep_lead_s: float | None,
+    keep_trail_s: float | None,
+    threshold: float = 0.01,
+) -> np.ndarray:
+    """Shorten the silence at the edges of one synthesized run.
+
+    Every Kokoro generation starts and ends with a few hundred milliseconds of
+    silence, which is right for a sentence and wrong in the middle of one: a
+    run of another script spliced into a sentence would otherwise sit between
+    two long pauses. ``None`` leaves that edge alone (a run that starts or ends
+    the reply keeps its natural silence).
+    """
+    if not audio.size:
+        return audio
+    loud = np.flatnonzero(np.abs(audio) > threshold)
+    if not loud.size:
+        return audio
+    start, stop = 0, len(audio)
+    if keep_lead_s is not None:
+        start = max(0, int(loud[0]) - int(keep_lead_s * sample_rate))
+    if keep_trail_s is not None:
+        stop = min(len(audio), int(loud[-1]) + 1 + int(keep_trail_s * sample_rate))
+    return audio[start:stop]
+
+
 def build_denoise_chain(
     gen_kwargs: dict[str, Any],
 ) -> tuple[SpectralDenoiser, TTSNoiseGate, dict[str, Any]]:

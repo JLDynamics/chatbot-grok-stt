@@ -26,8 +26,12 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from chatbot.build_info import SIDECAR_SOURCES, SourceSnapshot
+
 logger = logging.getLogger("chatbot.sidecar")
 logger.setLevel(logging.INFO)
+# What this process loaded, so /api/config can say when disk has moved on.
+SOURCE_SNAPSHOT = SourceSnapshot(SIDECAR_SOURCES)
 
 CHATBOT_VOICE_URL = os.environ.get(
     "CHATBOT_VOICE_URL", os.environ.get("SPEECH_TO_SPEECH_URL", "ws://localhost:8766/v1/realtime")
@@ -354,6 +358,7 @@ def config() -> dict:
         "codeAgent": CODE_AGENT_ENABLED,
         "desktopControl": _desktop_control_available(),
         "webPort": WEB_PORT,
+        **SOURCE_SNAPSHOT.describe(),
     }
 
 

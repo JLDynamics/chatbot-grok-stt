@@ -8,7 +8,6 @@ from collections.abc import Callable, Generator, Iterator
 from typing import Any, Optional
 
 import httpx
-from nltk import sent_tokenize
 from openai import OpenAI
 from openai.types.realtime.conversation_item import (
     RealtimeConversationItemAssistantMessage,
@@ -27,7 +26,7 @@ from chatbot.LLM.chat_factories import build_active_chat, make_system_message, m
 from chatbot.LLM.compaction_prompt import CompactGenerateFn, build_compactor
 from chatbot.LLM.server_tools import MAX_TOOL_ROUNDS, TOOL_TIME_BUDGET_S, ServerToolExecutor
 from chatbot.LLM.text_prompt import build_text_system_prompt
-from chatbot.LLM.utils import remove_unspeechable, resolve_auto_language
+from chatbot.LLM.utils import remove_unspeechable, resolve_auto_language, split_sentences
 from chatbot.LLM.voice_prompt import build_voice_system_prompt
 from chatbot.pipeline.cancel_scope import CancelScope
 from chatbot.pipeline.handler_types import LLMIn, LLMOut
@@ -479,7 +478,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 new_text = remove_unspeechable(event.text)
                 state.clean_text += new_text
                 printable_text += new_text
-                sentences = sent_tokenize(printable_text)
+                sentences = split_sentences(printable_text)
                 if len(sentences) > 1:
                     for s in sentences[:-1]:
                         sentence_batch.append(s)
@@ -494,7 +493,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                             first_flush_pending = False
                     if cancelled:
                         break
-                    # Keep the raw tail (sent_tokenize strips its trailing space)
+                    # Keep the raw tail (the tokenizer strips its trailing space)
                     # so the next delta cannot glue onto it as "one.Here" and
                     # hide a sentence boundary from the tokenizer.
                     tail_start = printable_text.rfind(sentences[-1])

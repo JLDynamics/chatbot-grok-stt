@@ -28,6 +28,11 @@ def test_config_exposes_retained_sidecar_capabilities(monkeypatch, tmp_path):
     assert data["chatbotUrl"].endswith("/v1/realtime")
     assert data["allowDirect"] is False
     assert data["desktopControl"] is True
+    # Launchers reuse a running sidecar only while it reports current code.
+    assert isinstance(data["fingerprint"], str) and data["fingerprint"]
+    assert data["stale"] is False
+    assert Path(data["source"]) == ROOT
+    assert data["pid"] > 0
     assert data["codeAgent"] is True
     assert data["webPort"] == server.WEB_PORT
 
@@ -178,6 +183,9 @@ async def test_fetch_extracts_main_text_and_reports_truncation(monkeypatch):
 
     monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
     monkeypatch.setattr(server, "_client", lambda: FakeClient())
+    # This exercises the direct fetch path; a TinyFish key in the developer's
+    # shell must not reroute it through the hosted fetch API.
+    monkeypatch.setattr(server, "TINYFISH_KEY", "")
     result = await server.fetch_page(server.FetchRequest(url="https://example.com/article"))
     body = json.loads(result.body)
     assert body["title"] == "Example"

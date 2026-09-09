@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chatbot"
-version = "0.2.12"
+version = "0.2.13"
 description = "Personal local voice chatbot with long-term memory"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,7 +50,7 @@ dependencies = [
     "mlx-audio==0.5.0",
     "mlx-lm==0.31.1",
     "mlx-metal==0.31.1",
-    "misaki>=0.9.4",
+    "misaki[zh]>=0.9.4",
     "espeakng-loader>=0.2.4",
     "num2words>=0.5.14",
     "spacy>=3.8.4,<4.0",
@@ -72,6 +72,14 @@ dev = [
     "pytest",
     "pytest-asyncio",
 ]
+# misaki's English G2P loads this spaCy model when Kokoro starts. It is a
+# direct URL, which PyPI forbids in the wheel's dependencies, so it lives in a
+# default group: `uv sync` installs it, and without it `uv sync` would remove a
+# hand-installed copy and misaki would try to pip-install it at runtime, which
+# a uv-managed venv has no pip for.
+tts-models = [
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -79,6 +87,7 @@ asyncio_mode = "auto"
 [tool.uv]
 package = true
 prerelease = "allow"
+default-groups = ["dev", "tts-models"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

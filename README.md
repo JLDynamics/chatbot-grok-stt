@@ -19,25 +19,21 @@ In the default **Speakers (echo cancellation)** mode, the mic stays open while t
 ## Install and run
 
 ```bash
-uv sync --group dev
+uv sync
 ./set-keys.sh
 ./run-browser.sh
 ```
 
-```bash
-./macos/Voice/scripts/build.sh
-open macos/Voice/build/Voice.app
-```
-
-To show Voice in Finder → Applications, Launchpad, and Spotlight:
+`uv sync` installs the app, the Mandarin Kokoro extra (`misaki[zh]`), and the English spaCy model Kokoro needs at startup.
 
 ```bash
 ./macos/Voice/scripts/install.sh
+open /Applications/Voice.app
 ```
 
-`run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`); the Voice panel connects to both. Clicking the installed app starts those services if they are not already running. The first launch may download the Parakeet and TTS model files.
+Use the copy in **Applications**. The tree under `macos/Voice/build/` is only the compiler output; Launchpad should not list it. `run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`). Opening Voice starts those services when the default local ports are used, and **replaces a stale process** whose code no longer matches this checkout (that is how an old backend could sit on the ports without search). The first launch may download the Parakeet and TTS model files.
 
-The default model path is `openai/gpt-5.6-luna` through OpenRouter. **Parakeet TDT 1.1B** STT and the TTS model run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language); set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
+The default model path is `openai/gpt-5.6-luna` through OpenRouter. **Parakeet TDT 1.1B** STT and the TTS model run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language). A Chinese name inside an English reply is spoken by the Mandarin pipeline, not spelled out as “Chinese letter.” Set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
 
 ## Configuration
 
@@ -73,7 +69,7 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 
 ### Search, fetch, and the Chrome bridge
 
-The model searches and reads pages **inside the same reply** — it does not wait for the Mac app to round-trip each hop.
+The model searches and reads pages **inside the same reply**. When a fact may be stale or uncertain it says a short line such as “Let me check that,” then runs `web_search` / `read_page` on the server against the sidecar — no Mac round trip per hop.
 
 - **Local web search**: TinyFish (preferred), Tavily, or Serper. Use when a fact may be outdated or the model is not sure.
 - **`read_page`**: one tool that tries public fetch, then the live Chrome tab when fetch is gated, login-only, or the page is already on screen. X/Twitter links start with Chrome. TinyFish fetch falls back to a direct HTTP read if the provider fails.
@@ -120,6 +116,7 @@ uv run ruff check src tests
 uv run mypy src
 uv run pytest -q
 bash macos/Voice/scripts/test.sh
+python3 scripts/verify-voice.py --skip-ui --research   # live search/read_page + Chinese TTS, services must be up
 ```
 
 CI runs on macOS (lint, types, tests), builds the Python package, and performs an installation smoke test. Publishing is handled by `.github/workflows/publish.yml` for `v*` tags.

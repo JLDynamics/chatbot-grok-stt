@@ -10,7 +10,12 @@ Usage (from the repo root):
     python3 scripts/verify-voice.py
     python3 scripts/verify-voice.py --app macos/Voice/build/Voice.app
     python3 scripts/verify-voice.py --skip-ui
+    python3 scripts/verify-voice.py --skip-ui --research   # server-side search/read_page + Chinese TTS turns
     python3 scripts/verify-voice.py --cold     # quit Voice, restart local services
+
+Also confirms both local services run this checkout's current code (their
+health payloads carry a source fingerprint), which is how a stale backend
+that silently lacked server-side search was caught.
 
 Does not overwrite personal memory or delete saved conversations.
 """
@@ -59,7 +64,9 @@ class Report:
         return all(item.ok for item in self.results)
 
 
-def http_json(url: str, method: str = "GET", body: dict[str, Any] | None = None, timeout: float = 12) -> tuple[int, Any]:
+def http_json(
+    url: str, method: str = "GET", body: dict[str, Any] | None = None, timeout: float = 12
+) -> tuple[int, Any]:
     data = None if body is None else json.dumps(body).encode()
     headers = {"Accept": "application/json"}
     if data is not None:
@@ -109,9 +116,7 @@ def voice_binary() -> str:
 
 
 def window_frame() -> tuple[int, int, int, int]:
-    raw = run_osascript(
-        'tell application "System Events" to tell process "Voice" to get {position, size} of window 1'
-    )
+    raw = run_osascript('tell application "System Events" to tell process "Voice" to get {position, size} of window 1')
     parts = [int(piece.strip()) for piece in raw.replace("{", "").replace("}", "").split(",") if piece.strip()]
     if len(parts) != 4:
         raise RuntimeError(f"bad window frame: {raw!r}")
@@ -152,13 +157,13 @@ def click_panel_button(index: int) -> None:
     """Click the Nth AX button in the panel (1-based). Header: 1 On top, 2-4 theme, 5 History, 6 Settings, 7 Close."""
     activate_voice()
     run_osascript(
-        f'''
+        f"""
 tell application "System Events"
   tell process "Voice"
     click button {int(index)} of group 1 of window 1
   end tell
 end tell
-''',
+""",
         timeout=8,
     )
     time.sleep(0.4)
@@ -166,7 +171,9 @@ end tell
 
 def screenshot(path: Path) -> Path:
     """Capture the Voice panel via the sidecar harness (has Screen Recording)."""
-    code, body = http_json(f"{SIDECAR}/desktop/act", method="POST", body={"action": "screenshot", "app": "Voice"}, timeout=25)
+    code, body = http_json(
+        f"{SIDECAR}/desktop/act", method="POST", body={"action": "screenshot", "app": "Voice"}, timeout=25
+    )
     if code != 200 or not isinstance(body, dict) or not body.get("path"):
         # Fall back to full-screen capture; may be wallpaper-only without TCC.
         subprocess.run(["screencapture", "-x", str(path)], check=True)
@@ -230,20 +237,33 @@ def wait_http(url: str, timeout: float, ready: Any = None) -> float:
     raise TimeoutError(f"timed out waiting for {url}: {last}")
 
 
+def describe_code(info: dict[str, Any]) -> tuple[bool, str]:
+    """Whether a health payload says the process runs this checkout's current code."""
+    fingerprint = info.get("fingerprint")
+    if not fingerprint:
+        return False, "no fingerprint: this process predates the current code and must be restarted"
+    source = info.get("source") or ""
+    if Path(source).resolve() != ROOT.resolve():
+        return False, f"runs from {source}, not {ROOT}"
+    if info.get("stale"):
+        return False, f"fingerprint {fingerprint} no longer matches disk; restart to pick up the change"
+    return True, f"fingerprint {fingerprint} pid {info.get('pid')}"
+
+
 def verify_api(report: Report) -> None:
     code, health = http_json(f"{VOICE_HTTP}/health")
     if code == 200 and isinstance(health, dict) and "ready" in health:
         report.add("voice /health", bool(health.get("ready")), json.dumps(health))
-    elif code == 404:
-        code_oa, openapi = http_json(f"{VOICE_HTTP}/openapi.json")
+        current, detail = describe_code(health)
+        report.add("voice runs current code", current, detail)
         report.add(
-            "voice /health",
-            code_oa == 200 and isinstance(openapi, dict) and "openapi" in openapi,
-            "legacy server without /health; openapi.json fallback "
-            + ("ok" if code_oa == 200 else f"status {code_oa}"),
+            "voice runs search/read_page itself",
+            health.get("server_tools") is True,
+            "server_tools=true" if health.get("server_tools") is True else f"server_tools={health.get('server_tools')}",
         )
     else:
         report.add("voice /health", False, f"status {code} {health}")
+        report.add("voice runs current code", False, "no health contract: legacy server")
 
     code, cfg = http_json(f"{SIDECAR}/config")
     ok = code == 200 and isinstance(cfg, dict) and "chatbotUrl" in cfg
@@ -254,6 +274,9 @@ def verify_api(report: Report) -> None:
         if ok
         else f"status {code} {cfg}",
     )
+    if ok:
+        current, detail = describe_code(cfg)
+        report.add("sidecar runs current code", current, detail)
 
     code, memory = http_json(f"{SIDECAR}/personal-memory")
     content = memory.get("content") if isinstance(memory, dict) else ""
@@ -303,48 +326,68 @@ def verify_api(report: Report) -> None:
         report.add("web fetch", True, "skipped (no search key)")
 
 
-def verify_talk(report: Report) -> None:
-    try:
-        import websockets
-    except ImportError:
-        report.add("live model reply", False, "websockets package missing")
-        return
+@dataclass
+class Turn:
+    """What one text turn over the realtime socket produced."""
 
+    transcript: str = ""
+    audio_seconds: float = 0.0
+    # (name, arguments) of tools the server ran inside the response.
+    server_tools: list[tuple[str, str]] = field(default_factory=list)
+    server_tool_outputs: list[str] = field(default_factory=list)
+    # Tools the server handed to the client to run (screenshot, code_agent).
+    client_tools: list[str] = field(default_factory=list)
+    error: str = ""
+
+
+def run_turn(instructions: str, text: str, timeout: float = 60, tools: list[dict[str, Any]] | None = None) -> Turn:
+    """Send one user text turn and collect the reply until the response ends."""
     import asyncio
 
-    async def once() -> str:
-        transcript: list[str] = []
-        async with websockets.connect(VOICE_WS, open_timeout=8, close_timeout=3) as ws:
+    import websockets
+
+    async def connect() -> Any:
+        """Open a session, waiting out the moment the previous turn's slot is released.
+
+        The local backend runs one pipeline; after a disconnect the slot frees
+        once SESSION_END drains through the handlers, which can take a second.
+        """
+        deadline = time.monotonic() + 20
+        while True:
+            ws = await websockets.connect(VOICE_WS, open_timeout=8, close_timeout=3, max_size=None)
             created = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
-            if created.get("type") != "session.created":
-                raise RuntimeError(f"expected session.created, got {created.get('type')}")
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "session.update",
-                        "session": {
-                            "type": "realtime",
-                            "instructions": "Reply with the single word pong and nothing else.",
-                        },
-                    }
-                )
-            )
+            if created.get("type") == "session.created":
+                return ws
+            await ws.close()
+            error = created.get("error") or {}
+            busy = error.get("type") in {"session_limit_reached", "server_starting"}
+            if not busy or time.monotonic() > deadline:
+                raise RuntimeError(f"expected session.created, got {created.get('type')}: {error.get('message', '')}")
+            await asyncio.sleep(0.5)
+
+    async def once() -> Turn:
+        turn = Turn()
+        pcm_bytes = 0
+        session: dict[str, Any] = {"type": "realtime", "instructions": instructions}
+        if tools is not None:
+            session["tools"] = tools
+            session["tool_choice"] = "auto"
+        ws = await connect()
+        try:
+            await ws.send(json.dumps({"type": "session.update", "session": session}))
             await ws.send(
                 json.dumps(
                     {
                         "type": "conversation.item.create",
-                        "item": {
-                            "type": "message",
-                            "role": "user",
-                            "content": [{"type": "input_text", "text": "ping"}],
-                        },
+                        "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]},
                     }
                 )
             )
             await ws.send(json.dumps({"type": "response.create"}))
-            deadline = time.monotonic() + 25
+            deadline = time.monotonic() + timeout
+            transcript: list[str] = []
             while time.monotonic() < deadline:
-                raw = await asyncio.wait_for(ws.recv(), timeout=25)
+                raw = await asyncio.wait_for(ws.recv(), timeout=max(1.0, deadline - time.monotonic()))
                 event = json.loads(raw)
                 kind = event.get("type") or ""
                 if kind in {
@@ -353,20 +396,177 @@ def verify_talk(report: Report) -> None:
                     "response.text.delta",
                     "response.output_text.delta",
                 }:
-                    delta = event.get("delta") or ""
-                    if delta:
-                        transcript.append(delta)
-                if kind in {"response.done", "response.output_item.done"} and transcript:
+                    transcript.append(event.get("delta") or "")
+                elif kind in {"response.audio.delta", "response.output_audio.delta"}:
+                    pcm_bytes += len(event.get("delta") or "") * 3 // 4
+                elif kind == "conversation.item.created":
+                    item = event.get("item") or {}
+                    if item.get("type") == "function_call":
+                        turn.server_tools.append((item.get("name") or "", item.get("arguments") or ""))
+                    elif item.get("type") == "function_call_output":
+                        turn.server_tool_outputs.append(item.get("output") or "")
+                elif kind == "response.output_item.done":
+                    item = event.get("item") or {}
+                    if item.get("type") == "function_call":
+                        turn.client_tools.append(item.get("name") or "")
+                elif kind == "response.done":
                     break
-                if kind == "error":
-                    raise RuntimeError(str(event.get("error") or event))
-        return "".join(transcript).strip()
+                elif kind == "error":
+                    turn.error = str(event.get("error") or event)
+                    break
+            turn.transcript = "".join(transcript).strip()
+            # 24 kHz 16-bit mono.
+            turn.audio_seconds = pcm_bytes / (24000 * 2)
+        finally:
+            await ws.close()
+        return turn
 
+    return asyncio.run(once())
+
+
+def verify_talk(report: Report) -> None:
     try:
-        text = asyncio.run(once())
-        report.add("live model reply", bool(text), text[:180] or "empty transcript")
+        import websockets  # noqa: F401
+    except ImportError:
+        report.add("live model reply", False, "websockets package missing")
+        return
+    try:
+        turn = run_turn("Reply with the single word pong and nothing else.", "ping", timeout=25)
+        report.add("live model reply", bool(turn.transcript) and not turn.error, turn.transcript[:180] or turn.error)
     except Exception as exc:
         report.add("live model reply", False, str(exc))
+
+
+# Same schemas Voice.app publishes. Without these on session.update the model
+# cannot call search or read_page even when the server is willing to run them.
+RESEARCH_TOOLS = [
+    {
+        "type": "function",
+        "name": "web_search",
+        "description": "Search the web for current or specific facts. Returns titles, snippets and URLs.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "The search query."}},
+            "required": ["query"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "read_page",
+        "description": "Read the full text of a web page: a URL you know or found with web_search.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Public URL, if known."},
+                "prefer_browser": {"type": "boolean", "description": "Start from the user's Chrome."},
+            },
+        },
+    },
+]
+
+
+def verify_research(report: Report) -> None:
+    """The model searches and reads a page inside its own reply, on the server."""
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        report.add("research turn", False, "websockets package missing")
+        return
+    instructions = (
+        "You are being tested. First say one short line such as 'Let me check that.' and in the same response "
+        "call web_search with the query 'IANA example domains'. Then call read_page on the most relevant result. "
+        "Finally answer in one short spoken sentence based on what the page says. Never read URLs aloud."
+    )
+    try:
+        turn = run_turn(instructions, "What is the IANA example domains page for?", timeout=90, tools=RESEARCH_TOOLS)
+    except Exception as exc:
+        report.add("research turn", False, str(exc))
+        return
+    names = [name for name, _ in turn.server_tools]
+    report.add(
+        "web_search ran on the server",
+        "web_search" in names and not turn.error,
+        f"server tools: {names}; client tools: {turn.client_tools}" + (f"; error: {turn.error}" if turn.error else ""),
+    )
+    outputs = " ".join(turn.server_tool_outputs)
+    report.add(
+        "search returned results",
+        "web_search" in names and "URL:" in outputs,
+        outputs[:200].replace("\n", " ") if outputs else "no tool output seen",
+    )
+    report.add(
+        "read_page ran on the server",
+        any(name in {"read_page", "read_url", "fetch_page", "web_fetch"} for name in names),
+        f"server tools: {names}",
+    )
+    report.add(
+        "model answered after researching",
+        bool(turn.transcript) and turn.audio_seconds > 0.5,
+        f"{turn.audio_seconds:.1f}s audio: {turn.transcript[:160]}",
+    )
+    report.add(
+        "no tool was pushed to the client",
+        not turn.client_tools,
+        "search and page reading stayed server-side" if not turn.client_tools else f"client tools: {turn.client_tools}",
+    )
+
+
+def server_log_since(marker_offset: int) -> str:
+    log = Path(os.environ.get("SERVER_LOG", "/tmp/chatbot-server.log"))
+    try:
+        with log.open("rb") as handle:
+            handle.seek(marker_offset)
+            return handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def server_log_size() -> int:
+    log = Path(os.environ.get("SERVER_LOG", "/tmp/chatbot-server.log"))
+    try:
+        return log.stat().st_size
+    except OSError:
+        return 0
+
+
+def verify_chinese_tts(report: Report) -> None:
+    """A Chinese name inside an English reply is synthesized by the Mandarin pipeline."""
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        report.add("chinese tts turn", False, "websockets package missing")
+        return
+    sentence = "Huawei, or 华为, is a Chinese company."
+    offset = server_log_size()
+    try:
+        turn = run_turn(
+            f"Reply with exactly this sentence and nothing else: {sentence}", "Say the test sentence.", timeout=45
+        )
+    except Exception as exc:
+        report.add("chinese tts turn", False, str(exc))
+        return
+    report.add(
+        "chinese tts turn",
+        "华为" in turn.transcript and turn.audio_seconds > 1.0 and not turn.error,
+        f"{turn.audio_seconds:.1f}s audio: {turn.transcript[:120]}" + (f"; error: {turn.error}" if turn.error else ""),
+    )
+    time.sleep(0.5)
+    log = server_log_since(offset)
+    spliced = "Kokoro mixed-script reply" in log and "[z]" in log
+    report.add(
+        "chinese run used the mandarin pipeline",
+        spliced,
+        "server log shows the reply spliced across the English and Mandarin pipelines"
+        if spliced
+        else "server log has no mixed-script splice for this turn (old backend, or log not at $SERVER_LOG)",
+    )
+    report.add(
+        "no espeak fallback on chinese characters",
+        "words count mismatch" not in log,
+        "phonemizer never saw the Chinese characters"
+        if "words count mismatch" not in log
+        else "phonemizer fallback fired: the English pipeline received Chinese characters",
+    )
 
 
 def verify_ui(report: Report, app: Path) -> None:
@@ -387,7 +587,9 @@ def verify_ui(report: Report, app: Path) -> None:
         x, y, w, h = window_frame()
         report.add("panel window", w > 300 and h > 400, f"{w}x{h} at {x},{y}")
     except Exception as exc:
-        report.add("panel window", True, f"System Events cannot see the floating panel ({exc}); using harness screenshots")
+        report.add(
+            "panel window", True, f"System Events cannot see the floating panel ({exc}); using harness screenshots"
+        )
 
     shots = report.out_dir
     shots.mkdir(parents=True, exist_ok=True)
@@ -403,7 +605,7 @@ def verify_ui(report: Report, app: Path) -> None:
     # Menu extra is reliable even when the floating panel is not in System Events.
     try:
         run_osascript(
-            '''
+            """
 tell application "Voice" to activate
 delay 0.2
 tell application "System Events"
@@ -413,7 +615,7 @@ tell application "System Events"
     click menu item "Show panel" of menu 1 of menu bar item 1 of menu bar 2
   end tell
 end tell
-''',
+""",
             timeout=12,
         )
         report.add("menu Show panel", True)
@@ -438,7 +640,7 @@ end tell
 
     try:
         run_osascript(
-            '''
+            """
 tell application "Voice" to activate
 delay 0.2
 tell application "System Events"
@@ -448,13 +650,13 @@ tell application "System Events"
     click menu item "Start session" of menu 1 of menu bar item 1 of menu bar 2
   end tell
 end tell
-''',
+""",
             timeout=12,
         )
         time.sleep(1.5)
         snap("06-session-started")
         run_osascript(
-            '''
+            """
 tell application "Voice" to activate
 delay 0.2
 tell application "System Events"
@@ -466,7 +668,7 @@ tell application "System Events"
     end try
   end tell
 end tell
-''',
+""",
             timeout=12,
         )
         time.sleep(0.6)
@@ -488,7 +690,9 @@ def maybe_cold_start(report: Report, app: Path, cold: bool) -> None:
     time.sleep(0.8)
     t0 = time.monotonic()
     launch_app(app)
-    sidecar_s = wait_http(f"{SIDECAR}/config", timeout=45, ready=lambda body: isinstance(body, dict) and "chatbotUrl" in body)
+    sidecar_s = wait_http(
+        f"{SIDECAR}/config", timeout=45, ready=lambda body: isinstance(body, dict) and "chatbotUrl" in body
+    )
     report.add("cold sidecar", True, f"{sidecar_s:.1f}s")
 
     def voice_is_ready(body: Any) -> bool:
@@ -502,7 +706,11 @@ def maybe_cold_start(report: Report, app: Path, cold: bool) -> None:
     except TimeoutError as exc:
         # Fallback for a still-booting or legacy server.
         try:
-            wait_http(f"{VOICE_HTTP}/openapi.json", timeout=30, ready=lambda body: isinstance(body, dict) and "openapi" in body)
+            wait_http(
+                f"{VOICE_HTTP}/openapi.json",
+                timeout=30,
+                ready=lambda body: isinstance(body, dict) and "openapi" in body,
+            )
             report.add("cold voice /health ready", False, f"health not ready; openapi bound. {exc}")
         except Exception:
             report.add("cold voice /health ready", False, str(exc))
@@ -514,6 +722,11 @@ def main() -> int:
     parser.add_argument("--app", type=Path, default=DEFAULT_APP)
     parser.add_argument("--skip-ui", action="store_true")
     parser.add_argument("--skip-talk", action="store_true")
+    parser.add_argument(
+        "--research",
+        action="store_true",
+        help="Also run a turn that must web_search + read_page on the server, and a Chinese-name TTS turn",
+    )
     parser.add_argument("--cold", action="store_true", help="Quit Voice and restart local services")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
@@ -549,7 +762,7 @@ def main() -> int:
     if voice_running():
         try:
             run_osascript(
-                '''
+                """
 tell application "System Events"
   tell process "Voice"
     click menu bar item 1 of menu bar 2
@@ -561,7 +774,7 @@ tell application "System Events"
     end try
   end tell
 end tell
-''',
+""",
                 timeout=8,
             )
             time.sleep(0.4)
@@ -570,6 +783,9 @@ end tell
     # Talk before the UI tour so the panel is not occupying the only pipeline slot.
     if not args.skip_talk:
         verify_talk(report)
+        if args.research:
+            verify_research(report)
+            verify_chinese_tts(report)
     if not args.skip_ui:
         verify_ui(report, args.app)
 

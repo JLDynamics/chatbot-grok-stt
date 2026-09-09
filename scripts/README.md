@@ -7,16 +7,22 @@ Click-through and API checks for the native panel and local services.
 python3 scripts/verify-voice.py
 ./macos/Voice/scripts/verify.sh
 
+# Live server-side search/read_page and a Chinese-name TTS turn (no UI tour):
+python3 scripts/verify-voice.py --skip-ui --research
+
 # Quit Voice, restart sidecar + voice from this tree, then click through:
 ./macos/Voice/scripts/verify.sh --cold
 ```
 
 What it covers:
 
-- Voice `/health` (or `/openapi.json` fallback on an older server)
-- Sidecar config, personal memory, saved sessions, Chrome bridge status
+- Voice `/health`, including source fingerprint, `stale`, and `server_tools`
+- Sidecar `/api/config` with the same current-code contract
+- Personal memory, saved sessions, Chrome bridge status
 - Web search + fetch when a search key is configured
 - Panel buttons: Settings, Conversations, theme, On top, orb, End
 - A short live model reply over the realtime WebSocket (`ping` → `pong`)
+- With `--research`: one turn that must `web_search` then `read_page` on the
+  server, and a mixed-script TTS turn (`华为` on the Mandarin pipeline)
 
 Screenshots land in `/tmp/voice-verify-<timestamp>/`. The tool does not overwrite personal memory or delete saved chats.

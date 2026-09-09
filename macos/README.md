@@ -3,21 +3,22 @@
 This replaces the browser UI (`web_app/`) as the product surface for chatting
 with the Chatbot voice backend. Spec comes from `~/voice-chat-window-design`.
 
-## Build
+## Build and run
 
-```bash
-./macos/Voice/scripts/build.sh
-open macos/Voice/build/Voice.app
-```
-
-Install into `/Applications` (Finder, Launchpad, Spotlight):
+Install into `/Applications` (Finder, Launchpad, Spotlight) and open that copy:
 
 ```bash
 ./macos/Voice/scripts/install.sh
+open /Applications/Voice.app
 ```
 
+`install.sh` builds first unless you pass `--skip-build`. The compiler writes
+`macos/Voice/build/Voice.app`; that folder is not meant to appear in Launchpad.
+Always launch **Applications → Voice**.
+
 Requires the voice server on `ws://127.0.0.1:8766/v1/realtime`. Clicking the
-app starts `./run-browser.sh` when those default local ports are used.
+app starts `./run-browser.sh` when those default local ports are used, and
+restarts a backend whose source fingerprint no longer matches this checkout.
 
 ## Backends
 

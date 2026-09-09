@@ -16,6 +16,21 @@ SPEECHABLE_PATTERN = re.compile(
 )
 MARKDOWN_LIST_PREFIX = re.compile(r"(^|\n)\s*[-+]\s+")
 CLAUSE_LIST_PREFIX = re.compile(r"\.\s+[-+]\s+")
+# nltk's punkt model is English-only and never ends a sentence at 。！？, so
+# without this a Chinese reply would reach TTS in one piece when the stream
+# finished instead of sentence by sentence.
+CJK_SENTENCE_END = re.compile(r"(?<=[。！？])")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Sentence-split *text* for streaming TTS, honouring CJK full stops."""
+    from nltk import sent_tokenize
+
+    sentences: list[str] = []
+    for piece in CJK_SENTENCE_END.split(text):
+        if piece.strip():
+            sentences.extend(sentence.strip() for sentence in sent_tokenize(piece) if sentence.strip())
+    return sentences
 
 
 def remove_unspeechable(text: str) -> str:
