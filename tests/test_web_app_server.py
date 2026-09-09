@@ -1,7 +1,6 @@
 import importlib.util
 import json
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -17,12 +16,6 @@ assert spec and spec.loader
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 client = TestClient(server.app)
-
-
-def _voice_tools_text() -> str:
-    """Native tool definitions with Swift string-continuation joins removed."""
-    swift = (ROOT / "macos" / "Voice" / "Sources" / "Session" / "VoiceTools.swift").read_text()
-    return re.sub(r'"\s*\+\s*"', "", swift)
 
 
 def test_config_exposes_retained_sidecar_capabilities(monkeypatch, tmp_path):
@@ -262,7 +255,6 @@ def test_chrome_bridge_clear_ends_session_and_discards_all_cached_pages(monkeypa
 def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_screenshots():
     content = (WEB_APP_DIR / "chrome_article_bridge" / "content.js").read_text()
     background = (WEB_APP_DIR / "chrome_article_bridge" / "background.js").read_text()
-    swift = _voice_tools_text()
     manifest = json.loads((WEB_APP_DIR / "chrome_article_bridge" / "manifest.json").read_text())
 
     assert "document.addEventListener('visibilitychange', handleVisibilityChange)" in content
@@ -298,42 +290,6 @@ def test_chrome_bridge_republishes_visible_tab_and_routes_article_text_without_s
     assert "observer?.disconnect()" in content
     assert "Reload this page once to activate the new content script" in content
     assert "sendResponse({ ok: true })" in content
-    # Intent classification: still strict about which kind of thing is wanted.
-    routing_examples = (
-        "read, check, grab, summarize, analyze, or explain an article",
-        "screen, app, window, layout, image, chart, visual appearance, or front-page requests",
-        "An explicit 'take a screenshot'",
-        "Use inspect_current_context only when the request is genuinely ambiguous",
-        "calls screenshot directly",
-    )
-    for example in routing_examples:
-        assert example in swift
-    assert "never page body and never pixels" in swift
-    assert "content-versus-visual question" in swift
-    assert "must not use read_article" in swift
-
-    # Method selection: an ordered ladder that descends on failure, rather than
-    # the previous dead end that told the user to reload the extension.
-    ladder = (
-        "1. web_fetch when you have or can search for a public URL",
-        "2. read_article for the live page in the user's Chrome",
-        "Do not click, scroll, or drive the browser",
-        "Descend automatically",
-        "never end a turn telling the user to reload the extension while a rung below is still untried",
-    )
-    for rung in ladder:
-        assert rung in swift
-
-    # The chain has to be audible, and read-only once it reaches the screen.
-    assert "one more every time you change method" in swift
-    assert "Never run two tools in a row in silence" in swift
-    assert "Use screenshot only for visual intent" in swift
-    assert '"name": "screenshot"' in swift
-    assert '"name": "inspect_current_context"' in swift
-    assert "Do not call it for an explicit " in swift
-    assert "X-post text request; call read_article directly" in swift
-    assert '"context/preflight"' in swift
-    assert "base + Self.toolUseHint + Self.toolIntentRouting" in swift
 
 
 def test_chrome_bridge_session_persists_until_disabled_or_receiver_closes():
@@ -633,81 +589,6 @@ if (!stored.chatbotPageBridgeSession?.enabled) {
         check=True,
         timeout=5,
     )
-
-
-def test_native_client_ignores_server_error_events_instead_of_failing():
-    swift = (ROOT / "macos" / "Voice" / "Sources" / "Session" / "LiveVoiceBackend.swift").read_text()
-    assert 'case "error":' in swift
-    assert "server events like turn_ignored are not" in swift
-
-
-def test_context_preflight_routes_without_page_text_or_screenshot(monkeypatch):
-    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
-    monkeypatch.setattr(server, "_desktop_control_available", lambda: True)
-    server.browser_pages.clear()
-    payload = {
-        "tab_id": "456",
-        "url": "https://example.com/news",
-        "title": "Example News",
-        "text": "Private body must not appear in preflight. " * 20,
-        "source": "browser_dom",
-        "content_type": "article",
-        "complete": True,
-        "boundary": "semantic_article_end",
-    }
-    headers = {"X-Chatbot-Bridge": "page-v1"}
-    assert client.post("/api/browser/page", headers=headers, json=payload).status_code == 200
-
-    async def chrome_context():
-        return {
-            "available": True,
-            "sensitive": False,
-            "app": "Google Chrome",
-            "window_title": "Example News",
-        }
-
-    monkeypatch.setattr(server, "_desktop_frontmost_context", chrome_context)
-    chrome = client.post("/api/context/preflight", json={"include_desktop": True}).json()
-    assert chrome["route_hint"] == "read_article"
-    assert chrome["chrome_bridge"]["fresh_readable_page"] is True
-    assert chrome["desktop"]["app"] == "Google Chrome"
-    assert chrome["contains_page_text"] is False
-    assert chrome["captured_screenshot"] is False
-    assert chrome["authorization"] == {
-        "public_page_text": "no_confirmation_required",
-        "desktop_visual_or_action": "explicit_user_request_required",
-    }
-    assert "Private body" not in json.dumps(chrome)
-
-    swift = _voice_tools_text()
-    # Reading a public page still needs no permission theatre...
-    assert "user's request is all the authorization you need" in swift
-    assert "never ask permission for it" in swift
-    # ...but a failed rung now descends instead of dead-ending, and says so.
-    assert "Never stop to ask permission between rungs" in swift
-    assert "never end a turn telling the user to reload the extension while a rung below is still untried" in swift
-    assert "one more every time you change method" in swift
-
-    async def notes_context():
-        return {"available": True, "sensitive": False, "app": "Notes", "window_title": "Shopping list"}
-
-    server.browser_pages.clear()
-    monkeypatch.setattr(server, "_desktop_frontmost_context", notes_context)
-    other_app = client.post("/api/context/preflight", json={"include_desktop": True}).json()
-    assert other_app["route_hint"] == "control_screen_screenshot"
-    assert other_app["desktop"]["app"] == "Notes"
-
-    server.browser_pages.clear()
-    monkeypatch.setattr(server, "_desktop_frontmost_context", chrome_context)
-    unsupported = client.post("/api/context/preflight", json={"include_desktop": True}).json()
-    assert unsupported["route_hint"] == "ask"
-
-    async def sensitive_context():
-        return {"available": True, "sensitive": True, "app": "", "window_title": ""}
-
-    monkeypatch.setattr(server, "_desktop_frontmost_context", sensitive_context)
-    sensitive = client.post("/api/context/preflight", json={"include_desktop": True}).json()
-    assert sensitive["route_hint"] == "ask"
 
 
 def test_chrome_bridge_validates_generic_and_x_page_boundaries(monkeypatch):

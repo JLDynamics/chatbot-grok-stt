@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from collections.abc import Callable
@@ -417,67 +416,6 @@ class Chat:
                 result.append(function_call_output)
         return result
 
-    def to_transformers_chat(self) -> list[dict[str, Any]]:
-        """Serialize the full chat for HuggingFace transformers ``apply_chat_template``.
-
-        User messages with only text produce a plain string ``content`` value.
-        User messages containing images keep ``content`` as a list of dicts so
-        VLM pipelines can process them.
-        """
-        with self._lock:
-            messages: list[TransformersChatMessage] = []
-            if self.init_chat_message:
-                text = " ".join(p.text for p in self.init_chat_message.content if p.text)
-                messages.append(TransformersSystemMessage(content=text))
-            for item in self.buffer:
-                if isinstance(item, RealtimeConversationItemUserMessage):
-                    has_media = any(p.type in {"input_image", "input_audio"} for p in item.content)
-                    if has_media:
-                        messages.append(
-                            TransformersUserMessage(content=[p.model_dump(exclude_none=True) for p in item.content])
-                        )
-                    else:
-                        text = " ".join(p.text for p in item.content if p.type == "input_text" and p.text)
-                        messages.append(TransformersUserMessage(content=text))
-                elif isinstance(item, RealtimeConversationItemAssistantMessage):
-                    text = " ".join(p.text for p in item.content if p.text)
-                    messages.append(TransformersAssistantMessage(content=text))
-                elif isinstance(item, RealtimeConversationItemFunctionCall):
-                    assert item.call_id is not None and item.call_id != ""
-                    args: Any = item.arguments
-                    try:
-                        args = json.loads(args) if isinstance(args, str) else args
-                    except (json.JSONDecodeError, TypeError):
-                        args = {}
-                    messages.append(
-                        TransformersFunctionCallMessage(
-                            tool_calls=[
-                                TransformersToolCall(
-                                    id=item.call_id,
-                                    function=TransformersToolCallFunction(name=item.name, arguments=args),
-                                )
-                            ]
-                        )
-                    )
-                elif isinstance(item, RealtimeConversationItemFunctionCallOutput):
-                    name = ""
-                    for prev in reversed(messages):
-                        if isinstance(prev, TransformersFunctionCallMessage):
-                            for tc in prev.tool_calls:
-                                if tc.id == item.call_id:
-                                    name = tc.function.name
-                                    break
-                            if name:
-                                break
-                    messages.append(
-                        TransformersToolMessage(
-                            tool_call_id=item.call_id,
-                            name=name,
-                            content=item.output,
-                        )
-                    )
-            return [m.model_dump() for m in messages]
-
     def copy(self) -> Chat:
         """Return a shallow snapshot safe for concurrent read access."""
         with self._lock:
@@ -681,61 +619,6 @@ class Chat:
                 len(self.buffer),
                 self._user_turn_count,
             )
-
-
-# ---------------------------------------------------------------------------
-# Transformers chat message models
-# ---------------------------------------------------------------------------
-
-
-class TransformersToolCallFunction(BaseModel):
-    name: str
-    arguments: dict[str, Any]
-
-
-class TransformersToolCall(BaseModel):
-    type: Literal["function"] = "function"
-    id: str
-    function: TransformersToolCallFunction
-
-
-class TransformersSystemMessage(BaseModel):
-    role: Literal["system"] = "system"
-    content: str
-
-
-class TransformersUserMessage(BaseModel):
-    role: Literal["user"] = "user"
-    content: str | list[dict[str, Any]]
-
-
-class TransformersAssistantMessage(BaseModel):
-    role: Literal["assistant"] = "assistant"
-    content: str
-
-
-class TransformersFunctionCallMessage(BaseModel):
-    role: Literal["assistant"] = "assistant"
-    # Chat templates read `message.content` on every assistant message, tool-call
-    # turns included, so the key must be present even with no text of its own.
-    content: str = ""
-    tool_calls: list[TransformersToolCall]
-
-
-class TransformersToolMessage(BaseModel):
-    role: Literal["tool"] = "tool"
-    tool_call_id: str
-    name: str
-    content: str
-
-
-TransformersChatMessage = Union[
-    TransformersSystemMessage,
-    TransformersUserMessage,
-    TransformersAssistantMessage,
-    TransformersFunctionCallMessage,
-    TransformersToolMessage,
-]
 
 
 # ---------------------------------------------------------------------------

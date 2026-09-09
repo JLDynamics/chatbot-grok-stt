@@ -29,13 +29,14 @@ from openai.types.responses import ResponseFunctionToolCall
 logger = logging.getLogger(__name__)
 
 # Tools executed here. Anything else the model calls is forwarded to the client.
+# ``web_fetch`` and ``read_article`` are no longer published; they stay as
+# aliases of ``read_page`` because replayed history still mentions them.
 SERVER_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "web_search",
         "web_fetch",
         "read_page",
         "read_article",
-        "inspect_current_context",
         "search_chat_history",
         "remember",
         "forget",
@@ -50,9 +51,10 @@ MAX_TOOL_ROUNDS = 6
 TOOL_TIMEOUT_S = 45.0
 # How often the waiting loop re-checks for a barge-in while a tool runs.
 CANCEL_POLL_S = 0.1
-# Personal memory changes rarely; re-read it at most this often unless a
-# remember/forget just changed it.
-MEMORY_CACHE_TTL_S = 60.0
+# Personal memory is re-read from the sidecar (a sub-millisecond local call)
+# at most this often, so an edit made in Settings is live by the next turn
+# while a burst of turns does not hammer the sidecar.
+MEMORY_CACHE_TTL_S = 5.0
 # Page text longer than this is cut for the model; the sidecar already caps
 # fetches, this only guards the Chrome bridge path (up to 60k chars).
 PAGE_TEXT_MAX_CHARS = 16_000
@@ -183,10 +185,6 @@ class ServerToolExecutor:
             return self._read_page(arguments.get("url"), False)
         if name == "read_article":
             return self._read_page(arguments.get("url"), True)
-        if name == "inspect_current_context":
-            response = self._client.post("/context/preflight", json={"include_desktop": False})
-            response.raise_for_status()
-            return response.text
         if name == "search_chat_history":
             return self._search_chat_history(str(arguments.get("query") or ""))
         if name == "remember":

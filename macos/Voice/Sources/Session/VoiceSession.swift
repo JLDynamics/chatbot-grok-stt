@@ -64,15 +64,12 @@ protocol VoiceBackend: AnyObject {
     /// acknowledges the session (mirrors the web `_replayHistory`, last 20).
     /// Each entry is (role, text) with role in user/assistant/tool.
     func setHistory(_ messages: [(role: String, text: String, name: String?)])
-    /// Re-read the stored memory profile into live instructions.
-    func refreshMemory() async
     /// Push the current Settings tool toggles into a live session.
     func refreshTools()
 }
 
 extension VoiceBackend {
     func setHistory(_ messages: [(role: String, text: String, name: String?)]) {}
-    func refreshMemory() async {}
     func refreshTools() {}
 }
 
@@ -187,11 +184,8 @@ final class SessionController: ObservableObject {
             switch name {
             case "web_search": desc = "Searching the web…"
             case "read_page": desc = "Reading page…"
-            case "web_fetch": desc = "Fetching the page…"
-            case "read_article": desc = "Reading Chrome article…"
             case "screenshot": desc = "Taking a screenshot…"
             case "code_agent": desc = "Coding agent running…"
-            case "inspect_current_context": desc = "Checking context…"
             case "remember": desc = "Saving memory…"
             case "forget": desc = "Updating memory…"
             case "search_chat_history": desc = "Searching past chats…"
@@ -446,7 +440,7 @@ final class SessionController: ObservableObject {
             try await LocalServiceStarter.shared.ensureSidecar()
             personalMemory = try await ChatStore.shared.putPersonalMemory(content: text)
             memoryError = nil
-            await backend.refreshMemory()
+            // The server re-reads the profile from the sidecar on the next turn.
             return true
         } catch {
             memoryError = error.localizedDescription

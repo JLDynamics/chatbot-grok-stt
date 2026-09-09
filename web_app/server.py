@@ -1015,10 +1015,6 @@ class DesktopActRequest(BaseModel):
     coords: list[float] | None = None
 
 
-class ContextPreflightRequest(BaseModel):
-    include_desktop: bool = False
-
-
 async def _run_harness(script: str, timeout: float) -> tuple[int, str]:
     process = await asyncio.create_subprocess_exec(
         str(DESKTOP_HARNESS_BIN),
@@ -1093,58 +1089,6 @@ async def _desktop_frontmost_context() -> dict[str, object]:
         "app": app_name,
         "window_title": window_title,
     }
-
-
-@app.post("/api/context/preflight")
-async def context_preflight(req: ContextPreflightRequest) -> JSONResponse:
-    """Classify current context without returning page text or capturing the screen."""
-    entry = _fresh_browser_page_entry()
-    if entry:
-        page, age_s = entry
-        host = (urlsplit(page.url).hostname or "").lower()
-        bridge = {
-            "fresh_readable_page": True,
-            "age_ms": round(age_s * 1000),
-            "host": host,
-            "title": page.title[:300],
-            "content_type": page.content_type,
-            "complete": page.complete,
-            "truncated": page.truncated,
-        }
-    else:
-        bridge = {"fresh_readable_page": False}
-
-    desktop: dict[str, object] = {"inspected": False}
-    if req.include_desktop and _desktop_control_available():
-        desktop = {"inspected": True, **await _desktop_frontmost_context()}
-
-    app_name = str(desktop.get("app") or "").lower()
-    chrome_frontmost = app_name in {"google chrome", "chrome", "chromium"}
-    if desktop.get("sensitive"):
-        route_hint = "ask"
-    elif bridge["fresh_readable_page"]:
-        # Prefer the fast, text-based Chrome page bridge for reading page/article
-        # content; desktop-harness / screenshot are the fallback, not the default.
-        route_hint = "read_article"
-    elif desktop.get("inspected") and desktop.get("available") and not chrome_frontmost:
-        route_hint = "control_screen_screenshot"
-    else:
-        route_hint = "ask"
-
-    return JSONResponse(
-        {
-            "purpose": "routing_only",
-            "contains_page_text": False,
-            "captured_screenshot": False,
-            "authorization": {
-                "public_page_text": "no_confirmation_required",
-                "desktop_visual_or_action": "explicit_user_request_required",
-            },
-            "chrome_bridge": bridge,
-            "desktop": desktop,
-            "route_hint": route_hint,
-        }
-    )
 
 
 async def _screen_scope_looks_sensitive(app: str | None = None) -> str | None:
