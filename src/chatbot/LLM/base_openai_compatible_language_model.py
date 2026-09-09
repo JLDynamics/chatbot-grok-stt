@@ -247,6 +247,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return True
         return self.speculative_turns.is_latest(turn_id, turn_revision)
 
+    def _memory_profile(self) -> str:
+        """Personal memory to fold into the system prompt; empty when unavailable."""
+        return ""
+
     def _apply_config(
         self,
         chat: Chat,
@@ -255,7 +259,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
     ) -> None:
         if instructions:
             builder = build_voice_system_prompt if wants_audio else build_text_system_prompt
-            full_instructions = builder(instructions)
+            full_instructions = builder(instructions, memory=self._memory_profile())
             logger.info(
                 "Applied %s system prompt (%d chars, conversation_partner=%s)",
                 "voice" if wants_audio else "text",

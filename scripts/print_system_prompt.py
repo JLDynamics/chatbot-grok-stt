@@ -32,7 +32,7 @@ def main() -> None:
     print(f"\n--- {len(prompt)} chars, {len(prompt.split())} words ---", file=sys.stderr)
     if "perceptive, relaxed, warm, and quietly playful" not in prompt:
         raise SystemExit("personality missing from assembled prompt")
-    if "Speech is the default." not in prompt:
+    if "Speech is the default" not in prompt:
         raise SystemExit("tool voice rules missing from assembled prompt")
 
 
