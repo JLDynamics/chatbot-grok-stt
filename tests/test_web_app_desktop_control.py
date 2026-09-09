@@ -20,8 +20,10 @@ def test_voice_exposes_in_app_screenshot_without_desktop_harness():
     assert "withTimeout" in swift
     assert "screenshotSession = session(timeout: 12)" in swift
     capture_fn = swift.split("static func mainDisplayPNG", 1)[1].split("static func pngData", 1)[0]
-    assert "requestAccess" not in capture_fn
-    assert "guard isAllowed else { return nil }" in capture_fn
-    assert "title: \"Screenshot\"" in settings
+    # Capture is attempted first even when CGPreflight says no (ad-hoc rebuilds
+    # leave a stale toggle); the permission prompt is only a fallback.
+    assert capture_fn.index("captureOnce()") < capture_fn.index("requestAccess()")
+    assert "guard isAllowed else { return nil }" not in capture_fn
+    assert 'title: "Screenshot"' in settings
     assert "Desktop Control" not in settings
     assert "desktop-harness" not in settings

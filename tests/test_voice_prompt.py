@@ -1,9 +1,11 @@
-from chatbot.LLM.voice_prompt import VOICE_SYSTEM_PROMPT, VOICE_SYSTEM_PROMPT_LEAD, VOICE_SYSTEM_PROMPT_TAIL, build_voice_system_prompt
-
-PERSONA = (
-    "You are an AI conversation partner: perceptive, relaxed, warm, "
-    "and quietly playful."
+from chatbot.LLM.voice_prompt import (
+    VOICE_SYSTEM_PROMPT,
+    VOICE_SYSTEM_PROMPT_LEAD,
+    VOICE_SYSTEM_PROMPT_TAIL,
+    build_voice_system_prompt,
 )
+
+PERSONA = "You are an AI conversation partner: perceptive, relaxed, warm, and quietly playful."
 
 
 def test_voice_prompt_preserves_persona_and_spoken_constraints():
