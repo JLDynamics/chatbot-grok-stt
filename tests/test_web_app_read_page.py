@@ -206,7 +206,9 @@ def test_long_chrome_article_mentioning_subscribe_is_not_gated(monkeypatch):
     page = _bridge_page()
     page["text"] = "Subscribe to our newsletter. " + ARTICLE_TEXT
     assert client.post("/api/browser/page", headers=BRIDGE, json=page).status_code == 200
-    monkeypatch.setattr(server, "_fetch", _fake_fetch(AssertionError("a complete Chrome article must not fall through")))
+    monkeypatch.setattr(
+        server, "_fetch", _fake_fetch(AssertionError("a complete Chrome article must not fall through"))
+    )
 
     body = client.post("/api/read_page", json={"prefer_browser": True}).json()
     assert body["status"] == "read"
