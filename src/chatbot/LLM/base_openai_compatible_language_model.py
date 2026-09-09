@@ -160,9 +160,15 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         if api_key is None:
             api_key = os.environ.get("OPENROUTER_API_KEY")
         self.client = OpenAI(api_key=api_key, base_url=base_url)
-        self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort)
+        self._reasoning_effort = (reasoning_effort or "").strip().lower() or None
+        self._extra_body = self._build_extra_body(base_url, disable_thinking, self._reasoning_effort)
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
         self.warmup()
+
+    # Class-level defaults so partially-initialised handlers (tests build them
+    # with object.__new__) still have every attribute _request() reads.
+    _reasoning_effort: Optional[str] = None
+    _extra_body: Optional[dict[str, Any]] = None
 
     @classmethod
     def _build_extra_body(
@@ -171,16 +177,16 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         disable_thinking: bool,
         reasoning_effort: Optional[str],
     ) -> Optional[dict[str, Any]]:
-        """Build the provider-specific ``extra_body`` used to disable reasoning.
+        """Build the provider-specific ``extra_body`` used to turn reasoning off.
 
-        Providers differ in how reasoning is turned off: vLLM/Qwen honour
-        ``chat_template_kwargs.enable_thinking=false``, while others (e.g. GLM via
-        the HF router) ignore that and require ``reasoning_effort='none'``. A
-        non-empty ``reasoning_effort`` therefore takes precedence; otherwise we fall
-        back to the chat-template flag.
+        When a ``reasoning_effort`` is configured it is sent as the standard
+        ``reasoning: {effort}`` request parameter (see :meth:`_request`) and no
+        extra body is needed. Otherwise, for providers that only understand the
+        chat-template flag (vLLM/Qwen), ``disable_thinking`` sends
+        ``chat_template_kwargs.enable_thinking=false``.
         """
         if reasoning_effort:
-            return {"reasoning_effort": reasoning_effort}
+            return None
         if disable_thinking:
             return {"chat_template_kwargs": {"enable_thinking": False}}
         return None
@@ -332,6 +338,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         cancelled = False
         printable_text = ""
         sentence_batch: list[str] = []
+        # The first complete sentence goes to TTS on its own so speech starts as
+        # early as possible; later sentences are batched (stream_batch_sentences)
+        # for better prosody once audio is already playing.
+        first_flush_pending = True
 
         def _flush(batch: list[str]) -> Iterator[LLMOut]:
             if not batch:
@@ -387,16 +397,22 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 if len(sentences) > 1:
                     for s in sentences[:-1]:
                         sentence_batch.append(s)
-                        if len(sentence_batch) >= self.stream_batch_sentences:
+                        threshold = 1 if first_flush_pending else self.stream_batch_sentences
+                        if len(sentence_batch) >= threshold:
                             if not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
                                 logger.info("LLM generation cancelled (stale speculative turn)")
                                 cancelled = True
                                 break
                             yield from _flush(sentence_batch)
                             sentence_batch = []
+                            first_flush_pending = False
                     if cancelled:
                         break
-                    printable_text = sentences[-1]
+                    # Keep the raw tail (sent_tokenize strips its trailing space)
+                    # so the next delta cannot glue onto it as "one.Here" and
+                    # hide a sentence boundary from the tokenizer.
+                    tail_start = printable_text.rfind(sentences[-1])
+                    printable_text = printable_text[tail_start:] if tail_start >= 0 else sentences[-1]
 
         if not cancelled:
             if printable_text.strip():

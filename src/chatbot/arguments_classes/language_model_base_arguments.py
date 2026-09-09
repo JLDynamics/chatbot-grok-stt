@@ -44,3 +44,12 @@ class LanguageModelBaseArguments:
             "instead of synchronously evicting them. Adds an extra LLM call per compaction. Default is True."
         },
     )
+    sidecar_url: str = field(
+        default="http://127.0.0.1:7860/api",
+        metadata={
+            "help": "Base URL of the local API sidecar (web_app/server.py). The language model runs research tools "
+            "(web_search, read_page, search_chat_history, remember, forget) against it directly, inside the "
+            "response, instead of round-tripping every tool call through the client. Empty string disables "
+            "server-side tools."
+        },
+    )

@@ -542,6 +542,50 @@ def test_no_disable_thinking_omits_extra_body():
     list(handler.process(_make_request("Hi")))
 
     assert captured.get("extra_body") is None
+    assert "reasoning" not in captured
+
+
+def test_reasoning_effort_is_sent_as_responses_reasoning_param():
+    """OpenRouter/OpenAI Responses take ``reasoning: {"effort": ...}``; the old
+    ``reasoning_effort`` extra_body key was silently ignored, so the model
+    deliberated for as long as it liked before the first spoken sentence."""
+    handler = _make_handler()
+    handler._reasoning_effort = "low"
+    handler._extra_body = ResponsesApiModelHandler._build_extra_body(None, True, "low")
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _make_stream([_make_text_delta_event("Ok"), _make_output_item_done_event(content="Ok")])
+
+    handler.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    list(handler.process(_make_request("Hi")))
+
+    assert captured["reasoning"] == {"effort": "low"}
+    # The effort parameter supersedes the chat-template flag; do not send both.
+    assert captured.get("extra_body") is None
+
+
+def test_first_sentence_is_flushed_alone_then_batched():
+    """Time to first audio is bounded by the first sentence, not by the batch
+    size: the opening sentence goes out on its own and the rest are batched."""
+    handler = _make_handler()
+    handler.stream_batch_sentences = 3
+    events = [
+        _make_text_delta_event("Sure. "),
+        _make_text_delta_event("Here is one. "),
+        _make_text_delta_event("Here is two. "),
+        _make_text_delta_event("Here is three. "),
+        _make_text_delta_event("And the end."),
+        _make_output_item_done_event(content="Sure. Here is one. Here is two. Here is three. And the end."),
+    ]
+    handler.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: _make_stream(events)))
+
+    outputs = list(handler.process(_make_request("Hi")))
+    texts = [o.text for o in outputs if isinstance(o, LLMResponseChunk)]
+
+    assert texts == ["Sure.", "Here is one. Here is two. Here is three.", "And the end."]
 
 
 def test_second_turn_flattens_assistant_history_for_responses():

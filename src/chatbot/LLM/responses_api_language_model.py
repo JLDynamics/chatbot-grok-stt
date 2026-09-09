@@ -96,13 +96,19 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
         return optional_kwargs
 
     def _request(self, api_input: Any, optional_kwargs: dict[str, Any]) -> Any:
+        kwargs: dict[str, Any] = dict(optional_kwargs)
+        if self._reasoning_effort:
+            # Responses API shape (OpenRouter and OpenAI): ``reasoning: {"effort": ...}``.
+            # A low effort keeps the model thinking briefly before speaking instead
+            # of spending many seconds of silence on deliberation.
+            kwargs["reasoning"] = {"effort": self._reasoning_effort}
         return self.client.responses.create(
             model=self.model_name,
             input=api_input,
             stream=self.stream,
             extra_body=self._extra_body,
             timeout=self.request_timeout,
-            **optional_kwargs,
+            **kwargs,
         )
 
     @staticmethod
