@@ -14,6 +14,8 @@ import socket
 import tempfile
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -24,7 +26,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-app = FastAPI()
 logger = logging.getLogger("chatbot.sidecar")
 logger.setLevel(logging.INFO)
 
@@ -41,8 +42,43 @@ TINYFISH_SEARCH_URL = "https://api.search.tinyfish.ai/"
 TINYFISH_FETCH_URL = "https://api.fetch.tinyfish.ai"
 MAX_RESULTS = 5
 FETCH_MAX_BYTES = 2_000_000
-FETCH_MAX_CHARS = 20_000
+# Enough for a long article; beyond this the model pays prefill time on every
+# follow-up turn for text it will never quote.
+FETCH_MAX_CHARS = 16_000
 FETCH_TIMEOUT_S = 15.0
+SEARCH_TIMEOUT_S = 12.0
+
+_http: httpx.AsyncClient | None = None
+
+
+def _client() -> httpx.AsyncClient:
+    """Shared pooled client for the search/fetch providers.
+
+    Keeping connections alive saves a TCP+TLS handshake (100-300 ms) on every
+    tool call, which is most of the difference between a search that feels
+    instant and one the user notices.
+    """
+    global _http
+    if _http is None or _http.is_closed:
+        _http = httpx.AsyncClient(
+            timeout=httpx.Timeout(FETCH_TIMEOUT_S, connect=5.0),
+            follow_redirects=False,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; chatbot/1.0)"},
+            limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
+        )
+    return _http
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    yield
+    global _http
+    if _http is not None and not _http.is_closed:
+        await _http.aclose()
+    _http = None
+
+
+app = FastAPI(lifespan=_lifespan)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -350,6 +386,7 @@ async def _tinyfish_search(client: httpx.AsyncClient, query: str, key: str) -> d
         TINYFISH_SEARCH_URL,
         params={"query": query},
         headers={"X-API-Key": key},
+        timeout=SEARCH_TIMEOUT_S,
     )
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Search provider error ({response.status_code}).")
@@ -370,6 +407,7 @@ async def _tavily_search(client: httpx.AsyncClient, query: str, key: str) -> dic
         TAVILY_URL,
         headers={"Authorization": f"Bearer {key}"},
         json={"query": query, "max_results": MAX_RESULTS, "include_answer": True},
+        timeout=SEARCH_TIMEOUT_S,
     )
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Search provider error ({response.status_code}).")
@@ -386,6 +424,7 @@ async def _serper_search(client: httpx.AsyncClient, query: str, key: str) -> dic
         SERPER_URL,
         headers={"X-API-KEY": key},
         json={"q": query, "num": MAX_RESULTS},
+        timeout=SEARCH_TIMEOUT_S,
     )
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Search provider error ({response.status_code}).")
@@ -480,14 +519,14 @@ async def search(req: SearchRequest) -> JSONResponse:
     if not key:
         raise HTTPException(status_code=503, detail="Search is not configured.")
     provider = _search_provider(key)
+    client = _client()
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            if provider == "tinyfish":
-                payload = await _tinyfish_search(client, query, key)
-            elif provider == "tavily":
-                payload = await _tavily_search(client, query, key)
-            else:
-                payload = await _serper_search(client, query, key)
+        if provider == "tinyfish":
+            payload = await _tinyfish_search(client, query, key)
+        elif provider == "tavily":
+            payload = await _tavily_search(client, query, key)
+        else:
+            payload = await _serper_search(client, query, key)
     except HTTPException:
         raise
     except httpx.RequestError as exc:
@@ -594,10 +633,12 @@ class FetchRequest(BaseModel):
     url: str
 
 
-@app.post("/api/fetch")
-async def fetch_page(req: FetchRequest) -> JSONResponse:
-    """Fetch one public text page; prefers TinyFish when configured."""
-    url = req.url.strip()
+async def _fetch(raw_url: str) -> dict:
+    """Fetch one public text page; prefers TinyFish when configured.
+
+    Raises :class:`HTTPException` with a model-readable ``detail`` on failure.
+    """
+    url = raw_url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="No URL given.")
     if "://" not in url:
@@ -605,38 +646,34 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
     allowed, reason = await asyncio.to_thread(_is_public_url, url)
     if not allowed:
         raise HTTPException(status_code=400, detail=reason)
+    client = _client()
     if TINYFISH_KEY:
         try:
-            async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_S) as client:
-                return JSONResponse(await _tinyfish_fetch(client, url, TINYFISH_KEY))
+            return await _tinyfish_fetch(client, url, TINYFISH_KEY)
         except HTTPException:
             raise
         except httpx.RequestError as exc:
             raise HTTPException(status_code=502, detail="Could not reach the fetch provider.") from exc
     try:
-        async with httpx.AsyncClient(
-            timeout=FETCH_TIMEOUT_S,
-            follow_redirects=False,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; chatbot/1.0)"},
-        ) as client:
-            # Re-validate every redirect hop: the client must never follow a
-            # public URL into a private or loopback address.
-            response = None
-            for _ in range(4):
-                allowed, reason = await asyncio.to_thread(_is_public_url, url)
-                if not allowed:
-                    raise HTTPException(status_code=400, detail=reason)
-                response = await client.get(url)
-                if response.status_code not in (301, 302, 303, 307, 308):
-                    break
-                location = response.headers.get("location", "")
-                if not location:
-                    break
-                url = urljoin(url, location)
-            else:
-                raise HTTPException(status_code=502, detail="That page redirected too many times.")
+        # Re-validate every redirect hop: the client must never follow a
+        # public URL into a private or loopback address.
+        response = None
+        for _ in range(4):
+            allowed, reason = await asyncio.to_thread(_is_public_url, url)
+            if not allowed:
+                raise HTTPException(status_code=400, detail=reason)
+            response = await client.get(url)
+            if response.status_code not in (301, 302, 303, 307, 308):
+                break
+            location = response.headers.get("location", "")
+            if not location:
+                break
+            url = urljoin(url, location)
+        else:
+            raise HTTPException(status_code=502, detail="That page redirected too many times.")
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail="Could not reach that page.") from exc
+    assert response is not None
 
     content_type = response.headers.get("content-type", "")
     body = response.content[:FETCH_MAX_BYTES]
@@ -656,16 +693,176 @@ async def fetch_page(req: FetchRequest) -> JSONResponse:
         )
     truncated = len(text) > FETCH_MAX_CHARS
     gated_reason = _looks_gated(response.status_code, text)
-    return JSONResponse(
-        {
-            "url": str(response.url),
+    return {
+        "url": str(response.url),
+        "title": title,
+        "text": text[:FETCH_MAX_CHARS],
+        "truncated": truncated,
+        "gated": gated_reason is not None,
+        "gated_reason": gated_reason,
+    }
+
+
+@app.post("/api/fetch")
+async def fetch_page(req: FetchRequest) -> JSONResponse:
+    """Fetch one public text page; prefers TinyFish when configured."""
+    return JSONResponse(await _fetch(req.url))
+
+
+# ── read_page: one tool, two methods ─────────────────────────────────────────
+# The model asks for a page once; this endpoint walks the text ladder (web fetch,
+# then the live Chrome page via the bridge, or the other way round for pages
+# that only render logged in) and reports every attempt, so the caller can say
+# which method finally worked or exactly why none did.
+
+BROWSER_FIRST_HOSTS = {"x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"}
+UNUSABLE_PAGE_STATUSES = {"wrong_page", "failed", "blocked", "unavailable", "error"}
+
+
+class ReadPageRequest(BaseModel):
+    url: str | None = None
+    prefer_browser: bool = False
+
+
+def _prefers_browser(url: str) -> bool:
+    return (urlsplit(url).hostname or "").lower() in BROWSER_FIRST_HOSTS
+
+
+def _same_page(left: str, right: str) -> bool:
+    def normalized(raw: str) -> str | None:
+        parts = urlsplit(raw)
+        host = (parts.hostname or "").lower()
+        if parts.scheme.lower() not in {"http", "https"} or not host:
+            return None
+        if host in BROWSER_FIRST_HOSTS:
+            host = "x.com"
+        path = parts.path or "/"
+        return f"{host}{path}?{parts.query}" if parts.query else f"{host}{path}"
+
+    a, b = normalized(left), normalized(right)
+    return a is not None and a == b
+
+
+def _bridge_result(requested_url: str | None) -> dict:
+    """The live Chrome page as a read_page result dict (never raises)."""
+    page = _fresh_browser_page()
+    if page is None:
+        known = _last_seen_page()
+        if known is None:
+            return {
+                "status": "failed",
+                "reason": "bridge_never_enabled",
+                "message": (
+                    "No page has been shared from Chrome. Click the Chatbot Page Bridge "
+                    "toolbar icon once on the tab you want read."
+                ),
+            }
+        url, title = known
+        return {
+            "status": "failed",
+            "reason": "bridge_expired",
+            "message": (
+                "The shared copy of that page has expired. Click the Chatbot Page Bridge toolbar icon once to refresh it."
+            ),
+            "url": url,
             "title": title,
-            "text": text[:FETCH_MAX_CHARS],
-            "truncated": truncated,
-            "gated": gated_reason is not None,
-            "gated_reason": gated_reason,
         }
-    )
+    if requested_url and not _same_page(requested_url, page.url):
+        # Never substitute a different open page for the one that was asked for.
+        return {
+            "status": "wrong_page",
+            "reason": "wrong_page",
+            "message": "Chrome has a different page open than the one requested.",
+            "open_url": page.url,
+        }
+    return {
+        "status": "read",
+        "source": "chrome_bridge",
+        "url": page.url,
+        "title": page.title,
+        "text": page.text,
+        "content_type": page.content_type,
+        "truncated": page.truncated,
+        "complete": page.complete,
+    }
+
+
+async def _fetch_result(url: str) -> dict:
+    """``_fetch`` as a read_page result dict (never raises)."""
+    try:
+        data = await _fetch(url)
+    except HTTPException as exc:
+        detail = exc.detail
+        return {
+            "status": "failed",
+            "message": detail if isinstance(detail, str) else json.dumps(detail),
+            "url": url,
+        }
+    data["status"] = "blocked" if data.get("gated") else "read"
+    data["source"] = "web_fetch"
+    return data
+
+
+@app.post("/api/read_page")
+async def read_page(req: ReadPageRequest) -> JSONResponse:
+    url = (req.url or "").strip() or None
+    if url and "://" not in url:
+        url = "https://" + url
+    browser_first = req.prefer_browser or url is None or _prefers_browser(url)
+    methods = ["chrome_bridge", "web_fetch"] if browser_first else ["web_fetch", "chrome_bridge"]
+    attempts: list[dict] = []
+    partial: dict | None = None
+    known_url = url
+    for method in methods:
+        if method == "web_fetch":
+            if known_url is None:
+                continue
+            result = await _fetch_result(known_url)
+        else:
+            result = _bridge_result(url)
+            if known_url is None and result.get("url"):
+                # An expired bridge still remembers where the user was; that
+                # address makes the fetch rung possible.
+                known_url = str(result["url"])
+        text = (result.get("text") or "").strip()
+        status = str(result.get("status") or "")
+        usable = bool(text) and not result.get("gated") and status not in UNUSABLE_PAGE_STATUSES
+        complete = usable and not result.get("truncated") and bool(result.get("complete", True))
+        attempts.append(
+            {
+                "method": method,
+                "status": "read" if complete else "partial" if usable else (status or "failed"),
+                "reason": result.get("reason") or result.get("gated_reason") or result.get("message") or "",
+            }
+        )
+        if usable:
+            result["source"] = method
+            result["complete"] = complete
+            if complete:
+                result["status"] = "read"
+                result["attempts"] = attempts
+                return JSONResponse(result)
+            # Keep useful partial text while trying the other method for a
+            # complete page. Sources are not concatenated: that duplicates text
+            # or mixes page revisions.
+            if partial is None:
+                partial = result
+    if partial is not None:
+        partial["status"] = "partial"
+        partial["attempts"] = attempts
+        return JSONResponse(partial)
+    failure: dict = {
+        "status": "unavailable",
+        "complete": False,
+        "attempts": attempts,
+        "message": (
+            "Neither the web fetch nor the Chrome page bridge returned that page. If it is open in "
+            "Chrome, clicking the Chatbot Page Bridge toolbar icon once shares it."
+        ),
+    }
+    if known_url:
+        failure["url"] = known_url
+    return JSONResponse(failure)
 
 
 GROK_BIN = Path(os.path.expanduser("~/.local/bin/grok"))
@@ -1125,7 +1322,9 @@ async def desktop_act(req: DesktopActRequest, request: Request) -> JSONResponse:
             if candidate:
                 app_name = candidate
                 if await _screen_scope_looks_sensitive(app_name):
-                    raise HTTPException(status_code=451, detail="Desktop control is blocked on sign-in and payment windows.")
+                    raise HTTPException(
+                        status_code=451, detail="Desktop control is blocked on sign-in and payment windows."
+                    )
         if app_name:
             # macOS delivers scroll wheel events to the focused app, at the
             # pointer. Without both, scroll() silently no-ops: it reported

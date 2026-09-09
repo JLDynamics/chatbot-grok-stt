@@ -38,6 +38,19 @@ logger = logging.getLogger(__name__)
 
 AUDIO_INPUT_HISTORY_PLACEHOLDER = "[User audio input]"
 
+# A tool output (a fetched article can be 16k chars) is needed in full for the
+# turn that produced it and a follow-up question or two. After that it is dead
+# weight re-sent on every request, so older outputs are abridged when the chat
+# is serialized. The buffer itself keeps the full text.
+TOOL_OUTPUT_KEEP_RECENT = 2
+TOOL_OUTPUT_HISTORY_CHARS = 1200
+
+
+def abridge_tool_output(output: str, limit: int = TOOL_OUTPUT_HISTORY_CHARS) -> str:
+    if len(output) <= limit:
+        return output
+    return f"{output[:limit].rstrip()} …[abridged: {len(output) - limit} more characters omitted]"
+
 
 class ChatItemError(Exception):
     """Raised when a conversation item fails validation in :meth:`Chat.add_item`."""
@@ -323,6 +336,13 @@ class Chat:
         """Body of :meth:`to_responses_api_chat`. Caller must hold ``_lock``."""
         buffer_items = list(items)
         result: list[ResponseInputItemParam] = []
+        # Which tool outputs are recent enough to send in full.
+        output_indices = [
+            index
+            for index, item in enumerate(buffer_items)
+            if isinstance(item, RealtimeConversationItemFunctionCallOutput)
+        ]
+        full_output_indices = set(output_indices[-TOOL_OUTPUT_KEEP_RECENT:]) if TOOL_OUTPUT_KEEP_RECENT else set()
         if self.init_chat_message:
             result.append(
                 ResponseMessage(
@@ -334,7 +354,7 @@ class Chat:
                     type="message",
                 )
             )
-        for item in buffer_items:
+        for index, item in enumerate(buffer_items):
             assert item.id is not None and item.id != "", f"item.id is {item.id}"
             if isinstance(item, RealtimeConversationItemUserMessage):
                 content: ResponseInputMessageContentListParam = []
@@ -384,9 +404,10 @@ class Chat:
                     function_call["status"] = item.status
                 result.append(function_call)
             elif isinstance(item, RealtimeConversationItemFunctionCallOutput):
+                output_text = item.output if index in full_output_indices else abridge_tool_output(item.output)
                 function_call_output = FunctionCallOutput(
                     call_id=item.call_id,
-                    output=item.output,
+                    output=output_text,
                     type="function_call_output",
                 )
                 if item.id is not None:

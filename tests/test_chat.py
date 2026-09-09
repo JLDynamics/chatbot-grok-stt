@@ -1350,3 +1350,42 @@ class TestBuildActiveChat:
 
         with pytest.raises(ChatItemError):
             build_active_chat(original, resp)
+
+
+# ===================================================================
+# Tool-output abridging on serialization
+# ===================================================================
+
+
+class TestToolOutputAbridging:
+    def test_only_the_most_recent_tool_outputs_are_sent_in_full(self):
+        from chatbot.LLM.chat import TOOL_OUTPUT_HISTORY_CHARS, TOOL_OUTPUT_KEEP_RECENT
+
+        chat = Chat(size=20)
+        big = "x" * (TOOL_OUTPUT_HISTORY_CHARS * 4)
+        for n in range(TOOL_OUTPUT_KEEP_RECENT + 2):
+            chat.add_item(_user(f"question {n}"))
+            chat.add_item(_fc(call_id=f"call_{n}", name="read_page"))
+            chat.add_item(_fco(call_id=f"call_{n}", output=big))
+            chat.add_item(_assistant(f"answer {n}"))
+
+        outputs = [item for item in chat.to_responses_api_chat() if item.get("type") == "function_call_output"]
+        assert len(outputs) == TOOL_OUTPUT_KEEP_RECENT + 2
+        old, recent = outputs[:-TOOL_OUTPUT_KEEP_RECENT], outputs[-TOOL_OUTPUT_KEEP_RECENT:]
+        for item in old:
+            assert len(item["output"]) < TOOL_OUTPUT_HISTORY_CHARS + 80
+            assert "abridged" in item["output"]
+        for item in recent:
+            assert item["output"] == big
+        # The buffer keeps every output whole; only the wire form is abridged.
+        stored = [i for i in chat.buffer if isinstance(i, RealtimeConversationItemFunctionCallOutput)]
+        assert all(i.output == big for i in stored)
+
+    def test_short_outputs_are_never_touched(self):
+        chat = Chat(size=20)
+        for n in range(4):
+            chat.add_item(_user(f"q{n}"))
+            chat.add_item(_fc(call_id=f"call_{n}"))
+            chat.add_item(_fco(call_id=f"call_{n}", output="Saved to the personal profile."))
+        outputs = [item for item in chat.to_responses_api_chat() if item.get("type") == "function_call_output"]
+        assert all(item["output"] == "Saved to the personal profile." for item in outputs)

@@ -180,11 +180,11 @@ async def test_fetch_extracts_main_text_and_reports_truncation(monkeypatch):
         async def __aexit__(self, *_args):
             pass
 
-        async def get(self, _url):
+        async def get(self, _url, **_kwargs):
             return response
 
     monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
-    monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(server, "_client", lambda: FakeClient())
     result = await server.fetch_page(server.FetchRequest(url="https://example.com/article"))
     body = json.loads(result.body)
     assert body["title"] == "Example"
@@ -850,13 +850,13 @@ async def test_search_requires_key_and_returns_serper_results(monkeypatch):
         async def __aexit__(self, *_args):
             pass
 
-        async def post(self, url, headers=None, json=None):
+        async def post(self, url, headers=None, json=None, **_kwargs):
             assert url == server.SERPER_URL
             assert headers["X-API-KEY"] == "serper-test"
             assert json["q"] == "latest news"
             return response
 
-    monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(server, "_client", lambda: FakeClient())
     body = client.post("/api/search", json={"query": "latest news"}).json()
     assert body["answer"] == "42"
     assert body["results"][0]["url"] == "https://example.com"
@@ -896,13 +896,13 @@ async def test_search_prefers_tinyfish_when_configured(monkeypatch):
         async def __aexit__(self, *_args):
             pass
 
-        async def get(self, url, params=None, headers=None):
+        async def get(self, url, params=None, headers=None, **_kwargs):
             assert url == server.TINYFISH_SEARCH_URL
             assert headers["X-API-Key"] == "sk-tinyfish-test"
             assert params["query"] == "weather"
             return response
 
-    monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(server, "_client", lambda: FakeClient())
     body = client.post("/api/search", json={"query": "weather"}).json()
     assert body["results"][0]["url"] == "https://example.com"
     assert body["answer"] is None
@@ -939,13 +939,13 @@ async def test_fetch_uses_tinyfish_when_configured(monkeypatch):
         async def __aexit__(self, *_args):
             pass
 
-        async def post(self, url, headers=None, json=None):
+        async def post(self, url, headers=None, json=None, **_kwargs):
             assert url == server.TINYFISH_FETCH_URL
             assert headers["X-API-Key"] == "sk-tinyfish-test"
             assert json == {"urls": ["https://example.com"], "format": "markdown"}
             return response
 
-    monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(server, "_client", lambda: FakeClient())
     body = client.post("/api/fetch", json={"url": "https://example.com"}).json()
     assert body["title"] == "Example Domain"
     assert body["text"] == "Example readable text."
@@ -971,12 +971,12 @@ async def test_search_prefers_user_tavily_key(monkeypatch):
         async def __aexit__(self, *_args):
             pass
 
-        async def post(self, url, headers=None, json=None):
+        async def post(self, url, headers=None, json=None, **_kwargs):
             assert url == server.TAVILY_URL
             assert headers["Authorization"] == "Bearer tvly-user"
             return response
 
-    monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(server, "_client", lambda: FakeClient())
     body = client.post("/api/search", json={"query": "weather", "key": "tvly-user"}).json()
     assert body["answer"] == "from tavily"
     assert body["results"][0]["snippet"].startswith("C")
