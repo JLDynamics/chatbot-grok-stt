@@ -22,6 +22,37 @@ def test_remove_unspeechable_keeps_chinese_punctuation() -> None:
     assert remove_unspeechable(text) == text
 
 
+def test_remove_unspeechable_strips_markdown_asterisks() -> None:
+    assert remove_unspeechable("**Mistral AI**") == "Mistral AI"
+    assert remove_unspeechable("**OpenAI** is claiming") == "OpenAI is claiming"
+    assert (
+        remove_unspeechable(
+            "**NVIDIA** is in the news about acquiring **Hugging Face**"
+        )
+        == "NVIDIA is in the news about acquiring Hugging Face"
+    )
+    assert remove_unspeechable("**Coca-Cola** is using AI") == "Coca-Cola is using AI"
+    assert remove_unspeechable("*italic*") == "italic"
+
+
+def test_remove_unspeechable_strips_asterisks_split_across_chunks() -> None:
+    assert remove_unspeechable("**Mis") == "Mis"
+    assert remove_unspeechable("tral AI**") == "tral AI"
+
+
+def test_remove_unspeechable_strips_markdown_list_markers() -> None:
+    assert (
+        remove_unspeechable(
+            "- **Mistral AI** — the French AI company"
+        )
+        == "Mistral AI — the French AI company"
+    )
+    assert (
+        remove_unspeechable("It goes through. - On the robotics side, **Arm** launched")
+        == "It goes through. On the robotics side, Arm launched"
+    )
+
+
 # --- language name coverage ---------------------------------------------------------------
 #
 # A language code with no entry in WHISPER_LANGUAGE_TO_LLM_LANGUAGE resolves to a `None`

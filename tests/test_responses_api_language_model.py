@@ -192,6 +192,26 @@ def test_process_streams_text_from_response_events():
     assert isinstance(outputs[2], EndOfResponse)
 
 
+def test_audio_stream_strips_markdown_asterisks_before_tts():
+    handler = _make_handler(stream=True)
+    handler.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **kwargs: _make_stream(
+                [
+                    _make_text_delta_event("- **OpenAI** acquired **Hugging Face**."),
+                    _make_output_item_done_event(content="- **OpenAI** acquired **Hugging Face**."),
+                ]
+            ),
+        )
+    )
+
+    outputs = list(handler.process(_make_request("Hi")))
+    spoken = "".join(o.text for o in outputs if isinstance(o, LLMResponseChunk))
+
+    assert "*" not in spoken
+    assert "OpenAI acquired Hugging Face." in spoken
+
+
 def test_text_only_streams_raw_deltas_without_sentence_trimming():
     """Text-only streams (so a new speech turn can interrupt it) and forwards each
     delta verbatim — no sent_tokenize (newlines / markdown survive) and no

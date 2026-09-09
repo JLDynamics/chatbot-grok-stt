@@ -14,13 +14,21 @@ SPEECHABLE_PATTERN = re.compile(
     r"[^\w\s.,!?;:'\"\-()\/\\@#%&*+=$€£¥₹₽¢\[\]{}<>~`^|…—–，。！？；：、\n\r\t]",
     flags=re.UNICODE,
 )
+MARKDOWN_LIST_PREFIX = re.compile(r"(^|\n)\s*[-+]\s+")
+CLAUSE_LIST_PREFIX = re.compile(r"\.\s+[-+]\s+")
 
 
 def remove_unspeechable(text: str) -> str:
     """Keep only speechable characters: letters, digits, punctuation, whitespace.
     support unicode characters (english, arabic, chinese, japanese, korean, etc.)
+
+    Markdown emphasis (``**bold**``, ``*italic*``) is stripped because TTS reads
+    ``*`` as the word "asterisk". Backticks are dropped for the same reason.
     """
     text = text.translate(SMART_PUNCT_TRANSLATION)
+    text = MARKDOWN_LIST_PREFIX.sub(r"\1", text)
+    text = CLAUSE_LIST_PREFIX.sub(". ", text)
+    text = text.replace("*", "").replace("`", "")
     return SPEECHABLE_PATTERN.sub("", text)
 
 
