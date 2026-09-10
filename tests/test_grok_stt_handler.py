@@ -181,3 +181,18 @@ def test_registry_config_matches_the_setup_signature():
     config = STT_BACKENDS["grok-stt"].normalize(GrokSTTHandlerArguments())
     accepted = set(inspect.signature(GrokSTTHandler.setup).parameters) - {"self"}
     assert set(config) <= accepted, f"setup() cannot accept {sorted(set(config) - accepted)}"
+
+
+def test_chinese_is_supported_despite_being_absent_from_the_docs():
+    """xAI's language table has 25 rows and no Chinese, but Mandarin works.
+
+    Verified against the live endpoint: a synthesized Mandarin clip came back
+    character-perfect with punctuation, and auto-detect reported "zh". The
+    table is therefore not exhaustive, and dropping zh here would silently
+    disable the reply-in-Chinese prompt.
+    """
+    from chatbot.LLM.utils import WHISPER_LANGUAGE_TO_LLM_LANGUAGE
+    from chatbot.STT.grok_stt_handler import SUPPORTED_LANGUAGES
+
+    assert "zh" in SUPPORTED_LANGUAGES
+    assert WHISPER_LANGUAGE_TO_LLM_LANGUAGE["zh"] == "chinese"

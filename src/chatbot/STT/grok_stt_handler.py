@@ -3,7 +3,7 @@
 Trades 4 GB of resident weights and the GPU work for a network round trip.
 Measured against local Parakeet on the same 5.7s clip: ~370ms per turn versus
 ~60ms, no resident memory instead of 4.03 GB, and a transcript that arrives
-punctuated and capitalized, which Parakeet does not provide.
+punctuated and capitalized, which the local model did not provide.
 
 Authentication reuses the Grok CLI's session so there is nothing metered to
 buy. That path is undocumented -- xAI publishes API-key auth for this endpoint
@@ -31,11 +31,16 @@ from chatbot.STT.base_stt_handler import BaseSTTHandler
 
 logger = logging.getLogger(__name__)
 
-# Languages xAI documents for this endpoint. Kept here because the language
+# Languages this endpoint is known to handle. Kept here because the language
 # prompt map in chatbot.LLM.utils is checked against whatever the active STT
 # can report, so a code missing a name would silently drop that prompt.
-# Note there is no Chinese entry: Kokoro can speak Mandarin, but this endpoint
-# does not document transcribing it.
+#
+# This is "documented plus verified", not the docs table alone: that table has
+# 25 rows and no Chinese, yet Mandarin transcribes correctly here, punctuation
+# and all, and auto-detect reports it as "zh". The docs say the language
+# parameter "enables formatting" for the listed languages rather than limiting
+# what can be transcribed, so treat the table as incomplete and this list as a
+# floor rather than a ceiling.
 SUPPORTED_LANGUAGES = [
     "ar",
     "cs",
@@ -62,6 +67,7 @@ SUPPORTED_LANGUAGES = [
     "th",
     "tr",
     "vi",
+    "zh",  # absent from the docs table; verified working, formatting included
 ]
 
 
