@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 class ModuleArguments:
     """Options shared by the single supported browser voice pipeline."""
 
-    stt: str = field(default="parakeet-tdt", metadata={"choices": ("parakeet-tdt",)})
+    stt: str = field(default="parakeet-tdt", metadata={"choices": ("parakeet-tdt", "grok-stt")})
     llm_backend: str = field(default="responses-api", metadata={"choices": ("responses-api",)})
     tts: str = field(default="kokoro", metadata={"choices": ("kokoro", "vibevoice")})
     log_level: str = field(default="info", metadata={"help": "Python logging level."})

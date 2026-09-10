@@ -34,6 +34,9 @@ VAD_SPEECH_PAD_MS="${VAD_SPEECH_PAD_MS:-500}"
 VAD_SHORT_SEGMENT_MERGE_MS="${VAD_SHORT_SEGMENT_MERGE_MS:-400}"
 PARAKEET_MODEL="${PARAKEET_MODEL:-mlx-community/parakeet-tdt-1.1b}"
 PARAKEET_LANG="${PARAKEET_LANG:-en}"
+# parakeet-tdt (local, ~4GB resident) or grok-stt (xAI, uses the Grok CLI session).
+STT="${STT:-parakeet-tdt}"
+GROK_STT_LANG="${GROK_STT_LANG:-en}"
 
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   echo "Error: OPENROUTER_API_KEY is not set. Run ./set-keys.sh first." >&2
@@ -76,7 +79,7 @@ args=(
   serve
   --host 127.0.0.1
   --port "$PORT"
-  --stt parakeet-tdt
+  --stt "$STT"
   --llm_backend responses-api
   --tts "$TTS"
 )
@@ -114,8 +117,15 @@ args+=(
   --min_speech_ms "$VAD_MIN_SPEECH_MS"
   --speech_pad_ms "$VAD_SPEECH_PAD_MS"
   --short_segment_merge_ms "$VAD_SHORT_SEGMENT_MERGE_MS"
-  --parakeet_tdt_model_name "$PARAKEET_MODEL"
-  --parakeet_tdt_language "$PARAKEET_LANG"
 )
+
+if [[ "$STT" == "grok-stt" ]]; then
+  args+=(--grok_stt_language "$GROK_STT_LANG")
+else
+  args+=(
+    --parakeet_tdt_model_name "$PARAKEET_MODEL"
+    --parakeet_tdt_language "$PARAKEET_LANG"
+  )
+fi
 
 exec "$CHATBOT_BIN" "${args[@]}"

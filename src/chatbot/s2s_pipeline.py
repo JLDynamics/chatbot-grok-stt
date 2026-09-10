@@ -12,6 +12,7 @@ from typing import Any, Literal, Optional, Sequence
 from rich.console import Console
 
 from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
+from chatbot.arguments_classes.grok_stt_arguments import GrokSTTHandlerArguments
 from chatbot.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from chatbot.arguments_classes.module_arguments import ModuleArguments
 from chatbot.arguments_classes.parakeet_tdt_arguments import ParakeetTDTSTTHandlerArguments
@@ -72,13 +73,20 @@ def parse_arguments(
         RealtimeServerArguments,
         VADHandlerArguments,
         ParakeetTDTSTTHandlerArguments,
+        GrokSTTHandlerArguments,
         ResponsesApiLanguageModelHandlerArguments,
         KokoroTTSHandlerArguments,
         VibeVoiceTTSHandlerArguments,
     )
     parser = HfArgumentParser(argument_types, prog=f"chatbot {command}")
     parsed = parser.parse_args_into_dataclasses(args=list(argv) if argv is not None else None)
-    module, server, vad, stt_config, llm_config, kokoro_config, vibevoice_config = parsed
+    module, server, vad, parakeet_config, grok_stt_config, llm_config, kokoro_config, vibevoice_config = parsed
+    if module.stt == "grok-stt":
+        stt_backend = BackendSelection(STT_BACKENDS["grok-stt"], STT_BACKENDS["grok-stt"].normalize(grok_stt_config))
+    else:
+        stt_backend = BackendSelection(
+            STT_BACKENDS["parakeet-tdt"], STT_BACKENDS["parakeet-tdt"].normalize(parakeet_config)
+        )
     if module.tts == "kokoro":
         tts_backend = BackendSelection(TTS_BACKENDS["kokoro"], TTS_BACKENDS["kokoro"].normalize(kokoro_config))
     else:
@@ -87,7 +95,7 @@ def parse_arguments(
         module_kwargs=module,
         realtime_server_kwargs=server,
         vad_handler_kwargs=vad,
-        stt_backend=BackendSelection(STT_BACKENDS["parakeet-tdt"], STT_BACKENDS["parakeet-tdt"].normalize(stt_config)),
+        stt_backend=stt_backend,
         llm_backend=BackendSelection(
             LLM_BACKENDS["responses-api"], LLM_BACKENDS["responses-api"].normalize(llm_config)
         ),
