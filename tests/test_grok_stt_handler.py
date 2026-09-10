@@ -164,3 +164,20 @@ def test_formatting_is_requested_only_with_an_explicit_language(tmp_path, monkey
     list(handler.process(VADAudio(audio=np.zeros(16000, dtype=np.float32), turn_id="t2")))
     assert "language" not in sent[-1]
     assert "format" not in sent[-1], "auto-detect must not ask for formatting"
+
+
+def test_registry_config_matches_the_setup_signature():
+    """The registry strips the `grok_stt` prefix before calling setup().
+
+    A live run failed with "setup() got an unexpected keyword argument 'url'"
+    because the handler declared the prefixed names. The unit tests built the
+    handler by hand and never called setup(), so only this catches it.
+    """
+    import inspect
+
+    from chatbot.arguments_classes.grok_stt_arguments import GrokSTTHandlerArguments
+    from chatbot.backend_registry import STT_BACKENDS
+
+    config = STT_BACKENDS["grok-stt"].normalize(GrokSTTHandlerArguments())
+    accepted = set(inspect.signature(GrokSTTHandler.setup).parameters) - {"self"}
+    assert set(config) <= accepted, f"setup() cannot accept {sorted(set(config) - accepted)}"

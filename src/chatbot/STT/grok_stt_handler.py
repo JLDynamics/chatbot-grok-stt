@@ -86,18 +86,21 @@ class GrokSTTHandler(BaseSTTHandler):
 
     def setup(
         self,
-        grok_stt_url: str = "https://api.x.ai/v1/stt",
-        grok_stt_language: Optional[str] = None,
-        grok_stt_timeout_s: float = 20.0,
-        grok_stt_auth_path: str = "~/.grok/auth.json",
+        url: str = "https://api.x.ai/v1/stt",
+        language: Optional[str] = "en",
+        timeout_s: float = 20.0,
+        auth_path: str = "~/.grok/auth.json",
+        gen_kwargs: dict[str, Any] | None = None,
     ) -> None:
-        self.url = grok_stt_url
-        self.start_language = grok_stt_language
-        self.last_language = grok_stt_language or "en"
-        self.timeout_s = grok_stt_timeout_s
-        self.auth_path = grok_stt_auth_path
+        # The registry strips the ``grok_stt`` prefix from the argument names
+        # before calling this, so these are the short forms.
+        self.url = url
+        self.start_language = language
+        self.last_language = language if language and language != "auto" else "en"
+        self.timeout_s = timeout_s
+        self.auth_path = auth_path
         self.sample_rate = 16000
-        self._client = httpx.Client(timeout=grok_stt_timeout_s)
+        self._client = httpx.Client(timeout=timeout_s)
         self._reset_turn_cache()
         # Surface a missing session at startup rather than on the first spoken
         # turn, where it would look like the microphone failed.
