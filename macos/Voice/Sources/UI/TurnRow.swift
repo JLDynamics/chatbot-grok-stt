@@ -51,42 +51,6 @@ struct TurnRow: View {
     }
 }
 
-struct InterimRow: View {
-    let text: String
-    let userInitial: String
-
-    @Environment(\.theme) private var theme
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(userInitial)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(theme.text2)
-                .frame(width: 24, height: 24)
-                .background(theme.surface2)
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(theme.border, lineWidth: 0.5))
-            VStack(alignment: .leading, spacing: 3) {
-                Text("You")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(theme.text3)
-                Text(text)
-                    .font(.system(size: 14))
-                    .italic()
-                    .lineSpacing(4)
-                    .foregroundStyle(theme.text3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(theme.surface2.opacity(0.7))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .accessibilityHidden(true)
-    }
-}
-
 /// Stands in for a live transcript while the user is talking.
 ///
 /// Streaming ASR necessarily revises itself — a re-decode of the same audio

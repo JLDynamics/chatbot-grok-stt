@@ -15,7 +15,6 @@ from openai.types.realtime import (
     ConversationItemCreatedEvent,
     ConversationItemCreateEvent,
     ConversationItemInputAudioTranscriptionCompletedEvent,
-    ConversationItemInputAudioTranscriptionDeltaEvent,
     InputAudioBufferAppendEvent,
     InputAudioBufferSpeechStartedEvent,
     InputAudioBufferSpeechStoppedEvent,
@@ -47,7 +46,6 @@ from chatbot.api.openai_realtime.service import (
 from chatbot.pipeline.events import (
     AssistantTextEvent,
     AudioInputCompletedEvent,
-    PartialTranscriptionEvent,
     ResponseFailedEvent,
     SpeechStartedEvent,
     SpeechStoppedEvent,
@@ -1758,24 +1756,6 @@ class TestDispatchPipelineEvent:
         assert service._state(conn_id).response_usage.input_tokens == 0
         assert service._state(conn_id).response_usage.output_tokens == 0
         service.unregister(conn_id)
-
-    # -- partial_transcription --
-
-    def test_partial_transcription_emits_delta(self, service, conn_id):
-        service.dispatch_pipeline_event(conn_id, SpeechStartedEvent())
-        e1 = service.dispatch_pipeline_event(
-            conn_id,
-            PartialTranscriptionEvent(delta="hel"),
-        )
-        e2 = service.dispatch_pipeline_event(
-            conn_id,
-            PartialTranscriptionEvent(delta="lo"),
-        )
-        assert isinstance(e1[0], ConversationItemInputAudioTranscriptionDeltaEvent)
-        assert e1[0].content_index == 0
-        assert e1[0].delta == "hel"
-        assert isinstance(e2[0], ConversationItemInputAudioTranscriptionDeltaEvent)
-        assert e2[0].content_index == 1
 
     # -- transcription_completed --
 

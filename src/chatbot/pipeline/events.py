@@ -48,13 +48,6 @@ class SpeechStoppedEvent(PipelineEvent):
 # ── Transcription events (TranscriptionNotifier) ─────────────────────
 
 
-class PartialTranscriptionEvent(PipelineEvent):
-    type: Literal["partial_transcription"] = "partial_transcription"
-    delta: str
-    turn_id: str | None = None
-    turn_revision: int | None = None
-
-
 class TranscriptionCompletedEvent(PipelineEvent):
     type: Literal["transcription_completed"] = "transcription_completed"
     transcript: str

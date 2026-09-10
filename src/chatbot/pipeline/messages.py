@@ -37,12 +37,11 @@ class PipelineMessage(BaseModel):
 
 
 class VADAudio(PipelineMessage):
-    """Audio segment from VAD, with optional mode for realtime transcription."""
+    """A finalized utterance from VAD, ready for transcription."""
 
     tag: Literal["vad_audio"] = "vad_audio"
     audio: np.ndarray
     runtime_config: RuntimeConfig | None = None
-    mode: Literal["progressive", "final"] | None = None
     turn_id: str | None = None
     turn_revision: int | None = None
     processing_delay_s: float = 0.0
@@ -52,15 +51,6 @@ class VADAudio(PipelineMessage):
 
 
 # ── STT → TranscriptionNotifier → LLM ────────────────────────────────
-
-
-class PartialTranscription(PipelineMessage):
-    """Live partial transcription (consumed by TranscriptionNotifier, not forwarded to LLM)."""
-
-    tag: Literal["partial_transcription"] = "partial_transcription"
-    text: str
-    turn_id: str | None = None
-    turn_revision: int | None = None
 
 
 class Transcription(PipelineMessage):

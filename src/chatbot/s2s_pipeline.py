@@ -157,8 +157,6 @@ def _build_handlers(
             speculative_turns=speculative_turns,
             pipeline_index=0,
             sample_rate=vad_handler_kwargs.sample_rate,
-            enable_live_transcription=module_kwargs.enable_live_transcription,
-            live_transcription_update_interval=module_kwargs.live_transcription_update_interval,
         )
 
     stt = create_backend_handler(stt_backend, context(spoken_prompt_queue, stt_output_queue))
@@ -209,9 +207,6 @@ def _build_pipeline_unit(
     text_output: Queue[TextEventItem] = Queue()
 
     vad_kwargs = deepcopy(vad_handler_kwargs)
-    if module_kwargs.enable_live_transcription:
-        vad_kwargs.enable_realtime_transcription = True
-        vad_kwargs.realtime_processing_pause = module_kwargs.live_transcription_update_interval
     llm_config = llm_backend.copy_for_pipeline()
     service = RealtimeService(
         text_prompt_queue=text_prompt,

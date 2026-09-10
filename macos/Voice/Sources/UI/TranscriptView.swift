@@ -18,25 +18,19 @@ struct TranscriptView: View {
                     // changes plus lazy recycling were bouncing the scroller
                     // up and then snapping it back to the bottom.
                     VStack(alignment: .leading, spacing: 12) {
-                        if session.turns.isEmpty && session.interim == nil && !session.userSpeaking && !session.isLive {
+                        if session.turns.isEmpty && !session.userSpeaking && !session.isLive {
                             emptyState
                         }
                         ForEach(session.turns) { turn in
                             TurnRow(
                                 speaker: turn.speaker,
-                                text: session.displayedText(for: turn),
+                                text: turn.text,
                                 userInitial: userInitial,
                                 agentInitial: agentInitial
                             )
                             .id(turn.id)
                         }
-                        // A live caption only exists when the server is running
-                        // progressive STT. Without it, show that the user is
-                        // talking rather than an unstable guess at the words.
-                        if let interim = session.interim, !session.interimHasExistingRow {
-                            InterimRow(text: interim, userInitial: userInitial)
-                                .id("interim")
-                        } else if session.userSpeaking {
+                        if session.userSpeaking {
                             SpeakingRow(levels: session.levels, userInitial: userInitial)
                                 .id("speaking")
                         }

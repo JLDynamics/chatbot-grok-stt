@@ -14,7 +14,6 @@ final class MockVoiceBackend: VoiceBackend {
     var onOutputLevel: ((Float) -> Void)?
     var onUserSpeechStarted: (() -> Void)?
     var onTurnDropped: (() -> Void)?
-    var onUserPartial: ((String, String?) -> Void)?
     var onUserFinal: ((String, String?) -> Void)?
     var onAgentDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
@@ -72,14 +71,11 @@ final class MockVoiceBackend: VoiceBackend {
             if Task.isCancelled { return }
             onState?(.listening)
 
-            // Type the user's line out word by word as an interim transcript.
-            var partial = ""
-            for word in exchange.said.split(separator: " ") {
-                if Task.isCancelled { return }
-                partial += (partial.isEmpty ? "" : " ") + word
-                onUserPartial?(partial, nil)
-                try? await Task.sleep(nanoseconds: 160_000_000)
-            }
+            // Show the talking indicator, then commit the line the way the
+            // real backend does: one finalized transcript per turn.
+            onUserSpeechStarted?()
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            if Task.isCancelled { return }
             onUserFinal?(exchange.said, nil)
 
             if Task.isCancelled { return }

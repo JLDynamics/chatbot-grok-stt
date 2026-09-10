@@ -10,9 +10,6 @@ python3 scripts/verify-voice.py
 # Live server-side search/read_page and a Chinese-name TTS turn (no UI tour):
 python3 scripts/verify-voice.py --skip-ui --research
 
-# Pause, then continue talking: live captions must not vanish or split:
-./macos/Voice/scripts/verify.sh --captions-only
-
 # Quit Voice, restart sidecar + voice from this tree, then click through:
 ./macos/Voice/scripts/verify.sh --cold
 ```

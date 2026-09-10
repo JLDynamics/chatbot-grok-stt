@@ -754,242 +754,6 @@ def run_mic_probe(timeout: float = 25) -> dict[str, Any]:
     return asyncio.run(once())
 
 
-def merge_user_text(current: str, next_text: str) -> str:
-    """Mirror VoiceSession.mergedUserText so the probe judges what the panel shows."""
-    a = " ".join((current or "").split())
-    b = " ".join((next_text or "").split())
-    if not a:
-        return b
-    if not b:
-        return a
-    al, bl = a.lower(), b.lower()
-    if al == bl or (len(b) > len(a) and bl.startswith(al)):
-        return b
-    a_words, b_words = a.split(), b.split()
-    stem = min(3, len(a_words))
-    if (
-        stem >= 2
-        and [w.lower() for w in a_words[:stem]] == [w.lower() for w in b_words[:stem]]
-        and len(b_words) + 2 >= len(a_words)
-    ):
-        return b
-    if al in bl and len(b) >= len(a):
-        return b
-    if bl in al:
-        return a
-    max_k = min(len(a_words), len(b_words))
-    for k in range(max_k, 1, -1):
-        if [w.lower() for w in a_words[-k:]] == [w.lower() for w in b_words[:k]]:
-            return " ".join(a_words + b_words[k:])
-    return a + " " + b
-
-
-def reduce_live_captions(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Replay transcription events the way the Voice panel now paints them."""
-    displayed = ""
-    committed = ""
-    vanished = False
-    saw_sentence = False
-    item_ids: list[str] = []
-    snapshots: list[str] = []
-    deltas: list[str] = []
-    completed: list[str] = []
-    for event in events:
-        kind = event.get("type") or ""
-        item_id = event.get("item_id")
-        if item_id:
-            item_ids.append(str(item_id))
-        if kind == "conversation.item.input_audio_transcription.delta":
-            text = (event.get("delta") or "").strip()
-            if not text:
-                continue
-            deltas.append(text)
-            displayed = merge_user_text(displayed, text)
-        elif kind == "conversation.item.input_audio_transcription.completed":
-            text = (event.get("transcript") or "").strip()
-            completed.append(text)
-            if not text:
-                if committed or len(displayed.split()) < 2:
-                    displayed = committed
-            else:
-                committed = merge_user_text(committed or displayed, text)
-                displayed = committed
-        else:
-            continue
-        if len(displayed.split()) >= 2:
-            saw_sentence = True
-        if saw_sentence and not displayed:
-            vanished = True
-        snapshots.append(displayed)
-    unique_ids = list(dict.fromkeys(item_ids))
-    return {
-        "displayed": displayed,
-        "committed": committed,
-        "vanished": vanished,
-        "item_ids": unique_ids,
-        "deltas": deltas,
-        "completed": completed,
-        "snapshots": snapshots,
-    }
-
-
-def run_pause_continue_caption_probe(timeout: float = 40) -> dict[str, Any]:
-    """Speak, pause inside the reopen grace, continue, and watch live captions."""
-    import asyncio
-    import base64
-
-    import websockets
-
-    first = "I still need to finish"
-    second = "a lot of work today"
-    chunk = 1280
-    # Production Silero uses 1200 ms of silence before it closes a fragment
-    # (run-openrouter.sh VAD_MIN_SILENCE_MS). A thinking pause past that, and
-    # past the 800 ms complete-turn grace, is the split Jack saw.
-    pause = bytes(chunk * 70)  # 2.8 s of zeros
-    trail = bytes(chunk * 50)  # 2.0 s so the second fragment can finalize
-
-    async def connect() -> Any:
-        deadline = time.monotonic() + 20
-        while True:
-            ws = await websockets.connect(VOICE_WS, open_timeout=8, close_timeout=3, max_size=None)
-            created = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
-            if created.get("type") == "session.created":
-                return ws
-            await ws.close()
-            error = created.get("error") or {}
-            busy = error.get("type") in {"session_limit_reached", "server_starting"}
-            if not busy or time.monotonic() > deadline:
-                raise RuntimeError(f"expected session.created, got {created.get('type')}: {error.get('message', '')}")
-            await asyncio.sleep(0.5)
-
-    async def send_pcm(ws: Any, pcm: bytes) -> None:
-        for offset in range(0, len(pcm), chunk):
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "input_audio_buffer.append",
-                        "audio": base64.b64encode(pcm[offset : offset + chunk]).decode(),
-                    }
-                )
-            )
-            await asyncio.sleep(0.04)
-
-    async def once() -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "error": "",
-            "events": [],
-            "speech_started": 0,
-            "speech_stopped": 0,
-            "first": first,
-            "second": second,
-        }
-        pcm1, open1, total1 = gate_pcm16(spoken_pcm16(first))
-        pcm2, open2, total2 = gate_pcm16(spoken_pcm16(second))
-        result["gate_open_frac"] = (open1 + open2) / max(total1 + total2, 1)
-        if open1 < max(1, total1 // 5) or open2 < max(1, total2 // 5):
-            result["error"] = f"close-talk gate muted spoken audio ({open1}/{total1}, {open2}/{total2})"
-            return result
-        ws = await connect()
-        events: list[dict[str, Any]] = []
-        stop = asyncio.Event()
-
-        async def recv() -> None:
-            while not stop.is_set():
-                try:
-                    incoming = await asyncio.wait_for(ws.recv(), timeout=0.4)
-                except TimeoutError:
-                    continue
-                except Exception:
-                    break
-                event = json.loads(incoming)
-                events.append(event)
-                kind = event.get("type") or ""
-                if kind == "input_audio_buffer.speech_started":
-                    result["speech_started"] += 1
-                elif kind == "input_audio_buffer.speech_stopped":
-                    result["speech_stopped"] += 1
-                elif kind == "error":
-                    err = event.get("error") or event
-                    if isinstance(err, dict) and err.get("type") == "turn_ignored":
-                        continue
-                    result["error"] = str(err)
-                    stop.set()
-                    break
-                # The first clause may complete and the model may reply before
-                # the paused continuation arrives. Keep listening.
-
-        recv_task = asyncio.create_task(recv())
-        try:
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "session.update",
-                        "session": {
-                            "type": "realtime",
-                            "instructions": "Stay silent. Do not reply to the user.",
-                        },
-                    }
-                )
-            )
-            await send_pcm(ws, pcm1)
-            await send_pcm(ws, pause)
-            await send_pcm(ws, pcm2)
-            await send_pcm(ws, trail)
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline and not stop.is_set():
-                reduced = reduce_live_captions(events)
-                text = (reduced.get("displayed") or reduced.get("committed") or "").lower()
-                has_first = "finish" in text or "still" in text
-                has_second = "work" in text or "lot" in text
-                if reduced["completed"] and has_first and has_second:
-                    await asyncio.sleep(1.2)
-                    break
-                await asyncio.sleep(0.2)
-        finally:
-            stop.set()
-            try:
-                await asyncio.wait_for(recv_task, timeout=2)
-            except Exception:
-                recv_task.cancel()
-            await ws.close()
-        result["events"] = [event.get("type") for event in events]
-        result.update(reduce_live_captions(events))
-        return result
-
-    return asyncio.run(once())
-
-
-def verify_caption_pause(report: Report) -> None:
-    try:
-        import websockets  # noqa: F401
-    except ImportError:
-        report.add("pause-continue captions", False, "websockets package missing")
-        return
-    try:
-        probe = run_pause_continue_caption_probe()
-    except Exception as exc:
-        report.add("pause-continue captions", False, str(exc) or exc.__class__.__name__)
-        return
-    if probe.get("error"):
-        report.add("pause-continue captions", False, str(probe["error"]))
-        return
-    text = (probe.get("displayed") or probe.get("committed") or "").lower()
-    has_first = "finish" in text or "still" in text or "need" in text
-    has_second = "work" in text or "lot" in text
-    kept = has_first and has_second and not probe.get("vanished")
-    detail = (
-        f"item_ids={probe.get('item_ids')} started={probe.get('speech_started')} "
-        f"stopped={probe.get('speech_stopped')} caption={text!r}"
-    )
-    report.add("pause-continue captions stayed one utterance", kept, detail)
-    report.add(
-        "pause-continue captions did not vanish",
-        not probe.get("vanished"),
-        f"{len(probe.get('snapshots') or [])} snapshots; last={text!r}",
-    )
-
-
 def verify_talk(report: Report) -> None:
     try:
         import websockets  # noqa: F401
@@ -1016,8 +780,6 @@ def verify_talk(report: Report) -> None:
         )
     except Exception as exc:
         report.add("live mic speech_started", False, str(exc) or exc.__class__.__name__)
-    time.sleep(1.2)
-    verify_caption_pause(report)
 
 
 # Same schemas this branch publishes. Without these on session.update the model
@@ -1462,11 +1224,6 @@ def main() -> int:
     parser.add_argument("--skip-ui", action="store_true")
     parser.add_argument("--skip-talk", action="store_true")
     parser.add_argument(
-        "--captions-only",
-        action="store_true",
-        help="Only run the pause-continue live caption probe against the local realtime socket",
-    )
-    parser.add_argument(
         "--research",
         action="store_true",
         help="Also run a turn that must bash/curl a page on the server, a dated news RSS check, and a Chinese-name TTS turn",
@@ -1482,10 +1239,6 @@ def main() -> int:
     print(f"verify root={ROOT}")
     print(f"verify app={args.app}")
     print(f"verify out={out}")
-
-    if args.captions_only:
-        args.skip_ui = True
-        args.skip_talk = True
 
     if args.cold:
         if not args.app.exists():
@@ -1531,9 +1284,7 @@ end tell
     # Talk before the UI tour so the panel is not occupying the only pipeline slot.
     if args.research:
         verify_news_research(report)
-    if args.captions_only:
-        verify_caption_pause(report)
-    elif not args.skip_talk:
+    if not args.skip_talk:
         verify_talk(report)
         if args.research:
             verify_research(report)

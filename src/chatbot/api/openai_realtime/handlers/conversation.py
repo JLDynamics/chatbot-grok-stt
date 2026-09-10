@@ -8,7 +8,6 @@ from openai.types.realtime import (
     ConversationItemCreatedEvent,
     ConversationItemCreateEvent,
     ConversationItemInputAudioTranscriptionCompletedEvent,
-    ConversationItemInputAudioTranscriptionDeltaEvent,
 )
 from openai.types.realtime.conversation_item_input_audio_transcription_completed_event import (
     UsageTranscriptTextUsageDuration,
@@ -17,7 +16,7 @@ from openai.types.realtime.conversation_item_input_audio_transcription_completed
 from chatbot.api.openai_realtime.handlers.base import RealtimeBaseHandler
 from chatbot.LLM.chat import ChatItemError
 from chatbot.LLM.chat_factories import add_supported_item
-from chatbot.pipeline.events import PartialTranscriptionEvent, TranscriptionCompletedEvent
+from chatbot.pipeline.events import TranscriptionCompletedEvent
 
 if TYPE_CHECKING:
     from chatbot.api.openai_realtime.service import ServerEvent
@@ -97,18 +96,6 @@ class ConversationHandler(RealtimeBaseHandler):
         add_supported_item(self._state(conn_id).runtime_config.chat, item)
 
     # ── Pipeline event handlers ────────────────────
-
-    def on_partial_transcription(self, conn_id: str, event: PartialTranscriptionEvent) -> list[ServerEvent]:
-        """Handle partial_transcription: emit transcription delta event."""
-        return [
-            ConversationItemInputAudioTranscriptionDeltaEvent(
-                type="conversation.item.input_audio_transcription.delta",
-                event_id=self._next_event_id(),
-                content_index=self._next_input_content_index(conn_id),
-                item_id=self._input_item_id(conn_id),
-                delta=event.delta,
-            )
-        ]
 
     def on_transcription_completed(self, conn_id: str, event: TranscriptionCompletedEvent) -> list[ServerEvent]:
         """Handle transcription_completed: accumulate duration and emit completed event."""

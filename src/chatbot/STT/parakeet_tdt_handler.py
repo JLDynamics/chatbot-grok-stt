@@ -15,12 +15,10 @@ from typing import Any, Iterator, Optional
 
 import numpy as np
 from rich.console import Console
-from rich.text import Text
 
 from chatbot.pipeline.handler_types import STTIn, STTOut
-from chatbot.pipeline.messages import PartialTranscription, Transcription
+from chatbot.pipeline.messages import Transcription
 from chatbot.STT.base_stt_handler import BaseSTTHandler
-from chatbot.STT.smart_progressive_streaming import PartialTranscription as ProgressiveStreamPartial
 from chatbot.utils.mlx_lock import MLXLockContext
 
 try:
@@ -144,8 +142,6 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         model_name: str = "mlx-community/parakeet-tdt-1.1b",
         language: Optional[str] = None,
         gen_kwargs: dict[str, Any] = {},
-        enable_live_transcription: bool = False,
-        live_transcription_update_interval: float = 0.5,
     ) -> None:
         """
         Initialize the Parakeet TDT model.
@@ -158,8 +154,6 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         self.gen_kwargs = gen_kwargs
         self.start_language = language
         self.last_language = language if language else "en"
-        self.enable_live_transcription = enable_live_transcription
-        self.live_transcription_update_interval = live_transcription_update_interval
         self.sample_rate = 16000
         if not model_name.startswith("mlx-community/"):
             raise ValueError("Parakeet must use an mlx-community model on macOS.")
@@ -168,29 +162,7 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         logger.info("Loading Parakeet TDT model: %s via mlx-audio", model_name)
         self._setup_mlx(model_name)
         _get_lingua_detector()
-
-        # Setup streaming handler if live transcription is enabled
-        self.streaming_handler = None
-        if self.enable_live_transcription:
-            from chatbot.STT.smart_progressive_streaming import (
-                SmartProgressiveStreamingHandler,
-            )
-
-            self.streaming_handler = SmartProgressiveStreamingHandler(
-                self.model,
-                emission_interval=self.live_transcription_update_interval,
-                max_window_size=15.0,
-                sentence_buffer=2.0,
-            )
-            self.processing_final = False  # Track if we're processing final audio
-            logger.info(f"Live transcription enabled for Parakeet TDT ({self.backend})")
-        self._live_transcription_active = False
-        self._live_turn_key: tuple[str | None, int | None] | None = None
-        self._live_prefix_turn_id: str | None = None
-        self._live_prefix_text = ""
-        self._live_final_text = ""
-        self._live_final_turn_id: str | None = None
-
+        self._reset_turn_decode_cache()
         self.warmup()
 
     def _setup_mlx(self, model_name: str) -> None:
@@ -230,10 +202,9 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         Process audio and generate transcription.
 
         Yields:
-            :class:`PartialTranscription` or :class:`Transcription`
+            :class:`Transcription`
         """
         process_start_s = perf_counter()
-        is_progressive = vad_audio.mode == "progressive"
         audio_input = vad_audio.audio
 
         # Ensure audio is float32 numpy array
@@ -243,48 +214,6 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             audio_input = audio_input.astype(np.float32)
         audio_duration_s = len(audio_input) / getattr(self, "sample_rate", 16000)
         item_age_s = self._item_age_s(vad_audio)
-
-        self._prepare_live_transcription_turn(vad_audio.turn_id, vad_audio.turn_revision)
-
-        # Handle progressive updates: yield tagged partial for TranscriptionNotifier
-        if self.enable_live_transcription and is_progressive:
-            # Ignore progressive updates if we're already processing final audio
-            if self.processing_final:
-                logger.debug("Skipping stale progressive update (final audio already received)")
-                return
-
-            # Try to acquire lock with short timeout - skip if busy
-            lock_scope_start_s = perf_counter()
-            with self._compute_lock_context(handler_name="ParakeetSTT-Progressive", timeout=0.01) as acquired:
-                if acquired:
-                    try:
-                        inference_start_s = perf_counter()
-                        progressive_text = self._show_progressive_transcription(audio_input)
-                        inference_s = perf_counter() - inference_start_s
-                        if inference_s >= 0.25:
-                            logger.info(
-                                "Parakeet progressive STT timing turn=%s rev=%s audio=%.3fs age=%.3fs "
-                                "lock_scope=%.3fs inference=%.3fs chars=%d",
-                                vad_audio.turn_id,
-                                vad_audio.turn_revision,
-                                audio_duration_s,
-                                item_age_s,
-                                perf_counter() - lock_scope_start_s,
-                                inference_s,
-                                len(progressive_text),
-                            )
-                        if progressive_text:
-                            yield PartialTranscription(
-                                text=progressive_text,
-                                turn_id=vad_audio.turn_id,
-                                turn_revision=vad_audio.turn_revision,
-                            )
-                            return
-                    except Exception as e:
-                        logger.debug(f"Progressive transcription failed: {e}")
-                else:
-                    logger.debug("Skipping progressive update (compute busy)")
-            return
 
         # Handle final transcription (send to LLM)
         logger.info(
@@ -298,10 +227,6 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         lock_scope_s = 0.0
         stt_error: str | None = None
         try:
-            if self.enable_live_transcription:
-                # Mark that we're processing final audio (ignore stale progressive updates)
-                self.processing_final = True
-
             # TTS often holds the MLX lock for longer than a first 5s try.
             # Retry once with a long wait so barge-in speech is not dropped.
             lock_scope_start_s = perf_counter()
@@ -312,7 +237,7 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
                     if got:
                         acquired = True
                         inference_start_s = perf_counter()
-                        pred_text, language_code = self._process_mlx_final(audio_input)
+                        pred_text, language_code = self._transcribe_turn(audio_input, vad_audio.turn_id)
                         inference_s = perf_counter() - inference_start_s
                         lock_scope_s = perf_counter() - lock_scope_start_s
                         break
@@ -350,24 +275,10 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             len(pred_text),
         )
         logger.debug("Finished Parakeet TDT inference")
-        self._clear_live_transcription_line()
         if pred_text.strip():
             console.print(f"[yellow]USER: {pred_text.strip()}")
             if language_code:
                 console.print(f"[dim]Language: {language_code}[/dim]")
-
-        # Reset per-utterance live transcription state only after final STT
-        # completes. The streaming handler carries fixed sentence timing within
-        # an utterance, and stale timing must not leak into the next turn.
-        # Keep the locked caption: a reopen revision only decodes the new
-        # fragment, and the UI should not lose the words already committed.
-        if self.enable_live_transcription:
-            if pred_text.strip() and vad_audio.turn_id is not None:
-                self._live_final_text = pred_text.strip()
-                self._live_final_turn_id = vad_audio.turn_id
-            self._live_prefix_text = ""
-            self.processing_final = False
-            self._reset_live_transcription_state(clear_turn=True)
 
         yield Transcription(
             text=pred_text,
@@ -423,145 +334,70 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         with MLXLockContext(handler_name=handler_name, timeout=timeout) as acquired:
             yield acquired
 
-    def _show_progressive_transcription(self, audio_input: np.ndarray) -> str:
-        """Run progressive transcription, print to console, and return the text."""
-        result = self.streaming_handler.transcribe_incremental(audio_input)
-        rich_text = Text()
-        if result.fixed_text:
-            rich_text.append("Live: ", style="dim")
-            rich_text.append(result.fixed_text, style="yellow")
-            if result.active_text:
-                rich_text.append(" ", style="dim")
+    def _transcribe_turn(self, audio_input: np.ndarray, turn_id: str | None) -> tuple[str, str]:
+        """Transcribe a turn, reusing the part of it already transcribed.
 
-        if result.active_text:
-            if not result.fixed_text:
-                rich_text.append("Live: ", style="dim")
-            rich_text.append(result.active_text, style="cyan dim")
+        A pause inside one turn makes VAD re-send the whole turn so far, so
+        decoding it from the start each time re-transcribed the same speech once
+        per pause -- roughly eight passes over a one-minute turn with seven
+        pauses. Instead, remember how many samples were already decoded and
+        transcribe only the audio past that point.
 
-        # Every progressive item is a fresh decode of the *whole* current
-        # fragment, and Parakeet flips words between passes ("dropping" ->
-        # "jobing"). Appending it re-printed the fragment on every divergence,
-        # so the caption repeated itself five times over one sentence. The new
-        # decode replaces the fragment; only text from earlier, already
-        # finalized fragments of this turn is kept in front of it, because that
-        # audio is disjoint and is not in this window.
-        fragment_text = self._build_progressive_text(result)
-        prefix = getattr(self, "_live_prefix_text", "") or ""
-        progressive_text = " ".join(part for part in (prefix, fragment_text) if part)
-        if progressive_text:
-            self._print_live_transcription(rich_text, progressive_text)
-
-        return progressive_text
-
-    def _print_live_transcription(self, rich_text: Text, progressive_text: str) -> None:
-        is_terminal = bool(getattr(console, "is_terminal", False))
-        if is_terminal:
-            self._write_live_control("\r\x1b[2K")
-            if rich_text:
-                console.print(self._truncate_live_transcription(rich_text), end="")
-            else:
-                fallback = Text("Live: ", style="dim")
-                fallback.append(progressive_text, style="cyan dim")
-                console.print(self._truncate_live_transcription(fallback), end="")
-            self._write_live_control("\r")
-            self._live_transcription_active = True
-            return
-
-        logger.debug("Live: %s", progressive_text[:160])
-
-    def _clear_live_transcription_line(self) -> None:
-        if not getattr(self, "_live_transcription_active", False):
-            return
-        self._write_live_control("\r\x1b[2K")
-        self._live_transcription_active = False
-
-    def _write_live_control(self, sequence: str) -> None:
-        file = getattr(console, "file", None)
-        if file is None:
-            return
-        file.write(sequence)
-        file.flush()
-
-    def _truncate_live_transcription(self, text: Text) -> Text:
-        text = text.copy()
-        width = getattr(console, "width", 80)
-        try:
-            max_width = max(1, int(width) - 1)
-        except (TypeError, ValueError):
-            max_width = 79
-        text.truncate(max_width, overflow="ellipsis")
-        return text
-
-    def _prepare_live_transcription_turn(self, turn_id: str | None, turn_revision: int | None) -> None:
-        if not self.enable_live_transcription:
-            return
-        turn_key = (turn_id, turn_revision)
-        if turn_id is not None:
-            locked_turn = getattr(self, "_live_final_turn_id", None)
-            if turn_id == locked_turn:
-                if not (getattr(self, "_live_prefix_text", "") or ""):
-                    self._live_prefix_text = getattr(self, "_live_final_text", "") or ""
-            elif turn_id != getattr(self, "_live_prefix_turn_id", None):
-                self._live_prefix_text = ""
-                self._live_final_text = ""
-                self._live_final_turn_id = None
-            self._live_prefix_turn_id = turn_id
-        if getattr(self, "_live_turn_key", None) == turn_key:
-            return
-        self._reset_live_transcription_state(clear_turn=False)
-        self._live_turn_key = turn_key
-
-    def _reset_live_transcription_state(self, clear_turn: bool) -> None:
-        self._clear_live_transcription_line()
-        streaming_handler = getattr(self, "streaming_handler", None)
-        if streaming_handler is not None:
-            streaming_handler.reset()
-        if clear_turn:
-            self._live_turn_key = None
-
-    def _clear_live_caption_memory(self) -> None:
-        self._live_prefix_text = ""
-        self._live_prefix_turn_id = None
-        self._live_final_text = ""
-        self._live_final_turn_id = None
-
-    def _build_progressive_text(self, result: ProgressiveStreamPartial) -> str:
-        parts = []
-        if result.fixed_text:
-            parts.append(result.fixed_text.strip())
-        if result.active_text:
-            parts.append(result.active_text.strip())
-        return " ".join(part for part in parts if part).strip()
-
-    def _process_mlx_final(self, audio_input: np.ndarray) -> tuple[str, str]:
-        """Decode the full final utterance.
-
-        Progressive captions are UI-only. Stitching their ``fixed_sentences``
-        onto a tail decode was a common source of duplicated or dropped words.
+        Reuse is safe because the cached prefix is a true prefix: VAD only ever
+        appends to a turn's audio, and it cuts fragments at a detected end of
+        speech, so the resume point sits inside real silence rather than
+        mid-word. It is also self-healing: if a revision is dropped as stale,
+        its audio is still past the cached mark and gets transcribed by the
+        next revision.
         """
-        if self.streaming_handler is not None:
-            self._clear_live_transcription_line()
-            self.streaming_handler.reset()
-        return self._process_mlx(audio_input)
+        cached_samples = self._turn_decoded_samples
+        # Empty cached text is not a reason to redo the work: a fragment that
+        # held no words was still transcribed, and re-transcribing silence
+        # cannot produce any.
+        reuse = turn_id is not None and turn_id == self._turn_decode_id and 0 < cached_samples < len(audio_input)
+        if reuse:
+            tail_text = self._decode_audio(audio_input[cached_samples:])
+            pred_text = " ".join(part for part in (self._turn_decoded_text, tail_text) if part)
+            logger.info(
+                "Parakeet reused %.1fs of turn %s and decoded %.1fs of new audio",
+                cached_samples / self.sample_rate,
+                turn_id,
+                (len(audio_input) - cached_samples) / self.sample_rate,
+            )
+        else:
+            pred_text = self._decode_audio(audio_input)
 
-    def _process_mlx(self, audio_input: np.ndarray) -> tuple[str, str]:
-        """Process audio using MLX backend."""
+        if turn_id is None:
+            self._reset_turn_decode_cache()
+        else:
+            self._turn_decode_id = turn_id
+            self._turn_decoded_samples = len(audio_input)
+            self._turn_decoded_text = pred_text
+
+        return pred_text, self._resolve_language(pred_text)
+
+    def _reset_turn_decode_cache(self) -> None:
+        self._turn_decode_id: str | None = None
+        self._turn_decoded_samples = 0
+        self._turn_decoded_text = ""
+
+    def _decode_audio(self, audio_input: np.ndarray) -> str:
+        """Decode one span of audio, in bounded windows."""
         parts: list[str] = []
-        language_code = self.last_language
         for window in iter_decode_windows(audio_input, self.sample_rate):
-            window_text, language_code = self._decode_mlx_window(window)
+            window_text, _ = self._decode_mlx_window(window)
             if window_text:
                 parts.append(window_text)
-        pred_text = " ".join(parts)
+        return " ".join(parts)
 
+    def _resolve_language(self, pred_text: str) -> str:
         if self.start_language and self.start_language != "auto":
-            language_code = self.start_language
-        elif pred_text:
+            return self.start_language
+        if pred_text:
             detected_lang = self._detect_language_from_text(pred_text)
             if detected_lang:
-                language_code = detected_lang
-
-        return pred_text, language_code
+                return detected_lang
+        return self.last_language
 
     def _decode_mlx_window(self, audio_input: np.ndarray) -> tuple[str, str]:
         import mlx.core as mx
@@ -572,6 +408,13 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             pred_text = result.text.strip()
         else:
             pred_text = str(result).strip()
+        # Return this decode's activation buffers to the OS. MLX keeps freed
+        # buffers in a cache for reuse, but each revision of a turn decodes a
+        # longer clip than the last, so the sizes never match and the cache only
+        # grows: measured 4.0 GB -> 11.4 GB over one minute of pausing speech.
+        # The weights (mx.get_active_memory()) never grow, so this is not a leak
+        # -- it is cache that nothing was reclaiming. TTS already does this.
+        mx.clear_cache()
         return pred_text, self.last_language
 
     def cleanup(self) -> None:
@@ -582,9 +425,6 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
 
     def on_session_end(self) -> None:
         super().on_session_end()
+        self._reset_turn_decode_cache()
         self.last_language = self.start_language if self.start_language else "en"
-        if self.enable_live_transcription:
-            self.processing_final = False
-            self._reset_live_transcription_state(clear_turn=True)
-            self._clear_live_caption_memory()
         logger.debug("Parakeet TDT session state reset")

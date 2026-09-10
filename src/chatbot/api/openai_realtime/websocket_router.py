@@ -32,7 +32,6 @@ from chatbot.pipeline.control import SESSION_END, PipelineControlMessage, is_con
 from chatbot.pipeline.events import (
     AssistantTextEvent,
     AudioInputCompletedEvent,
-    PartialTranscriptionEvent,
     PipelineEvent,
     SpeechStartedEvent,
     SpeechStoppedEvent,
@@ -80,7 +79,6 @@ def _keep_user_text_event(item: Any) -> bool:
         item,
         (
             SpeechStoppedEvent,
-            PartialTranscriptionEvent,
             TranscriptionCompletedEvent,
             AudioInputCompletedEvent,
             TokenUsageEvent,

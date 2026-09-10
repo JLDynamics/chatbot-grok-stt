@@ -50,7 +50,6 @@ from chatbot.LLM.chat_factories import make_user_message
 from chatbot.pipeline.events import (
     AssistantTextEvent,
     AudioInputCompletedEvent,
-    PartialTranscriptionEvent,
     PipelineEvent,
     ResponseFailedEvent,
     SpeechStartedEvent,
@@ -133,7 +132,6 @@ class ConnState(BaseModel):
     current_response_id: Optional[str] = None
     current_item_id: Optional[str] = None
     content_index: int = 0
-    input_content_index: int = 0
     input_audio_duration_s: float = 0.0
     last_item_id: Optional[str] = None
     current_response_params: RealtimeResponseCreateParams | None = None
@@ -194,7 +192,6 @@ class RealtimeService:
             SpeechStartedEvent: self.audio.on_speech_started,
             SpeechStoppedEvent: self.audio.on_speech_stopped,
             TokenUsageEvent: self._on_token_usage,
-            PartialTranscriptionEvent: self.conversation.on_partial_transcription,
             TranscriptionCompletedEvent: self._on_transcription_completed,
             AudioInputCompletedEvent: self._on_audio_input_completed,
             ResponseFailedEvent: self._on_response_failed,
@@ -370,7 +367,6 @@ class RealtimeService:
         if not isinstance(
             event,
             (
-                PartialTranscriptionEvent,
                 TranscriptionCompletedEvent,
                 AudioInputCompletedEvent,
                 AssistantTextEvent,

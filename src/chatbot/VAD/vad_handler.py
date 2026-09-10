@@ -49,9 +49,6 @@ _SHORT_SEGMENT_MIN_FRAGMENT_MS = 100
 # 280ms let a TV blip start a turn (live log: active=288ms, min=280ms). 400ms
 # still accepts a ~544ms "hello" and the 448ms greeting that 480ms dropped.
 _IDLE_TURN_MIN_SPEECH_MS = 400
-# Live captions only need a trailing window. Sending the whole monologue to
-# Parakeet every 0.5–2s recopies minutes of PCM and is what heated the Mac.
-_PROGRESSIVE_STT_WINDOW_S = 16.0
 
 
 class VADHandler(BaseHandler[VADIn, VADOut]):
@@ -74,8 +71,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         min_speech_continuation_ms: int = 192,
         max_speech_ms: float = float("inf"),
         speech_pad_ms: int = 500,
-        enable_realtime_transcription: bool = False,
-        realtime_processing_pause: float = 0.5,
         text_output_queue: Queue[TextEventItem] | None = None,
         speculative_reopen_ms: int = 800,
         unanswered_reopen_ms: int = 7000,
@@ -98,8 +93,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             min_speech_continuation_ms,
         )
         self.max_speech_ms = max_speech_ms
-        self.enable_realtime_transcription = enable_realtime_transcription
-        self.realtime_processing_pause = realtime_processing_pause
         self.text_output_queue = text_output_queue
         self.speculative_turns = speculative_turns
         self.speculative_reopen_ms = speculative_reopen_ms
@@ -149,8 +142,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             min_silence_duration_ms=min_silence_ms,
             speech_pad_ms=speech_pad_ms,
         )
-        # State for progressive audio release
-        self.last_process_time: float = 0.0
 
         # Cumulative sample counter for audio_start_ms / audio_end_ms
         self._total_samples: int = 0
@@ -160,7 +151,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self._log_chunks = 0
         self._log_speech_starts = 0
         self._log_speech_ends = 0
-        self._log_progressive_yields = 0
         self._speech_started_emitted = False
         self._turn_counter = 0
         self._current_turn_id: str | None = None
@@ -383,28 +373,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
     def _current_turn_metadata(self) -> tuple[str | None, int | None]:
         return self._current_turn_id, self._current_turn_revision
 
-    def _iterator_speech_numpy(self) -> np.ndarray:
-        compact = getattr(self.iterator, "compact_if_needed", None)
-        if callable(compact):
-            compact()
-        chunks = self.iterator.speech_buffer()
-        if not chunks:
-            return np.zeros(0, dtype=np.float32)
-
-        from chatbot.VAD.vad_iterator import cat_speech_chunks
-
-        tensor = chunks[0] if len(chunks) == 1 else cat_speech_chunks(chunks)
-        array = tensor.detach().cpu().numpy()
-        if array.ndim > 1:
-            array = array.reshape(-1)
-        return np.ascontiguousarray(array, dtype=np.float32)
-
-    def _progressive_stt_audio(self, array: np.ndarray) -> np.ndarray:
-        max_samples = int(_PROGRESSIVE_STT_WINDOW_S * self.sample_rate)
-        if len(array) > max_samples:
-            return array[-max_samples:]
-        return array
-
     def _combined_turn_audio(self, current_segment: np.ndarray) -> np.ndarray:
         if self._speculative_audio_prefix is None:
             return current_segment
@@ -543,26 +511,19 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
 
         if dropped:
             logger.debug(
-                "VAD: dropped %d superseded audio chunk(s) before enqueueing turn=%s rev=%s mode=%s",
+                "VAD: dropped %d superseded audio chunk(s) before enqueueing turn=%s rev=%s",
                 dropped,
                 latest.turn_id,
                 latest.turn_revision,
-                latest.mode,
             )
         return dropped
 
     def _vad_audio_is_superseded(self, queued_item: VADAudio, latest: VADAudio) -> bool:
         if queued_item.turn_id is None or queued_item.turn_revision is None:
             return False
-        if not self.speculative_turns.is_latest(
+        return not self.speculative_turns.is_latest(
             queued_item.turn_id,
             queued_item.turn_revision,
-        ):
-            return True
-        return (
-            queued_item.mode == "progressive"
-            and queued_item.turn_id == latest.turn_id
-            and queued_item.turn_revision == latest.turn_revision
         )
 
     def _smart_turn_timing_ms(self, audio: np.ndarray) -> tuple[int, int]:
@@ -673,16 +634,13 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             state = "SPEAKING" if is_triggered_now else "silent"
             logger.debug(
                 f"VAD: {self._log_chunks} chunks/s | {state} | "
-                f"starts={self._log_speech_starts} ends={self._log_speech_ends} progressive={self._log_progressive_yields}"
+                f"starts={self._log_speech_starts} ends={self._log_speech_ends}"
             )
             self._log_chunks = 0
             self._log_speech_starts = 0
             self._log_speech_ends = 0
-            self._log_progressive_yields = 0
             self._last_log_time = now
 
-        # Live transcription controls whether progressive STT work is emitted
-        # before the final segment.
         yield from self._process_realtime(vad_output, runtime_config)
 
     def _process_realtime(
@@ -690,42 +648,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         vad_output: list[torch.Tensor] | None,
         runtime_config: RuntimeConfig | None = None,
     ) -> Iterator[VADOut]:
-        """Process with real-time progressive audio release."""
-        # Check if we're currently in a speech segment.
-        if self.enable_realtime_transcription and hasattr(self.iterator, "buffer") and len(self.iterator.buffer) > 0:
-            current_time = time.time()
-            duration_ms = self._speech_buffer_duration_ms()
-            progressive_pause = self._progressive_processing_pause(duration_ms)
-
-            # Yield a trailing window periodically while speaking. The live
-            # caption does not need the whole monologue, and concatenating it
-            # into every progressive item is what ballooned RAM.
-            if (current_time - self.last_process_time) >= progressive_pause:
-                array = self._iterator_speech_numpy()
-                duration_ms = len(array) / self.sample_rate * 1000
-                active_speech_duration_ms = self._current_active_speech_duration_ms()
-                start_ms = max(0, self._audio_ms - int(duration_ms))
-
-                if active_speech_duration_ms >= self._active_speech_min_ms(start_ms):
-                    window = self._progressive_stt_audio(array)
-                    self._log_progressive_yields += 1
-                    logger.debug(
-                        "VAD: yielding progressive audio (segment=%.0fms, active=%.0fms, window=%.0fms, interval=%.2fs)",
-                        duration_ms,
-                        active_speech_duration_ms,
-                        len(window) / self.sample_rate * 1000,
-                        progressive_pause,
-                    )
-                    turn_id, turn_revision = self._current_turn_metadata()
-                    yield VADAudio(
-                        audio=window,
-                        runtime_config=runtime_config,
-                        mode="progressive",
-                        turn_id=turn_id,
-                        turn_revision=turn_revision,
-                    )
-                    self.last_process_time = current_time
-
+        """Emit the finalized utterance when speech ends."""
         # Handle end of speech
         if vad_output is not None:
             if len(vad_output) == 0:
@@ -859,33 +782,17 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                 yield VADAudio(
                     audio=output_array,
                     runtime_config=runtime_config,
-                    mode="final",
                     turn_id=turn_id,
                     turn_revision=turn_revision,
                     processing_delay_s=processing_delay_ms / 1000.0,
                     active_speech_ms=turn_active_ms,
                 )
-                self.last_process_time = 0.0
                 self._speech_started_emitted = False
-
-    def _progressive_processing_pause(self, duration_ms: float) -> float:
-        base_pause = max(0.0, self.realtime_processing_pause)
-        duration_s = duration_ms / 1000.0
-        if duration_s < 8.0:
-            multiplier = 1.0
-        elif duration_s < 15.0:
-            multiplier = 2.0
-        elif duration_s < 30.0:
-            multiplier = 4.0
-        else:
-            multiplier = 6.0
-        return min(base_pause * multiplier, 2.0)
 
     def on_session_end(self):
         self.iterator.reset_states()
         self._pending_short_segment = None
         self.iterator.buffer = []
-        self.last_process_time = 0.0
         self._total_samples = 0
         self._speech_started_emitted = False
         self._turn_counter = 0

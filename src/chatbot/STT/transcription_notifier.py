@@ -6,9 +6,9 @@ from threading import Event
 from typing import Iterator
 
 from chatbot.baseHandler import BaseHandler
-from chatbot.pipeline.events import PartialTranscriptionEvent, TranscriptionCompletedEvent
+from chatbot.pipeline.events import TranscriptionCompletedEvent
 from chatbot.pipeline.handler_types import LLMIn, STTOut
-from chatbot.pipeline.messages import PartialTranscription, Transcription
+from chatbot.pipeline.messages import Transcription
 from chatbot.pipeline.queue_types import TextEventItem
 
 logger = logging.getLogger(__name__)
@@ -31,18 +31,6 @@ class TranscriptionNotifier(BaseHandler[STTOut, LLMIn]):
         self.should_listen = should_listen
 
     def process(self, transcription: STTOut) -> Iterator[LLMIn]:
-        if isinstance(transcription, PartialTranscription):
-            if self.text_output_queue and transcription.text:
-                self.text_output_queue.put(
-                    PartialTranscriptionEvent(
-                        delta=str(transcription.text),
-                        turn_id=transcription.turn_id,
-                        turn_revision=transcription.turn_revision,
-                    )
-                )
-                logger.debug("Partial transcription: %s", str(transcription.text)[:80])
-            return
-
         if isinstance(transcription, Transcription):
             text = transcription.text
             language_code = transcription.language_code

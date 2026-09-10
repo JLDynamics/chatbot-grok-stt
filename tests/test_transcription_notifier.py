@@ -2,8 +2,8 @@ import logging
 from queue import Queue
 from threading import Event
 
-from chatbot.pipeline.events import PartialTranscriptionEvent, TranscriptionCompletedEvent
-from chatbot.pipeline.messages import PartialTranscription, Transcription
+from chatbot.pipeline.events import TranscriptionCompletedEvent
+from chatbot.pipeline.messages import Transcription
 from chatbot.STT.transcription_notifier import TranscriptionNotifier
 
 
@@ -16,18 +16,14 @@ def _notifier(
     return notifier
 
 
-def test_empty_final_transcription_still_emits_completion_after_partial():
+def test_empty_final_transcription_still_emits_completion():
     text_output_queue = Queue()
     notifier = _notifier(text_output_queue=text_output_queue)
 
-    assert list(notifier.process(PartialTranscription(text="Yeah."))) == []
     assert list(notifier.process(Transcription(text="", language_code="en", speech_stopped_at_s=123.0))) == []
 
-    partial = text_output_queue.get_nowait()
     completed = text_output_queue.get_nowait()
 
-    assert isinstance(partial, PartialTranscriptionEvent)
-    assert partial.delta == "Yeah."
     assert isinstance(completed, TranscriptionCompletedEvent)
     assert completed.transcript == ""
     assert completed.language_code == "en"

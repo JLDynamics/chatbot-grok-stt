@@ -11,7 +11,6 @@ final class LiveVoiceBackend: VoiceBackend {
     var onOutputLevel: ((Float) -> Void)?
     var onUserSpeechStarted: (() -> Void)?
     var onTurnDropped: (() -> Void)?
-    var onUserPartial: ((String, String?) -> Void)?
     var onUserFinal: ((String, String?) -> Void)?
     var onAgentDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
@@ -47,8 +46,9 @@ final class LiveVoiceBackend: VoiceBackend {
     private let toolScope = VoiceWorkScope()
     private var seenToolCalls = Set<String>()
     private var responseCreateRequested = false
-    private var partialItemId: String?
-    private var partialText = ""
+    /// Item id of the last finalized user turn, so an empty final can be
+    /// matched to the turn it belongs to.
+    private var lastInputItemId: String?
     /// Server-run tool calls in flight, by call_id, so the matching output can
     /// be reported under the tool's name.
     private var serverToolNames: [String: String] = [:]
@@ -206,8 +206,7 @@ final class LiveVoiceBackend: VoiceBackend {
         cancelToolWork()
         seenToolCalls.removeAll()
         responseCreateRequested = false
-        partialItemId = nil
-        partialText = ""
+        lastInputItemId = nil
         connection = .idle
         handshakeTimeout?.cancel()
         handshakeTimeout = nil
@@ -240,8 +239,7 @@ final class LiveVoiceBackend: VoiceBackend {
         cancelToolWork()
         seenToolCalls.removeAll()
         responseCreateRequested = false
-        partialItemId = nil
-        partialText = ""
+        lastInputItemId = nil
         connection = .idle
         handshakeTimeout?.cancel()
         handshakeTimeout = nil
@@ -423,31 +421,17 @@ final class LiveVoiceBackend: VoiceBackend {
                 onState?(.thinking)
             }
 
-        case "conversation.item.input_audio_transcription.delta":
-            if let delta = json["delta"] as? String, !delta.isEmpty {
-                let itemId = json["item_id"] as? String
-                if itemId != partialItemId { partialText = ""; partialItemId = itemId }
-                // This backend emits full, revisable partial hypotheses.
-                partialText = delta
-                onUserPartial?(partialText, itemId)
-            }
-
         case "conversation.item.input_audio_transcription.completed":
             let itemId = json["item_id"] as? String
             let transcript = (json["transcript"] as? String ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if transcript.isEmpty {
-                // Junk finals must not leave the live caption hanging, and must
-                // not call onUserFinal — that would commit an empty bubble.
-                if itemId == nil || itemId == partialItemId {
-                    partialText = ""
-                    onUserPartial?("", itemId ?? partialItemId)
-                }
+                // An empty final must not call onUserFinal — that would commit
+                // an empty bubble.
                 break
             }
-            partialItemId = itemId
-            partialText = transcript
-            onUserFinal?(transcript, partialItemId)
+            lastInputItemId = itemId
+            onUserFinal?(transcript, itemId)
 
         case "response.audio_transcript.delta", "response.output_audio_transcript.delta":
             if cancelledIds.contains(responseId(in: json)) { return }

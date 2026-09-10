@@ -32,8 +32,6 @@ class HandlerContext:
     speculative_turns: SpeculativeTurnTracker
     pipeline_index: int
     sample_rate: int
-    enable_live_transcription: bool
-    live_transcription_update_interval: float
 
 
 HandlerFactory = Callable[[HandlerContext, Mapping[str, Any]], Any]
@@ -155,8 +153,6 @@ def _create_parakeet(context: HandlerContext, config: Mapping[str, Any]) -> Any:
         queue_out=context.queue_out,
         setup_kwargs={
             **config,
-            "enable_live_transcription": context.enable_live_transcription,
-            "live_transcription_update_interval": context.live_transcription_update_interval,
         },
         defer_setup=True,
     )

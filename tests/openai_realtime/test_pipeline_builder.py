@@ -11,7 +11,6 @@ def test_default_profile_is_the_single_retained_pipeline():
     assert args.stt_backend.name == "parakeet-tdt"
     assert args.llm_backend.name == "responses-api"
     assert args.tts_backend.name == "kokoro"
-    assert args.module_kwargs.enable_live_transcription is True
     assert args.module_kwargs.turn_quality_gate is True
 
 

@@ -240,9 +240,7 @@ struct RuntimeTests {
         backend.onAgentDelta?("Go ahead, I am listening carefully to the microphone problem.")
         assert(!session.userSpeaking, "Painting the words lowers the indicator")
         let original = session.turns[0].id
-        backend.onUserPartial?("I want to explain the problem", "turn-one")
-        assert(session.interimHasExistingRow)
-        assert(session.displayedText(for: session.turns[0]) == "I want to explain the problem")
+        assert(session.turns[0].text == "I want to explain")
         backend.onAgentDone?()
         backend.onUserFinal?("I want to explain the microphone problem", "turn-one")
         backend.onTurnDropped?()
@@ -250,20 +248,6 @@ struct RuntimeTests {
         backend.onUserFinal?("Now read this other page", "turn-two")
         backend.onTurnDropped?()
         assert(session.turns.count == 3, "A distinct utterance must not overwrite earlier speech")
-
-        let overlayBackend = MockVoiceBackend()
-        let overlay = SessionController(backend: overlayBackend, restoreSavedSession: false)
-        overlayBackend.onUserFinal?("yeah i still need to finish", "turn-three")
-        overlayBackend.onTurnDropped?()
-        // A partial carrying the bubble's own item id is the complete hypothesis
-        // for that turn: the finalized fragments plus the one being spoken. It
-        // replaces the bubble instead of being merged into it.
-        overlayBackend.onUserPartial?("yeah i still need to finish a lot of work to do", "turn-three")
-        assert(
-            overlay.displayedText(for: overlay.turns[0])
-                == "yeah i still need to finish a lot of work to do",
-            "A same-item partial is the whole turn and replaces the bubble"
-        )
 
         // Pausing repeatedly inside one turn must not append the turn to itself.
         // Every revision's final is decoded from all of that turn's audio, and
@@ -280,7 +264,7 @@ struct RuntimeTests {
         assert(repeats.turns.isEmpty, "Revisions must not paint while the turn is still open")
         assert(repeats.userSpeaking, "The indicator covers the pauses")
         repeatBackend.onTurnDropped?()
-        let shown = repeats.displayedText(for: repeats.turns[0])
+        let shown = repeats.turns[0].text
         assert(repeats.turns.count == 1, "Pausing inside one turn must not open more bubbles")
         assert(
             shown == "\(head) and see whether it's good it's still are the other things over there",
@@ -289,13 +273,6 @@ struct RuntimeTests {
         assert(
             shown.components(separatedBy: "i'm sorry").count - 1 == 1,
             "The turn must appear exactly once, not once per pause"
-        )
-
-        overlayBackend.onUserPartial?("", "turn-three")
-        assert(overlay.interim == nil, "An empty live caption must clear the overlay")
-        assert(
-            overlay.turns[0].text == "yeah i still need to finish",
-            "Clearing the live overlay must not delete the committed bubble"
         )
 
         let pauseBackend = MockVoiceBackend()
@@ -328,45 +305,17 @@ struct RuntimeTests {
         assert(restateSession.turns.count == 1)
         assert(restateSession.turns[0].text == "i still need to finish a lot of work today")
 
-        let liveBackend = MockVoiceBackend()
-        let liveSession = SessionController(backend: liveBackend, restoreSavedSession: false)
-        // A partial is a complete hypothesis for its turn, so a later one
-        // replaces the earlier one outright. The server owns the accumulated
-        // text; the client guessing how two decodes align is what repeated the
-        // turn on every pause.
-        liveBackend.onUserPartial?("yeah i still need to finish the whole thought", "live-only")
-        liveBackend.onUserPartial?("yeah i still need to finish the whole thought a lot of work", "live-only")
-        assert(
-            liveSession.interim == "yeah i still need to finish the whole thought a lot of work",
-            "A later partial replaces the caption"
-        )
-        // Parakeet revises words mid-caption between passes ("whole" -> "hole").
-        liveBackend.onUserPartial?("yeah i still need to finish the hole thought a lot of work to do tomorrow", "live-only")
-        assert(
-            liveSession.interim == "yeah i still need to finish the hole thought a lot of work to do tomorrow",
-            "A re-decode that revises a word must replace, never append"
-        )
-        liveBackend.onUserPartial?("", "live-only")
-        assert(
-            liveSession.interim?.contains("i still need to finish") == true,
-            "An empty final must not delete a live-only sentence that was never committed"
-        )
-
         let splitBackend = MockVoiceBackend()
         let splitSession = SessionController(backend: splitBackend, restoreSavedSession: false)
         splitBackend.onUserFinal?("yeah i still need to finish", "turn-split-a")
         splitBackend.onTurnDropped?()
-        splitBackend.onUserPartial?("a lot of work to do", "turn-split-b")
-        assert(splitSession.turns.count == 1, "A new live item id must not open a second bubble")
-        assert(splitSession.interimHasExistingRow)
-        assert(
-            splitSession.displayedText(for: splitSession.turns[0]).contains("yeah i still need to finish")
-        )
-        assert(
-            splitSession.displayedText(for: splitSession.turns[0]).contains("a lot of work to do")
-        )
+        splitBackend.onUserFinal?("a lot of work to do", "turn-split-b")
+        splitBackend.onTurnDropped?()
+        assert(splitSession.turns.count == 1, "A paused continuation must stay one bubble")
+        assert(splitSession.turns[0].text.contains("yeah i still need to finish"))
+        assert(splitSession.turns[0].text.contains("a lot of work to do"))
 
-        // The talking indicator replaces the live caption, so it must never
+        // The talking indicator is the only speaking feedback, so it must never
         // strand: every way a turn can end has to lower it.
         let barsBackend = MockVoiceBackend()
         let bars = SessionController(backend: barsBackend, restoreSavedSession: false)
@@ -394,8 +343,11 @@ struct RuntimeTests {
 
         let junkBackend = MockVoiceBackend()
         let junkSession = SessionController(backend: junkBackend, restoreSavedSession: false)
-        junkBackend.onUserPartial?("um", "junk-live")
-        junkBackend.onUserPartial?("", "junk-live")
-        assert(junkSession.interim == nil, "A one-word junk live caption may clear")
+        // The server drops filler before it reaches the client, so a dropped
+        // turn must leave no bubble and no indicator behind.
+        junkBackend.onUserSpeechStarted?()
+        junkBackend.onTurnDropped?()
+        assert(junkSession.turns.isEmpty, "A dropped turn leaves no bubble")
+        assert(!junkSession.userSpeaking, "A dropped turn lowers the indicator")
     }
 }

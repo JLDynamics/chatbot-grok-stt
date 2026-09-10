@@ -45,16 +45,6 @@ class VADHandlerArguments:
             "help": "Amount of audio retained before VAD triggers and prepended to detected speech segments. Once speech is detected, audio continues to be kept until VAD declares the segment done. Measured in milliseconds. Default is 500 ms."
         },
     )
-    enable_realtime_transcription: bool = field(
-        default=False,
-        metadata={"help": "Enable progressive audio release for live transcription during speech. Default is False."},
-    )
-    realtime_processing_pause: float = field(
-        default=0.5,
-        metadata={
-            "help": "Interval (in seconds) for releasing progressive audio chunks during speech. Default is 0.5s."
-        },
-    )
     speculative_reopen_ms: int = field(
         default=800,
         metadata={

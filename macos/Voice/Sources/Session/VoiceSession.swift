@@ -49,11 +49,10 @@ protocol VoiceBackend: AnyObject {
     var onInputLevel: ((Float) -> Void)? { get set }        // 0...1, ~30 Hz
     var onOutputLevel: ((Float) -> Void)? { get set }       // 0...1, ~30 Hz
     /// The user began speaking. Drives the talking indicator, which stands in
-    /// for the live transcript when progressive STT is off.
+    /// for a live transcript, which the pipeline no longer produces.
     var onUserSpeechStarted: (() -> Void)? { get set }
     /// The server finalized a turn but will not answer it (turn_ignored).
     var onTurnDropped: (() -> Void)? { get set }
-    var onUserPartial: ((String, String?) -> Void)? { get set }      // interim transcript
     var onUserFinal: ((String, String?) -> Void)? { get set } // final transcript + server item id (stable across pause-merged segments)
     var onAgentDelta: ((String) -> Void)? { get set }       // streamed reply text
     var onAgentDone: (() -> Void)? { get set }
@@ -88,7 +87,6 @@ final class SessionController: ObservableObject {
 
     @Published private(set) var state: SessionState = .idle
     @Published private(set) var turns: [Turn] = []
-    @Published private(set) var interim: String?
     /// True from the moment speech is detected until the turn's text is painted
     /// or dropped. Drives the talking indicator that stands in for a live
     /// transcript: streaming ASR text necessarily revises itself, so the panel
@@ -109,7 +107,6 @@ final class SessionController: ObservableObject {
     /// Shown as one line in the header. Cleared on the next successful start.
     @Published private(set) var errorText: String?
     @Published private(set) var audioStatus: String?
-    @Published private(set) var interimItemId: String?
     private var userRows: [String: UUID] = [:]
     private var userMessages: [String: Int] = [:]
 
@@ -180,37 +177,8 @@ final class SessionController: ObservableObject {
 
         backend.onAudioStatus = { [weak self] note in self?.audioStatus = note }
         backend.onToolsCancelled = { [weak self] in self?.activeTool = nil }
-        backend.onUserPartial = { [weak self] text, itemId in
-            guard let self else { return }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                // A junk final must not leave an overlay hanging on a committed
-                // bubble. A live-only sentence must not vanish when STT later
-                // sends an empty completed for a short or failed revision.
-                let hasCommitted = itemId.map { self.userRows[$0] != nil } ?? false
-                if !hasCommitted, Self.wordCount(self.interim) >= 2 {
-                    return
-                }
-                self.interim = nil
-                self.interimItemId = nil
-                return
-            }
-            // Each partial is a complete hypothesis for the turn so far: the
-            // text of already-finalized fragments plus a fresh decode of the one
-            // being spoken. Merging it into the previous hypothesis re-appended
-            // the whole turn every time Parakeet flipped a word between passes
-            // ("dropping" -> "jobing"), and once one copy slipped in, the length
-            // guard in isContinuation stopped recognizing the next hypothesis as
-            // a restatement, so it appended forever. Show what the server sent.
-            self.interimItemId = itemId
-            self.interim = trimmed
-            self.markUserActivity()
-        }
-
         backend.onUserFinal = { [weak self] text, itemId in
             guard let self else { return }
-            self.interim = nil
-            self.interimItemId = nil
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
             // A final for a different item means the held turn is definitively
@@ -375,7 +343,6 @@ final class SessionController: ObservableObject {
     private func applyIdleChrome() {
         flushPendingUser()
         userSpeaking = false
-        interim = nil
         agentTurnOpen = false
         userTurnOpen = false
         if isMuted {
@@ -447,7 +414,6 @@ final class SessionController: ObservableObject {
                 default: return nil
                 }
             }
-            interim = nil
             agentTurnOpen = false
             userTurnOpen = false
             pendingAgentText = ""
@@ -519,7 +485,6 @@ final class SessionController: ObservableObject {
         activeSessionTitle = "New conversation"
         messages = []
         turns = []
-        interim = nil
         agentTurnOpen = false
         pendingAgentText = ""
         lastUserItemId = nil
@@ -637,35 +602,6 @@ final class SessionController: ObservableObject {
         userMessages[id] = index
     }
 
-    func displayedText(for turn: Turn) -> String {
-        guard turn.speaker == .you, let interim else { return turn.text }
-        // Same item id means the interim is the complete hypothesis for *this*
-        // bubble's turn: it already carries that turn's finalized fragments as a
-        // prefix, so it replaces the bubble's text. Merging the two appended the
-        // turn to itself on every pause.
-        if let item = interimItemId, userRows[item] == turn.id {
-            return interim
-        }
-        // The remaining cases are a different turn's interim, which does not
-        // include this bubble's words, so those still merge.
-        if shouldMergePausedContinuation(),
-           turns.last(where: { $0.speaker == .you })?.id == turn.id {
-            return Self.mergedUserText(current: turn.text, next: interim)
-        }
-        return turn.text
-    }
-
-    var interimHasExistingRow: Bool {
-        if let item = interimItemId, let row = userRows[item],
-           turns.contains(where: { $0.id == row }) {
-            return true
-        }
-        if userTurnOpen && turns.last?.speaker == .you && interim != nil {
-            return true
-        }
-        return shouldMergePausedContinuation() && interim != nil
-    }
-
     private func markUserActivity() {
         lastUserActivityAt = Date()
     }
@@ -717,12 +653,6 @@ final class SessionController: ObservableObject {
             }
         }
         return a + " " + b
-    }
-
-    private static func wordCount(_ text: String?) -> Int {
-        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if trimmed.isEmpty { return 0 }
-        return trimmed.split(whereSeparator: { $0.isWhitespace }).count
     }
 
     /// Whether a new final restates and extends an earlier partial bubble:

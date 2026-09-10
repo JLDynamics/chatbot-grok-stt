@@ -18,7 +18,6 @@ from chatbot.pipeline.messages import (
     EndOfResponse,
     GenerateResponseRequest,
     LLMResponseChunk,
-    PartialTranscription,
     TTSInput,
     TokenUsage,
     ToolActivity,
@@ -34,7 +33,7 @@ VADOut: TypeAlias = VADAudio
 
 # ── STT stage ─────────────────────────────────────────────────────────
 STTIn: TypeAlias = VADAudio
-STTOut: TypeAlias = PartialTranscription | Transcription
+STTOut: TypeAlias = Transcription
 
 # ── LLM stage ─────────────────────────────────────────────────────────
 LLMIn: TypeAlias = GenerateResponseRequest

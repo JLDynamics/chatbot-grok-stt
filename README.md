@@ -4,7 +4,7 @@ A Mac-first live voice chatbot that runs its ears and voice locally, while a Res
 
 `native panel microphone → Parakeet MLX → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → speakers`
 
-It keeps realtime WebSocket turn-taking, interruption/cancellation, partial transcripts, long-term memory, in-response web search and page reading (including the Chrome page bridge for logged-in or paywalled tabs), in-app screenshots, and optional coding-agent delegation.
+It keeps realtime WebSocket turn-taking, interruption/cancellation, long-term memory, in-response web search and page reading (including the Chrome page bridge for logged-in or paywalled tabs), in-app screenshots, and optional coding-agent delegation.
 
 In the default **Speakers (echo cancellation)** mode, the mic stays open while the assistant speaks. The panel uses matched mono capture/render formats for Apple's voice processing, with Silero VAD detecting interruptions. If voice processing cannot start, the panel visibly reports compatibility mode, which suppresses microphone capture during playback. **Headphones** mode keeps capture open without echo cancellation. **Stop reply** stops playback and pending tools without ending the conversation. Saved conversations are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. VibeVoice runs locally without an AI watermark.
 

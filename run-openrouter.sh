@@ -118,16 +118,4 @@ args+=(
   --parakeet_tdt_language "$PARAKEET_LANG"
 )
 
-# Live captions are off on purpose. Progressive STT re-decoded the growing
-# utterance every 0.5-2s, holding the MLX lock against the final decode and
-# TTS, and a re-decode revises words, so the caption could only ever be an
-# unstable guess. The panel shows a mic-level indicator while you talk and your
-# words once, when the turn settles. Set LIVE_CAPTION=1 to get captions back.
-# The flag defaults to on, so captions must be turned off explicitly.
-if [[ "${LIVE_CAPTION:-0}" == "1" ]]; then
-  args+=(--enable_live_transcription)
-else
-  args+=(--no_enable_live_transcription)
-fi
-
 exec "$CHATBOT_BIN" "${args[@]}"
