@@ -27,7 +27,7 @@ BATCH_SENTENCES="${BATCH_SENTENCES:-3}"
 CHAT_SIZE="${CHAT_SIZE:-20}"
 DEFAULT_PROMPT='You are an AI conversation partner: perceptive, relaxed, warm, and quietly playful. You enjoy exploring ideas and have something thoughtful to contribute. Speak with the ease of someone comfortable in the conversation.'
 PROMPT="${PROMPT:-$DEFAULT_PROMPT}"
-VAD_THRESH="${VAD_THRESH:-0.60}"
+VAD_THRESH="${VAD_THRESH:-0.65}"
 VAD_MIN_SILENCE_MS="${VAD_MIN_SILENCE_MS:-1200}"
 VAD_MIN_SPEECH_MS="${VAD_MIN_SPEECH_MS:-600}"
 VAD_SPEECH_PAD_MS="${VAD_SPEECH_PAD_MS:-500}"
@@ -116,7 +116,18 @@ args+=(
   --short_segment_merge_ms "$VAD_SHORT_SEGMENT_MERGE_MS"
   --parakeet_tdt_model_name "$PARAKEET_MODEL"
   --parakeet_tdt_language "$PARAKEET_LANG"
-  --enable_live_transcription
 )
+
+# Live captions are off on purpose. Progressive STT re-decoded the growing
+# utterance every 0.5-2s, holding the MLX lock against the final decode and
+# TTS, and a re-decode revises words, so the caption could only ever be an
+# unstable guess. The panel shows a mic-level indicator while you talk and your
+# words once, when the turn settles. Set LIVE_CAPTION=1 to get captions back.
+# The flag defaults to on, so captions must be turned off explicitly.
+if [[ "${LIVE_CAPTION:-0}" == "1" ]]; then
+  args+=(--enable_live_transcription)
+else
+  args+=(--no_enable_live_transcription)
+fi
 
 exec "$CHATBOT_BIN" "${args[@]}"

@@ -55,7 +55,7 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `PORT` / `WEB_PORT` | `8766` / `7860` | Realtime and browser ports |
 | `PARAKEET_MODEL` | `mlx-community/parakeet-tdt-1.1b` | MLX Parakeet STT model (English) |
 | `VAD_MIN_SILENCE_MS` | `1200` | Silence (ms) before a spoken turn is considered finished. Higher keeps ~1 s thinking pauses inside one turn instead of splitting it; lower answers faster after you truly stop |
-| `VAD_THRESH` | `0.60` | VAD confidence threshold; higher = fewer false voice triggers |
+| `VAD_THRESH` | `0.65` | VAD confidence threshold; higher = fewer false voice triggers |
 | `VAD_MIN_SPEECH_MS` | `600` | Sustained speech (ms) before a user turn / barge-in is confirmed. Raise to soften barge-in (so brief noises or the assistant's own echo don't cut a reply) |
 | `PROMPT` | concise voice prompt | Backend system prompt |
 | `STARTUP_GREETING` | empty | Optional greeting instruction on connection |
@@ -69,10 +69,10 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 
 ### Search, fetch, and the Chrome bridge
 
-The model searches and reads pages **inside the same reply**. When a fact may be stale or uncertain it says a short line such as “Let me check that,” then runs `web_search` / `read_page` on the server against the sidecar — no Mac round trip per hop.
+The **voice model** searches and reads pages **inside the same reply** (not the coding agent). It answers from knowledge when that knowledge is still current. If a fact may have changed since training (who holds office, versions, scores, news, prices), it says a short line such as “Let me check that” and runs `bash` with `curl` on the server — without waiting for the user to ask. No Mac round trip per hop.
 
-- **Local web search**: TinyFish (preferred), Tavily, or Serper. Use when a fact may be outdated or the model is not sure.
-- **`read_page`**: one tool that tries public fetch, then the live Chrome tab when fetch is gated, login-only, or the page is already on screen. X/Twitter links start with Chrome. TinyFish fetch falls back to a direct HTTP read if the provider fails.
+- **Research (`bash` + `curl`)**: the conversational model writes a short curl command, like Pi. No search API key. For latest news it should use a dated RSS feed (`when:1d`).
+- **`code_agent`**: on-disk coding only. It is not the web-research path.
 - **Chrome page bridge**: bounded reader-style text from the visible public tab, including pages a normal fetch cannot open. Read-only; no replies/timelines on X. The extension still has to be enabled on the tab.
 - **Screenshot** stays in Voice.app (Screen Recording is per app). It is for visual questions, not for reading articles.
 

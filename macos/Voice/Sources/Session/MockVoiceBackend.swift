@@ -12,6 +12,8 @@ final class MockVoiceBackend: VoiceBackend {
     var onState: ((SessionState) -> Void)?
     var onInputLevel: ((Float) -> Void)?
     var onOutputLevel: ((Float) -> Void)?
+    var onUserSpeechStarted: (() -> Void)?
+    var onTurnDropped: (() -> Void)?
     var onUserPartial: ((String, String?) -> Void)?
     var onUserFinal: ((String, String?) -> Void)?
     var onAgentDelta: ((String) -> Void)?

@@ -10,6 +10,9 @@ python3 scripts/verify-voice.py
 # Live server-side search/read_page and a Chinese-name TTS turn (no UI tour):
 python3 scripts/verify-voice.py --skip-ui --research
 
+# Pause, then continue talking: live captions must not vanish or split:
+./macos/Voice/scripts/verify.sh --captions-only
+
 # Quit Voice, restart sidecar + voice from this tree, then click through:
 ./macos/Voice/scripts/verify.sh --cold
 ```
@@ -22,7 +25,8 @@ What it covers:
 - Web search + fetch when a search key is configured
 - Panel buttons: Settings, Conversations, theme, On top, orb, End
 - A short live model reply over the realtime WebSocket (`ping` → `pong`)
-- With `--research`: one turn that must `web_search` then `read_page` on the
-  server, and a mixed-script TTS turn (`华为` on the Mandarin pipeline)
+- With `--research`: dated news RSS checks, a turn that must `bash`/`curl` a
+  page on the server, a verify-first turn that must research without being
+  told the command, and a mixed-script TTS turn (`华为` on the Mandarin pipeline)
 
 Screenshots land in `/tmp/voice-verify-<timestamp>/`. The tool does not overwrite personal memory or delete saved chats.

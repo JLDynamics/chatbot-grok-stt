@@ -45,6 +45,7 @@ struct HeaderView: View {
             .buttonStyle(PressableButtonStyle())
             .contentShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
             .accessibilityLabel("Always on top")
+            .accessibilityIdentifier("voice.onTop")
             .accessibilityAddTraits(alwaysOnTop ? .isSelected : [])
 
             if let errorText, !errorText.isEmpty {
@@ -89,6 +90,7 @@ struct HeaderView: View {
                 .background(themePreference == pref ? theme.text : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
                 .buttonStyle(PressableButtonStyle())
+                .accessibilityIdentifier("voice.theme.\(pref.rawValue)")
                 .accessibilityAddTraits(themePreference == pref ? .isSelected : [])
             }
         }
@@ -109,6 +111,7 @@ struct HeaderView: View {
         .buttonStyle(PressableButtonStyle())
         .contentShape(Rectangle())
         .accessibilityLabel("Conversations")
+        .accessibilityIdentifier("voice.history")
         .help("Saved conversations")
     }
 
@@ -122,6 +125,7 @@ struct HeaderView: View {
         .buttonStyle(PressableButtonStyle())
         .contentShape(Rectangle())
         .accessibilityLabel("Settings")
+        .accessibilityIdentifier("voice.settings")
         .help("Tools & Settings")
     }
 
@@ -135,6 +139,7 @@ struct HeaderView: View {
         .buttonStyle(PressableButtonStyle())
         .contentShape(Rectangle())
         .accessibilityLabel("Close")
+        .accessibilityIdentifier("voice.closePanel")
         .help("Hide panel")
     }
 }

@@ -42,11 +42,12 @@ struct ControlBar: View {
         .disabled(!session.isLive || session.state == .connecting)
         .opacity(session.isLive && session.state != .connecting ? 1 : 0.4)
         .accessibilityLabel(session.isMuted ? "Unmute microphone" : "Mute microphone")
+        .accessibilityIdentifier("voice.mute")
         .help(session.isMuted ? "Unmute microphone" : "Mute microphone")
     }
 
     private var stopButton: some View {
-        Button(action: { Task { await session.end() } }) {
+        Button(action: { session.requestEnd() }) {
             Image(systemName: "stop.fill")
                 .font(.system(size: 20))
                 .foregroundStyle(theme.danger)
@@ -61,6 +62,7 @@ struct ControlBar: View {
         .disabled(!session.isLive)
         .opacity(session.isLive ? 1 : 0.4)
         .accessibilityLabel("End conversation")
+        .accessibilityIdentifier("voice.stop")
         .help("End conversation")
     }
 }

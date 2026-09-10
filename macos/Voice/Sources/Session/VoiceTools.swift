@@ -15,9 +15,9 @@ public struct VoiceToolResult: Sendable {
 
 /// Tools the app runs itself.
 ///
-/// The research tools (`web_search`, `read_page`, `search_chat_history`,
-/// `remember`, `forget`) run inside the Python server's response loop against
-/// the sidecar, so a "let me check" is followed by the answer with no client
+/// The research tools (`bash`, `search_chat_history`,
+/// `remember`, `forget`) run inside the Python server's response loop, so a
+/// "let me check" is followed by the answer with no client
 /// round trip. This executor only owns what needs the app process:
 /// `screenshot` (Screen Recording permission is per code identity) and
 /// `code_agent` (a minutes-long sidecar call the pipeline thread must not
@@ -80,7 +80,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
     /// Tool names the server executes inside the response. Anything else the
     /// model calls is forwarded to `run(name:argsJson:)`.
     public static let serverSideTools: Set<String> = [
-        "web_search", "web_fetch", "read_page", "read_article",
+        "bash", "web_search", "web_fetch", "read_page", "read_article",
         "search_chat_history", "remember", "forget",
     ]
 
@@ -92,37 +92,33 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         var defs = [[String: Any]]()
         if webSearchEnabled {
             defs.append(Self.tool(
-                "web_search",
-                "Search the web for current or specific facts you do not reliably know: news, prices, dates, "
-                    + "releases, documentation, anything that may have changed. Returns titles, snippets and URLs.",
-                properties: ["query": Self.string("The search query.")],
-                required: ["query"]
-            ))
-        }
-        if webSearchEnabled || chromeBridgeEnabled {
-            defs.append(Self.tool(
-                "read_page",
-                "Read the full text of a web page: a URL you know or found with web_search, or the page open in "
-                    + "the user's Chrome when url is omitted. Falls back to Chrome for paywalled or logged-in pages "
-                    + "and reports partial or blocked results.",
+                "bash",
+                "Research the voice model runs itself in this reply. Use curl -sL to search or fetch a "
+                    + "public page and strip HTML with python3. For who holds an office or a similar current "
+                    + "fact, curl Wikipedia or a primary page — not a news feed. For latest news, use Google "
+                    + "News RSS with when:1d and today's date, print pubDate, keep the last 24 hours. Search "
+                    + "HTML often blocks curl; retry a primary page. Not for files on disk (use code_agent). "
+                    + "No web_search or read_page tool exists.",
                 properties: [
-                    "url": Self.string("Public URL, if known."),
-                    "prefer_browser": Self.bool("Start from the user's Chrome for a login-only page (X/Twitter links do this automatically)."),
-                ]
+                    "command": Self.string("A curl-based command. Pipes to python3/head/rg are fine."),
+                    "timeout": ["type": "number", "description": "Seconds to wait. Default 15, max 30."],
+                ],
+                required: ["command"]
             ))
         }
         if screenshotEnabled {
             defs.append(Self.tool(
                 "screenshot",
                 "Capture what is visible on the Mac screen. For visual questions about the screen, a layout, an "
-                    + "image or a chart. Not for reading an article: use read_page for page text."
+                    + "image or a chart. Not for reading an article: use bash with curl for page text."
             ))
         }
         if codeAgentEnabled {
             defs.append(Self.tool(
                 "code_agent",
                 "Hand a coding or file task to the coding agent on this machine (reads files, runs shell commands, "
-                    + "edits code). Only when the user asks to inspect, change, run, test or fix files on disk.",
+                    + "edits code). Only when the user asks to inspect, change, run, test or fix files on disk. "
+                    + "Do not use this to search the web or fetch a page; the voice model uses bash for that.",
                 properties: ["task": Self.string("The full task as one self-contained instruction.")],
                 required: ["task"]
             ))
@@ -175,6 +171,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             try Task.checkCancellation()
             switch name {
             case "screenshot":
+                try Task.checkCancellation()
                 return try await execScreenshot()
             case "code_agent":
                 return try await execCodeAgent(task: args["task"] as? String ?? "")
@@ -197,8 +194,10 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         // always claim Screen Recording is off.
         if let png = await ScreenCapture.mainDisplayPNG(),
            let image = ScreenCapture.modelImageDataURL(from: png) {
+            try Task.checkCancellation()
             return VoiceToolResult(output: "Screenshot captured successfully.", image: image)
         }
+        try Task.checkCancellation()
         switch try await sidecarScreenshot() {
         case .captured(let result):
             return result

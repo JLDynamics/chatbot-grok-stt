@@ -498,7 +498,7 @@ def test_voice_persona_is_sent_as_system_message_and_identity_is_last():
     assert len(system_items) == 1
     text = system_items[0]["content"][0]["text"]
     assert "perceptive, relaxed, warm, and quietly playful" in text
-    assert "Speech is the default" in text
+    assert "Tools run inside the spoken reply" in text
     assert "Current date and time:" in text
     assert "Do not take on a branded product name" in text
     assert text.find("perceptive, relaxed, warm") < text.rfind("Do not take on a branded product name")

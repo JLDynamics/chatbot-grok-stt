@@ -26,6 +26,7 @@ struct OrbView: View {
         .buttonStyle(PressableButtonStyle(pressedScale: 0.96))
         .contentShape(Circle())
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityIdentifier("voice.orb")
         .help(helpText)
     }
 

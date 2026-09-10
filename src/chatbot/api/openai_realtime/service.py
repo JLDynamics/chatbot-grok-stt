@@ -411,18 +411,23 @@ class RealtimeService:
         else:
             st.speculative_audio_duration_s = 0.0
 
-        events = self.conversation.on_transcription_completed(conn_id, event)
-        if event.turn_id is not None:
-            st.speculative_audio_duration_s = st.input_audio_duration_s
-
         cfg = st.runtime_config
         transcript = event.transcript
-        decision = self.turn_quality_policy.evaluate(transcript)
+        decision = self.turn_quality_policy.evaluate(
+            transcript,
+            active_speech_ms=event.active_speech_ms,
+        )
         response_transcript = transcript if decision.should_respond else ""
+        hide_from_client = decision.hide_from_client()
+        client_event = event.model_copy(update={"transcript": ""}) if hide_from_client else event
+        events = self.conversation.on_transcription_completed(conn_id, client_event)
+        if event.turn_id is not None:
+            st.speculative_audio_duration_s = st.input_audio_duration_s
         if transcript and not decision.should_respond:
             logger.info(
-                "Turn-quality gate suppressed response (reason=%s, transcript=%r)",
+                "Turn-quality gate suppressed response (reason=%s, active_speech_ms=%s, transcript=%r)",
                 decision.reason,
+                event.active_speech_ms,
                 transcript[:80],
             )
 
@@ -435,7 +440,7 @@ class RealtimeService:
             else:
                 item = cfg.chat.add_item(make_user_message(response_transcript))
                 st.speculative_user_item_id = item.id
-        elif same_speculative_turn and st.speculative_user_item_id:
+        elif hide_from_client and same_speculative_turn and st.speculative_user_item_id:
             cfg.chat.remove_user_message(st.speculative_user_item_id)
             st.speculative_user_item_id = None
         elif event.turn_id is not None and event.turn_id != st.speculative_user_turn_id:

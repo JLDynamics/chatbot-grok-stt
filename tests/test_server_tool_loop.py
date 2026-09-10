@@ -183,6 +183,32 @@ def _input_types(request):
 # ── tests ────────────────────────────────────────────────────────────────────
 
 
+def test_bash_research_runs_inside_the_response_like_pi():
+    """The voice model writes curl; the server runs it and continues the same reply."""
+    executor = FakeExecutor({"bash": "Python 3.13.7 is the latest stable release."})
+    handler, requests = _handler(
+        [
+            [
+                *_speak("Let me check that.", _tool_done("bash", command="curl -sL https://www.python.org/downloads/")),
+                _completed(10, 5),
+            ],
+            [*_speak("The latest stable Python is 3.13.7.", item_id="msg2"), _completed(20, 7)],
+        ],
+        executor=executor,
+    )
+    request = _request()
+
+    outputs = list(handler.process(request))
+
+    assert executor.calls == [("bash", {"command": "curl -sL https://www.python.org/downloads/"})]
+    assert len(requests) == 2
+    chunks = [o for o in outputs if isinstance(o, LLMResponseChunk)]
+    assert [c.text for c in chunks] == ["Let me check that.", "The latest stable Python is 3.13.7."]
+    assert all(c.tools == [] for c in chunks)
+    activity = [o for o in outputs if isinstance(o, ToolActivity)]
+    assert [(a.status, a.name) for a in activity] == [("started", "bash"), ("finished", "bash")]
+
+
 def test_search_runs_inside_the_response_and_the_model_continues():
     executor = FakeExecutor({"web_search": "[1] Paris weather\n18°C and sunny\nURL: https://w.example"})
     handler, requests = _handler(

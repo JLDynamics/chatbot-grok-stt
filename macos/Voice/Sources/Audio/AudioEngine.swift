@@ -143,7 +143,9 @@ final class AudioEngine {
             do {
                 try input.setVoiceProcessingEnabled(true)
                 voiceProcessingEnabled = true
-                input.isVoiceProcessingAGCEnabled = true
+                // Keep AEC + Apple noise suppress. AGC boosts upstairs / other-room
+                // speech to near-field level and defeats any loudness gate.
+                input.isVoiceProcessingAGCEnabled = false
             } catch {
                 voiceProcessingEnabled = false
                 try? input.setVoiceProcessingEnabled(false)

@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         )
 
         panelController = PanelController(root: root) { [weak self] in
-            Task { await self?.session.end() }
+            self?.session.requestEnd()
         }
         panelController?.setAlwaysOnTop(alwaysOnTop)
 
@@ -102,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
             guard event.keyCode == 53 else { return event } // Esc
             if self.session.isLive {
-                Task { await self.session.end() }
+                self.session.requestEnd()
                 return nil
             }
             if self.panelController?.isVisible == true {
@@ -131,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func hidePanel() {
-        Task { await session.end() }
+        session.requestEnd()
         panelController?.hide()
     }
 

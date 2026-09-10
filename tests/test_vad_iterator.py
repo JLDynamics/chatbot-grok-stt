@@ -236,3 +236,20 @@ def test_reset_states_clears_sample_counters() -> None:
     iterator.reset_states()
     assert iterator.speech_buffer_samples() == 0
     assert iterator.buffer_samples() == 0
+
+
+def test_long_utterance_compacts_tiny_chunks_without_losing_samples() -> None:
+    chunk_count = 48
+    iterator = VADIterator(
+        model=_FakeVADModel([0.9] * chunk_count),
+        threshold=0.5,
+        sampling_rate=16000,
+        min_silence_duration_ms=100,
+        speech_pad_ms=0,
+    )
+    for _ in range(chunk_count):
+        iterator(torch.ones(512))
+
+    assert iterator.speech_buffer_samples() == chunk_count * 512
+    assert len(iterator.buffer) < chunk_count
+    assert iterator.speech_buffer_samples() == sum(len(t) for t in iterator.speech_buffer())

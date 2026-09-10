@@ -2,6 +2,21 @@ from collections import deque
 
 import torch
 
+# Merge tiny per-chunk tensors before a long monologue turns the speech
+# buffer into tens of thousands of objects. Short tests stay under this.
+_COMPACT_CHUNK_LIMIT = 32
+
+
+def cat_speech_chunks(chunks: list[torch.Tensor]) -> torch.Tensor:
+    """Concatenate VAD chunks whether they are 1-D samples or 2-D frames."""
+    if not chunks:
+        raise ValueError("Cannot concatenate an empty speech buffer")
+    if len(chunks) == 1:
+        return chunks[0]
+    if chunks[0].dim() == 2:
+        return torch.cat(chunks, dim=1)
+    return torch.cat(chunks, dim=0)
+
 
 class VADIterator:
     def __init__(
@@ -114,6 +129,13 @@ class VADIterator:
     def speech_buffer(self) -> list[torch.Tensor]:
         return self._speech_buffer()
 
+    def compact_if_needed(self, limit: int = _COMPACT_CHUNK_LIMIT) -> None:
+        """Collapse many small chunks so later cats stay O(1)."""
+        if len(self.buffer) >= limit:
+            self.buffer = [cat_speech_chunks(self.buffer)]
+        if len(self.prefix_buffer) >= limit:
+            self.prefix_buffer = [cat_speech_chunks(self.prefix_buffer)]
+
     def speech_buffer_samples(self) -> int:
         """Total samples ``speech_buffer()`` would return, without building it."""
         return self._prefix_samples + self._buffer_samples
@@ -162,6 +184,7 @@ class VADIterator:
         if self.triggered:
             self.buffer.append(x)
             self._buffer_samples += window_size_samples
+            self.compact_if_needed()
             if speech_prob >= self.threshold - 0.15:
                 self.active_speech_samples += window_size_samples
                 if self.temp_end:

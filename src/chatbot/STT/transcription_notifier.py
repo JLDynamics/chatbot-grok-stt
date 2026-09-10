@@ -50,6 +50,7 @@ class TranscriptionNotifier(BaseHandler[STTOut, LLMIn]):
             turn_revision = transcription.turn_revision
             speech_stopped_at_s = transcription.speech_stopped_at_s
             stt_error = transcription.error
+            active_speech_ms = transcription.active_speech_ms
         else:
             text = transcription
             language_code = None
@@ -57,6 +58,7 @@ class TranscriptionNotifier(BaseHandler[STTOut, LLMIn]):
             turn_revision = None
             speech_stopped_at_s = None
             stt_error = None
+            active_speech_ms = None
 
         transcript = str(text)
         # Always close the client-visible transcription item. Empty final STT
@@ -71,6 +73,7 @@ class TranscriptionNotifier(BaseHandler[STTOut, LLMIn]):
                     turn_revision=turn_revision,
                     speech_stopped_at_s=speech_stopped_at_s,
                     error=stt_error,
+                    active_speech_ms=active_speech_ms,
                 )
             )
 

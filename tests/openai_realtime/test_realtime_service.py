@@ -1291,6 +1291,21 @@ class TestDispatchPipelineEvent:
         assert stopped_1[0].item_id == id_1
         assert stopped_2[0].item_id == id_2
 
+    def test_reopened_speech_reuses_input_item_id(self, service, conn_id):
+        started_1 = service.dispatch_pipeline_event(
+            conn_id,
+            SpeechStartedEvent(turn_id="turn_1", turn_revision=0),
+        )
+        service.dispatch_pipeline_event(
+            conn_id,
+            SpeechStoppedEvent(turn_id="turn_1", turn_revision=0),
+        )
+        started_2 = service.dispatch_pipeline_event(
+            conn_id,
+            SpeechStartedEvent(turn_id="turn_1", turn_revision=1, reopened=True),
+        )
+        assert started_1[0].item_id == started_2[0].item_id
+
     # -- speech_stopped --
 
     def test_speech_stopped_emits_event(self, service, conn_id):
@@ -1864,7 +1879,10 @@ class TestDispatchPipelineEvent:
         assert text_prompt_queue.empty()
         assert service._state(conn_id).response_pending is False
 
-    @pytest.mark.parametrize("transcript", ["um", "Uh...", "[noise]", "(yawning)"])
+    @pytest.mark.parametrize(
+        "transcript",
+        ["um", "Uh...", "[noise]", "(yawning)", "four", "six a", "music"],
+    )
     def test_non_meaningful_transcription_emits_event_without_response(
         self,
         service,
@@ -1880,7 +1898,7 @@ class TestDispatchPipelineEvent:
 
         assert len(events) == 2
         assert isinstance(events[0], ConversationItemInputAudioTranscriptionCompletedEvent)
-        assert events[0].transcript == transcript
+        assert events[0].transcript == ""
         assert events[1].type == "error"
         assert events[1].error.type == "turn_ignored"
         assert text_prompt_queue.empty()
@@ -1904,6 +1922,60 @@ class TestDispatchPipelineEvent:
         request = text_prompt_queue.get_nowait()
         assert isinstance(request, GenerateResponseRequest)
         assert runtime_config.chat.buffer[-1].content[0].text == transcript
+
+    def test_short_one_word_blip_is_ignored_without_held_speech(
+        self,
+        service,
+        conn_id,
+        runtime_config,
+        text_prompt_queue,
+    ):
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript="later", language_code="en", active_speech_ms=416),
+        )
+
+        assert events[0].transcript == ""
+        assert events[1].error.type == "turn_ignored"
+        assert text_prompt_queue.empty()
+        assert runtime_config.chat.buffer == []
+
+    def test_short_multiword_blip_is_ignored(
+        self,
+        service,
+        conn_id,
+        runtime_config,
+        text_prompt_queue,
+    ):
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(
+                transcript="can you hear",
+                language_code="en",
+                active_speech_ms=416,
+            ),
+        )
+
+        assert events[0].transcript == "can you hear"
+        assert events[1].error.type == "turn_ignored"
+        assert text_prompt_queue.empty()
+        assert runtime_config.chat.buffer == []
+
+    def test_held_one_word_triggers_response(
+        self,
+        service,
+        conn_id,
+        runtime_config,
+        text_prompt_queue,
+    ):
+        service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript="later", language_code="en", active_speech_ms=800),
+        )
+
+        request = text_prompt_queue.get_nowait()
+        assert isinstance(request, GenerateResponseRequest)
+        assert runtime_config.chat.buffer[-1].content[0].text == "later"
 
     def test_disabled_turn_quality_gate_allows_filler(
         self,
@@ -2027,6 +2099,56 @@ class TestDispatchPipelineEvent:
         assert first_req.turn_revision == 0
         assert text_prompt_queue.empty()
         assert service._state(conn_id).response_usage.audio_duration_s == 2.0
+        service.unregister(conn_id)
+
+    def test_too_short_revision_keeps_visible_speculative_user_message(self, runtime_config, should_listen):
+        text_prompt_queue = Queue()
+        tracker = SpeculativeTurnTracker()
+        service = RealtimeService(
+            text_prompt_queue=text_prompt_queue,
+            should_listen=should_listen,
+            speculative_turns=tracker,
+        )
+        conn_id = service.register()
+        service._state(conn_id).runtime_config = runtime_config
+
+        service.dispatch_pipeline_event(conn_id, SpeechStartedEvent(turn_id="turn_1", turn_revision=0))
+        service.dispatch_pipeline_event(
+            conn_id,
+            SpeechStoppedEvent(duration_s=1.0, turn_id="turn_1", turn_revision=0),
+        )
+        service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript="hello", turn_id="turn_1", turn_revision=0),
+        )
+
+        tracker.observe("turn_1", 1)
+        service.dispatch_pipeline_event(
+            conn_id,
+            SpeechStartedEvent(turn_id="turn_1", turn_revision=1, reopened=True),
+        )
+        service.dispatch_pipeline_event(
+            conn_id,
+            SpeechStoppedEvent(duration_s=2.0, turn_id="turn_1", turn_revision=1),
+        )
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(
+                transcript="a lot of work to do",
+                turn_id="turn_1",
+                turn_revision=1,
+                active_speech_ms=384,
+            ),
+        )
+
+        user_items = [item for item in runtime_config.chat.buffer if getattr(item, "role", None) == "user"]
+        assert len(user_items) == 1
+        assert user_items[0].content[0].text == "hello"
+        assert events[0].transcript == "a lot of work to do"
+        assert events[1].error.type == "turn_ignored"
+        first_req = text_prompt_queue.get_nowait()
+        assert first_req.turn_revision == 0
+        assert text_prompt_queue.empty()
         service.unregister(conn_id)
 
     def test_empty_first_revision_tracks_audio_for_later_nonempty_reopen(self, runtime_config, should_listen):
@@ -2601,7 +2723,7 @@ class TestUsageMetricsTracking:
         # Speech cycle before response so speech_started doesn't cancel anything
         service.dispatch_pipeline_event(conn_id, SpeechStartedEvent())
         service.dispatch_pipeline_event(conn_id, SpeechStoppedEvent(duration_s=3.0))
-        service.dispatch_pipeline_event(conn_id, TranscriptionCompletedEvent(transcript="z"))
+        service.dispatch_pipeline_event(conn_id, TranscriptionCompletedEvent(transcript="hello"))
 
         service.response._ensure_response(conn_id)
         service.dispatch_pipeline_event(

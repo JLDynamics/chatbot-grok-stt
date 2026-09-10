@@ -26,13 +26,17 @@ from typing import Any
 import httpx
 from openai.types.responses import ResponseFunctionToolCall
 
+from chatbot.LLM.curl_bash import run_research_command
+
 logger = logging.getLogger(__name__)
 
 # Tools executed here. Anything else the model calls is forwarded to the client.
-# ``web_fetch`` and ``read_article`` are no longer published; they stay as
-# aliases of ``read_page`` because replayed history still mentions them.
+# ``web_search`` / ``read_page`` (and aliases) stay executable so replayed
+# history still works. This experiment branch publishes ``bash`` instead:
+# the model writes curl, like Pi, instead of calling those named tools.
 SERVER_TOOL_NAMES: frozenset[str] = frozenset(
     {
+        "bash",
         "web_search",
         "web_fetch",
         "read_page",
@@ -49,8 +53,9 @@ MAX_TOOL_ROUNDS = 6
 # ...and this is how long, from the first model call, the loop keeps letting
 # the model start *new* tool rounds. A spoken answer that is still researching
 # after this must be given from what was found; the model can offer to dig
-# deeper. Measured: one search round costs 1–3 s, a chatty model ran five.
-TOOL_TIME_BUDGET_S = 15.0
+# deeper. One curl is usually under 2 s; the budget sits outside a 12 s cap
+# plus the follow-up model call so a slow first fetch can still be answered.
+TOOL_TIME_BUDGET_S = 22.0
 # Longest single tool the sidecar runs: read_page may try both rungs
 # (15 s fetch + bridge) so the client timeout must sit outside that.
 TOOL_TIMEOUT_S = 45.0
@@ -186,6 +191,14 @@ class ServerToolExecutor:
     # ── dispatch ─────────────────────────────────────────────────────────────
 
     def _dispatch(self, name: str, arguments: dict[str, Any]) -> ToolOutput:
+        if name == "bash":
+            timeout = arguments.get("timeout")
+            seconds: float | None
+            try:
+                seconds = float(timeout) if timeout not in (None, "") else None
+            except (TypeError, ValueError):
+                seconds = None
+            return run_research_command(str(arguments.get("command") or ""), timeout=seconds)
         if name == "web_search":
             return self._web_search(str(arguments.get("query") or ""))
         if name == "read_page":

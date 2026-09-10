@@ -108,31 +108,294 @@ struct RuntimeTests {
         let names = VoiceToolExecutor.shared.activeToolDefinitions().compactMap { $0["name"] as? String }
         assert(Set(names).count == names.count, "Tool names must be unique")
         assert(names.contains("remember") && names.contains("forget") && names.contains("search_chat_history"))
+        assert(names.contains("bash"), "This branch publishes bash instead of web_search/read_page")
+        assert(!names.contains("web_search") && !names.contains("read_page"))
+        let bash = VoiceToolExecutor.shared.activeToolDefinitions().first { $0["name"] as? String == "bash" }
+        let bashDesc = bash?["description"] as? String ?? ""
+        assert(bashDesc.contains("when:1d"), "bash tool must tell the model to date-filter news")
+        assert(bashDesc.contains("Wikipedia"), "office-holder facts should fetch Wikipedia, not a news feed")
+        assert(bashDesc.contains("voice model") || bashDesc.contains("Research the voice model"),
+               "bash is the voice model's research tool, not code_agent")
+        let codeAgent = VoiceToolExecutor.shared.activeToolDefinitions().first { $0["name"] as? String == "code_agent" }
+        let codeDesc = codeAgent?["description"] as? String ?? ""
+        assert(codeDesc.contains("Do not use this to search the web") || codeDesc.isEmpty,
+               "code_agent must not be the web-research path")
         assert(!names.contains("web_fetch") && !names.contains("read_article"), "Legacy page tools are gone")
         for name in names where VoiceToolExecutor.serverSideTools.contains(name) {
-            assert(["web_search", "read_page", "remember", "forget", "search_chat_history"].contains(name))
+            assert(["bash", "remember", "forget", "search_chat_history"].contains(name))
         }
         let unavailable = await VoiceToolExecutor.shared.run(name: "web_search", argsJson: "{\"query\":\"x\"}")
         assert(unavailable.output.contains("runs on the server"), "Research tools never execute in the app")
 
+        testNoiseGate()
+        testMicCapture()
+        testSpeechStartPolicy()
         testTranscript()
         print("Native runtime checks passed: playback, cancellation, tool definitions, transcript revisions")
+    }
+
+    static func pcm16(_ samples: [Int16]) -> [UInt8] {
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(samples.count * 2)
+        for sample in samples {
+            let raw = UInt16(bitPattern: sample)
+            bytes.append(UInt8(raw & 0xff))
+            bytes.append(UInt8((raw >> 8) & 0xff))
+        }
+        return bytes
+    }
+
+    static func sinePCM(hz: Double, amplitude: Int16, count: Int, sampleRate: Double = 16_000) -> [UInt8] {
+        let step = 2 * Double.pi * hz / sampleRate
+        let samples: [Int16] = (0..<count).map { i in
+            Int16((sin(Double(i) * step) * Double(amplitude)).rounded())
+        }
+        return pcm16(samples)
+    }
+
+    static func testNoiseGate() {
+        let gate = PCM16NoiseGate(thresholdDBFS: -48, isEnabled: true)
+        gate.reset()
+        let quiet = sinePCM(hz: 80, amplitude: 20, count: 512)
+        let (quietBytes, quietOpen) = gate.process(quiet)
+        assert(!quietOpen, "Room-level noise must not open the mic gate")
+        assert(quietBytes.allSatisfy { $0 == 0 }, "Closed gate must zero the samples")
+
+        // Loud but muffled (through-floor). Energy-only gates open on this.
+        let distant = sinePCM(hz: 80, amplitude: 8_000, count: 512)
+        for step in 1...5 {
+            let (_, open) = gate.process(distant)
+            assert(!open, "Muffled far-field speech must stay closed after \(step) chunks")
+        }
+
+        // DC has energy and zero brightness — not close speech.
+        let dc = pcm16([Int16](repeating: 4_000, count: 512))
+        let (_, dcOpen) = gate.process(dc)
+        assert(!dcOpen, "A loud DC offset is not close-talk")
+
+        // Nearby speech is loud and bright enough to open immediately.
+        let speech = sinePCM(hz: 500, amplitude: 4_000, count: 512)
+        let (openBytes, speechOpen) = gate.process(speech)
+        assert(speechOpen, "Close speech must open the mic gate")
+        assert(openBytes == speech, "An open gate must not copy-transform the samples")
+
+        let (heldBytes, heldOpen) = gate.process(quiet)
+        assert(heldOpen, "Hold must keep the gate open after speech")
+        assert(heldBytes == quiet)
+
+        var stillOpen = true
+        for _ in 0..<12 {
+            stillOpen = gate.process(quiet).isOpen
+        }
+        assert(!stillOpen, "Hold must expire after the talker stops")
+
+        let disabled = PCM16NoiseGate(thresholdDBFS: -48, isEnabled: false)
+        let (passthrough, open) = disabled.process(quiet)
+        assert(open && passthrough == quiet, "A disabled gate is a no-op")
+    }
+
+    static func testMicCapture() {
+        let capture = MicCapture()
+        let gen = UUID()
+        capture.arm(generation: gen)
+        capture.setAccepting(true)
+        let speech = sinePCM(hz: 500, amplitude: 4_000, count: 640)
+        var sent: [UInt8]?
+        for _ in 0..<4 {
+            if let chunk = capture.ingest(speech, generation: gen) { sent = chunk }
+        }
+        assert(sent != nil, "Accepting capture must emit a batched chunk")
+        capture.setMuted(true)
+        assert(capture.ingest(speech, generation: gen) == nil, "Mute must drop the next ingest without waiting")
+        capture.disarm()
+        assert(capture.ingest(speech, generation: gen) == nil, "Disarmed capture must drop audio")
+    }
+
+    static func testSpeechStartPolicy() {
+        assert(
+            !VoiceSpeechStartPolicy.shouldShowListening(responseActive: true, playing: false),
+            "TTS chunk gaps during a response must not look like Listening"
+        )
+        assert(
+            !VoiceSpeechStartPolicy.shouldShowListening(responseActive: false, playing: true)
+        )
+        assert(
+            VoiceSpeechStartPolicy.shouldShowListening(responseActive: false, playing: false)
+        )
+        assert(!VoiceSpeechStartPolicy.shouldInterruptLocalPlayback(responseActive: true))
+        assert(VoiceSpeechStartPolicy.shouldInterruptLocalPlayback(responseActive: false))
     }
 
     @MainActor
     static func testTranscript() {
         let backend = MockVoiceBackend()
         let session = SessionController(backend: backend, restoreSavedSession: false)
+        backend.onUserSpeechStarted?()
         backend.onUserFinal?("I want to explain", "turn-one")
+        // A final is held until the turn settles. Pausing mid-sentence finalizes
+        // each revision, and painting every one rewrote the bubble while the
+        // user was still talking.
+        assert(session.turns.isEmpty, "A finalized turn waits for the turn to settle")
+        assert(session.userSpeaking, "The indicator stays up while the turn is held")
+        backend.onAgentDelta?("Go ahead, I am listening carefully to the microphone problem.")
+        assert(!session.userSpeaking, "Painting the words lowers the indicator")
         let original = session.turns[0].id
         backend.onUserPartial?("I want to explain the problem", "turn-one")
         assert(session.interimHasExistingRow)
         assert(session.displayedText(for: session.turns[0]) == "I want to explain the problem")
-        backend.onAgentDelta?("Go ahead")
         backend.onAgentDone?()
         backend.onUserFinal?("I want to explain the microphone problem", "turn-one")
+        backend.onTurnDropped?()
         assert(session.turns.count == 2 && session.turns[0].id == original)
         backend.onUserFinal?("Now read this other page", "turn-two")
+        backend.onTurnDropped?()
         assert(session.turns.count == 3, "A distinct utterance must not overwrite earlier speech")
+
+        let overlayBackend = MockVoiceBackend()
+        let overlay = SessionController(backend: overlayBackend, restoreSavedSession: false)
+        overlayBackend.onUserFinal?("yeah i still need to finish", "turn-three")
+        overlayBackend.onTurnDropped?()
+        // A partial carrying the bubble's own item id is the complete hypothesis
+        // for that turn: the finalized fragments plus the one being spoken. It
+        // replaces the bubble instead of being merged into it.
+        overlayBackend.onUserPartial?("yeah i still need to finish a lot of work to do", "turn-three")
+        assert(
+            overlay.displayedText(for: overlay.turns[0])
+                == "yeah i still need to finish a lot of work to do",
+            "A same-item partial is the whole turn and replaces the bubble"
+        )
+
+        // Pausing repeatedly inside one turn must not append the turn to itself.
+        // Every revision's final is decoded from all of that turn's audio, and
+        // Parakeet flips words between passes ("thing" -> "things over there").
+        // That defeated the merge heuristic, which then appended one more copy
+        // of the whole turn on each pause until the bubble was unreadable.
+        let repeatBackend = MockVoiceBackend()
+        let repeats = SessionController(backend: repeatBackend, restoreSavedSession: false)
+        let head = "i'm sorry i have to interrupt you i need to test this feature"
+        repeatBackend.onUserSpeechStarted?()
+        repeatBackend.onUserFinal?(head, "turn-pause")
+        repeatBackend.onUserFinal?("\(head) and see whether it's good it's still the other thing", "turn-pause")
+        repeatBackend.onUserFinal?("\(head) and see whether it's good it's still are the other things over there", "turn-pause")
+        assert(repeats.turns.isEmpty, "Revisions must not paint while the turn is still open")
+        assert(repeats.userSpeaking, "The indicator covers the pauses")
+        repeatBackend.onTurnDropped?()
+        let shown = repeats.displayedText(for: repeats.turns[0])
+        assert(repeats.turns.count == 1, "Pausing inside one turn must not open more bubbles")
+        assert(
+            shown == "\(head) and see whether it's good it's still are the other things over there",
+            "Each revision must replace the bubble; got: \(shown)"
+        )
+        assert(
+            shown.components(separatedBy: "i'm sorry").count - 1 == 1,
+            "The turn must appear exactly once, not once per pause"
+        )
+
+        overlayBackend.onUserPartial?("", "turn-three")
+        assert(overlay.interim == nil, "An empty live caption must clear the overlay")
+        assert(
+            overlay.turns[0].text == "yeah i still need to finish",
+            "Clearing the live overlay must not delete the committed bubble"
+        )
+
+        let pauseBackend = MockVoiceBackend()
+        let pauseSession = SessionController(backend: pauseBackend, restoreSavedSession: false)
+        pauseBackend.onUserFinal?("yeah i still need to finish", "turn-a")
+        pauseBackend.onUserFinal?("a lot of work to do", "turn-b")
+        pauseBackend.onTurnDropped?()
+        assert(pauseSession.turns.count == 1, "A paused continuation must stay one bubble")
+        assert(pauseSession.turns[0].text.contains("yeah i still need to finish"))
+        assert(pauseSession.turns[0].text.contains("a lot of work to do"))
+
+        let fillerBackend = MockVoiceBackend()
+        let fillerSession = SessionController(backend: fillerBackend, restoreSavedSession: false)
+        fillerBackend.onUserFinal?("i still need to finish", "turn-fill-a")
+        fillerBackend.onAgentDelta?("...")
+        fillerBackend.onAgentDone?()
+        fillerBackend.onUserFinal?("a lot of work today", "turn-fill-b")
+        fillerBackend.onTurnDropped?()
+        assert(fillerSession.turns.count == 2, "Keep the tiny agent filler row")
+        assert(fillerSession.turns[0].speaker == .you)
+        assert(fillerSession.turns[0].text.contains("i still need to finish"))
+        assert(fillerSession.turns[0].text.contains("a lot of work today"))
+        assert(fillerSession.turns[1].text == "...")
+
+        let restateBackend = MockVoiceBackend()
+        let restateSession = SessionController(backend: restateBackend, restoreSavedSession: false)
+        restateBackend.onUserFinal?("i still need to finish a lot of work to do", "turn-restate")
+        restateBackend.onUserFinal?("i still need to finish a lot of work today", "turn-restate")
+        restateBackend.onTurnDropped?()
+        assert(restateSession.turns.count == 1)
+        assert(restateSession.turns[0].text == "i still need to finish a lot of work today")
+
+        let liveBackend = MockVoiceBackend()
+        let liveSession = SessionController(backend: liveBackend, restoreSavedSession: false)
+        // A partial is a complete hypothesis for its turn, so a later one
+        // replaces the earlier one outright. The server owns the accumulated
+        // text; the client guessing how two decodes align is what repeated the
+        // turn on every pause.
+        liveBackend.onUserPartial?("yeah i still need to finish the whole thought", "live-only")
+        liveBackend.onUserPartial?("yeah i still need to finish the whole thought a lot of work", "live-only")
+        assert(
+            liveSession.interim == "yeah i still need to finish the whole thought a lot of work",
+            "A later partial replaces the caption"
+        )
+        // Parakeet revises words mid-caption between passes ("whole" -> "hole").
+        liveBackend.onUserPartial?("yeah i still need to finish the hole thought a lot of work to do tomorrow", "live-only")
+        assert(
+            liveSession.interim == "yeah i still need to finish the hole thought a lot of work to do tomorrow",
+            "A re-decode that revises a word must replace, never append"
+        )
+        liveBackend.onUserPartial?("", "live-only")
+        assert(
+            liveSession.interim?.contains("i still need to finish") == true,
+            "An empty final must not delete a live-only sentence that was never committed"
+        )
+
+        let splitBackend = MockVoiceBackend()
+        let splitSession = SessionController(backend: splitBackend, restoreSavedSession: false)
+        splitBackend.onUserFinal?("yeah i still need to finish", "turn-split-a")
+        splitBackend.onTurnDropped?()
+        splitBackend.onUserPartial?("a lot of work to do", "turn-split-b")
+        assert(splitSession.turns.count == 1, "A new live item id must not open a second bubble")
+        assert(splitSession.interimHasExistingRow)
+        assert(
+            splitSession.displayedText(for: splitSession.turns[0]).contains("yeah i still need to finish")
+        )
+        assert(
+            splitSession.displayedText(for: splitSession.turns[0]).contains("a lot of work to do")
+        )
+
+        // The talking indicator replaces the live caption, so it must never
+        // strand: every way a turn can end has to lower it.
+        let barsBackend = MockVoiceBackend()
+        let bars = SessionController(backend: barsBackend, restoreSavedSession: false)
+        assert(!bars.userSpeaking, "Idle shows no indicator")
+        barsBackend.onUserSpeechStarted?()
+        assert(bars.userSpeaking, "Speech start raises the indicator")
+        barsBackend.onTurnDropped?()
+        assert(!bars.userSpeaking, "A turn the server drops lowers the indicator")
+        barsBackend.onUserSpeechStarted?()
+        barsBackend.onUserFinal?("what is left on my list", "turn-bars")
+        assert(bars.userSpeaking, "A held final keeps the indicator up through a pause")
+        assert(bars.turns.isEmpty, "and paints nothing yet")
+        barsBackend.onAgentDelta?("Two things.")
+        assert(!bars.userSpeaking, "Painting the words lowers the indicator")
+        assert(bars.turns.first?.text == "what is left on my list")
+        barsBackend.onUserSpeechStarted?()
+        barsBackend.onUserFinal?("one more thing", "turn-bars-2")
+        assert(bars.userSpeaking)
+        bars.requestEnd()
+        assert(!bars.userSpeaking, "Stopping lowers the indicator")
+        assert(
+            bars.turns.contains { $0.text.contains("one more thing") },
+            "Stopping must paint held words rather than losing them"
+        )
+
+        let junkBackend = MockVoiceBackend()
+        let junkSession = SessionController(backend: junkBackend, restoreSavedSession: false)
+        junkBackend.onUserPartial?("um", "junk-live")
+        junkBackend.onUserPartial?("", "junk-live")
+        assert(junkSession.interim == nil, "A one-word junk live caption may clear")
     }
 }

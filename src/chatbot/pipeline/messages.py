@@ -47,6 +47,8 @@ class VADAudio(PipelineMessage):
     turn_revision: int | None = None
     processing_delay_s: float = 0.0
     created_at_s: float = Field(default_factory=perf_counter)
+    # Silero active-speech ms for this utterance, not padded segment length.
+    active_speech_ms: float | None = None
 
 
 # ── STT → TranscriptionNotifier → LLM ────────────────────────────────
@@ -73,6 +75,7 @@ class Transcription(PipelineMessage):
     # Set when STT could not produce a real transcript (lock timeout, crash).
     # Distinct from an empty string, which means "heard nothing".
     error: str | None = None
+    active_speech_ms: float | None = None
 
 
 # ── LLM → LMOutputProcessor ──────────────────────────────────────────

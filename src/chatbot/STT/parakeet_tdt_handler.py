@@ -33,6 +33,68 @@ except ImportError:
 logger = logging.getLogger(__name__)
 console = Console()
 
+# One-shot decode of a 10-minute monologue is what pushed RAM into the
+# multi-gigabyte range. 30s windows keep activations bounded.
+_MAX_FINAL_DECODE_S = 30.0
+# A hard cut lands mid-word and neither decode recovers it, so every boundary
+# ate a word. Overlapping the windows instead would need the two decodes to be
+# stitched, and independent Parakeet passes disagree on words often enough that
+# stitching duplicates whole phrases. Nudge the boundary into the quietest
+# nearby frame instead: windows stay gap-free and non-overlapping, so the
+# decodes simply concatenate.
+_BOUNDARY_SEARCH_S = 1.5
+_BOUNDARY_FRAME_MS = 30
+
+
+def _quiet_boundary(
+    audio: np.ndarray,
+    start: int,
+    target_end: int,
+    sample_rate: int,
+) -> int:
+    """Move a window boundary back to the quietest frame near ``target_end``."""
+    frame = max(1, int(_BOUNDARY_FRAME_MS * sample_rate / 1000))
+    earliest = max(start + frame, target_end - int(_BOUNDARY_SEARCH_S * sample_rate))
+    if earliest + frame > target_end:
+        return target_end
+    best_end, best_energy = target_end, None
+    for pos in range(earliest, target_end - frame + 1, frame):
+        window = audio[pos : pos + frame]
+        energy = float(np.dot(window, window))
+        if best_energy is None or energy < best_energy:
+            best_energy, best_end = energy, pos + frame // 2
+    return best_end
+
+
+def iter_decode_windows(
+    audio: np.ndarray,
+    sample_rate: int,
+    max_s: float = _MAX_FINAL_DECODE_S,
+) -> list[np.ndarray]:
+    """Split long audio so each Parakeet decode stays bounded.
+
+    Boundaries land in the quietest frame near each cut, so words are not split
+    across two decodes. Windows are contiguous and non-overlapping: joining
+    their transcripts with a space reconstructs the utterance.
+    """
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive")
+    max_samples = max(1, int(max_s * sample_rate))
+    if len(audio) <= max_samples:
+        return [audio]
+    windows = []
+    start = 0
+    while start < len(audio):
+        target_end = start + max_samples
+        if target_end >= len(audio):
+            windows.append(audio[start:])
+            break
+        end = _quiet_boundary(audio, start, target_end, sample_rate)
+        windows.append(audio[start:end])
+        start = end
+    return windows
+
+
 # Parakeet TDT 1.1B is trained for English transcription.
 SUPPORTED_LANGUAGES = [
     "en",
@@ -124,6 +186,10 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             logger.info(f"Live transcription enabled for Parakeet TDT ({self.backend})")
         self._live_transcription_active = False
         self._live_turn_key: tuple[str | None, int | None] | None = None
+        self._live_prefix_turn_id: str | None = None
+        self._live_prefix_text = ""
+        self._live_final_text = ""
+        self._live_final_turn_id: str | None = None
 
         self.warmup()
 
@@ -293,7 +359,13 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         # Reset per-utterance live transcription state only after final STT
         # completes. The streaming handler carries fixed sentence timing within
         # an utterance, and stale timing must not leak into the next turn.
+        # Keep the locked caption: a reopen revision only decodes the new
+        # fragment, and the UI should not lose the words already committed.
         if self.enable_live_transcription:
+            if pred_text.strip() and vad_audio.turn_id is not None:
+                self._live_final_text = pred_text.strip()
+                self._live_final_turn_id = vad_audio.turn_id
+            self._live_prefix_text = ""
             self.processing_final = False
             self._reset_live_transcription_state(clear_turn=True)
 
@@ -304,6 +376,7 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             turn_revision=vad_audio.turn_revision,
             speech_stopped_at_s=vad_audio.created_at_s,
             error=stt_error,
+            active_speech_ms=vad_audio.active_speech_ms,
         )
 
     @property
@@ -365,7 +438,16 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
                 rich_text.append("Live: ", style="dim")
             rich_text.append(result.active_text, style="cyan dim")
 
-        progressive_text = self._build_progressive_text(result)
+        # Every progressive item is a fresh decode of the *whole* current
+        # fragment, and Parakeet flips words between passes ("dropping" ->
+        # "jobing"). Appending it re-printed the fragment on every divergence,
+        # so the caption repeated itself five times over one sentence. The new
+        # decode replaces the fragment; only text from earlier, already
+        # finalized fragments of this turn is kept in front of it, because that
+        # audio is disjoint and is not in this window.
+        fragment_text = self._build_progressive_text(result)
+        prefix = getattr(self, "_live_prefix_text", "") or ""
+        progressive_text = " ".join(part for part in (prefix, fragment_text) if part)
         if progressive_text:
             self._print_live_transcription(rich_text, progressive_text)
 
@@ -385,10 +467,7 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             self._live_transcription_active = True
             return
 
-        if rich_text:
-            console.print(rich_text)
-        else:
-            console.print(f"[dim]Live: [/dim]{progressive_text}")
+        logger.debug("Live: %s", progressive_text[:160])
 
     def _clear_live_transcription_line(self) -> None:
         if not getattr(self, "_live_transcription_active", False):
@@ -417,6 +496,16 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         if not self.enable_live_transcription:
             return
         turn_key = (turn_id, turn_revision)
+        if turn_id is not None:
+            locked_turn = getattr(self, "_live_final_turn_id", None)
+            if turn_id == locked_turn:
+                if not (getattr(self, "_live_prefix_text", "") or ""):
+                    self._live_prefix_text = getattr(self, "_live_final_text", "") or ""
+            elif turn_id != getattr(self, "_live_prefix_turn_id", None):
+                self._live_prefix_text = ""
+                self._live_final_text = ""
+                self._live_final_turn_id = None
+            self._live_prefix_turn_id = turn_id
         if getattr(self, "_live_turn_key", None) == turn_key:
             return
         self._reset_live_transcription_state(clear_turn=False)
@@ -429,6 +518,12 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
             streaming_handler.reset()
         if clear_turn:
             self._live_turn_key = None
+
+    def _clear_live_caption_memory(self) -> None:
+        self._live_prefix_text = ""
+        self._live_prefix_turn_id = None
+        self._live_final_text = ""
+        self._live_final_turn_id = None
 
     def _build_progressive_text(self, result: ProgressiveStreamPartial) -> str:
         parts = []
@@ -451,35 +546,33 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
 
     def _process_mlx(self, audio_input: np.ndarray) -> tuple[str, str]:
         """Process audio using MLX backend."""
+        parts: list[str] = []
+        language_code = self.last_language
+        for window in iter_decode_windows(audio_input, self.sample_rate):
+            window_text, language_code = self._decode_mlx_window(window)
+            if window_text:
+                parts.append(window_text)
+        pred_text = " ".join(parts)
+
+        if self.start_language and self.start_language != "auto":
+            language_code = self.start_language
+        elif pred_text:
+            detected_lang = self._detect_language_from_text(pred_text)
+            if detected_lang:
+                language_code = detected_lang
+
+        return pred_text, language_code
+
+    def _decode_mlx_window(self, audio_input: np.ndarray) -> tuple[str, str]:
         import mlx.core as mx
 
-        # Convert numpy array to mx.array
         audio_mx = mx.array(audio_input, dtype=mx.float32)
-
-        # Call decode_chunk directly with the audio array
         result = self.model.decode_chunk(audio_mx, verbose=False)
-
-        # Extract text from result
         if hasattr(result, "text"):
             pred_text = result.text.strip()
         else:
             pred_text = str(result).strip()
-
-        # Determine language:
-        # 1. Use fixed language if specified by user
-        # 2. Try to detect from transcribed text using langdetect
-        # 3. Fall back to last known language
-        if self.start_language and self.start_language != "auto":
-            language_code = self.start_language
-        else:
-            # Detect language from transcribed text
-            detected_lang = self._detect_language_from_text(pred_text)
-            if detected_lang:
-                language_code = detected_lang
-            else:
-                language_code = self.last_language
-
-        return pred_text, language_code
+        return pred_text, self.last_language
 
     def cleanup(self) -> None:
         """Clean up model resources."""
@@ -493,4 +586,5 @@ class ParakeetTDTSTTHandler(BaseSTTHandler):
         if self.enable_live_transcription:
             self.processing_final = False
             self._reset_live_transcription_state(clear_turn=True)
+            self._clear_live_caption_memory()
         logger.debug("Parakeet TDT session state reset")

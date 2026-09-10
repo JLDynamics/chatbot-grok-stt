@@ -9,6 +9,8 @@ final class LiveVoiceBackend: VoiceBackend {
     var onState: ((SessionState) -> Void)?
     var onInputLevel: ((Float) -> Void)?
     var onOutputLevel: ((Float) -> Void)?
+    var onUserSpeechStarted: (() -> Void)?
+    var onTurnDropped: (() -> Void)?
     var onUserPartial: ((String, String?) -> Void)?
     var onUserFinal: ((String, String?) -> Void)?
     var onAgentDelta: ((String) -> Void)?
@@ -31,7 +33,9 @@ final class LiveVoiceBackend: VoiceBackend {
 
     private let audio = AudioEngine()
     private let pcm = PCMBridge()
-    private let noiseGate = PCM16NoiseGate()
+    private let mic = MicCapture()
+    private let socket = VoiceSocketSend()
+    private let micQueue = DispatchQueue(label: "com.jack.Voice.mic", qos: .userInteractive)
     private var webSocket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var handshakeTimeout: Task<Void, Never>?
@@ -91,6 +95,7 @@ final class LiveVoiceBackend: VoiceBackend {
         closed = false
         connection = .starting
         let generation = connectionGeneration
+        mic.arm(generation: generation)
         onState?(.connecting)
 
         onAudioStatus?("Starting local services…")
@@ -132,20 +137,26 @@ final class LiveVoiceBackend: VoiceBackend {
             }
         }
         let bridge = pcm
+        let capture = mic
+        let sink = socket
+        let queue = micQueue
         audio.onInputLevel = { [weak self] level in
             Task { @MainActor in
                 guard let self, self.connectionGeneration == generation, !self.closed else { return }
-                self.onInputLevel?(level)
+                self.onInputLevel?(capture.isGateOpen ? level : 0)
             }
         }
-        audio.onBuffer = { [weak self] buffer in
+        audio.onBuffer = { buffer in
             guard let bytes = bridge.micPCM16(from: buffer) else {
                 NSLog("[Tap] micPCM16 returned nil for frames=\(buffer.frameLength)")
                 return
             }
-            Task { @MainActor in
-                guard let self, self.connectionGeneration == generation else { return }
-                self.appendMicPCM(bytes)
+            queue.async {
+                guard let chunk = capture.ingest(bytes, generation: generation) else { return }
+                sink.send(
+                    ["type": "input_audio_buffer.append", "audio": Data(chunk).base64EncodedString()],
+                    generation: generation
+                )
             }
         }
     }
@@ -153,6 +164,7 @@ final class LiveVoiceBackend: VoiceBackend {
     private func openWebSocket(generation: UUID) {
         let task = URLSession.shared.webSocketTask(with: wsURL)
         webSocket = task
+        socket.attach(task, generation: generation)
         connection = .awaitingSession
         task.resume()
         let decoder = pcm
@@ -173,6 +185,7 @@ final class LiveVoiceBackend: VoiceBackend {
 
     func setMuted(_ muted: Bool) {
         self.muted = muted
+        mic.setMuted(muted)
         audio.setMuted(muted)
         if muted { onInputLevel?(0) }
     }
@@ -202,20 +215,19 @@ final class LiveVoiceBackend: VoiceBackend {
         receiveTask = nil
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
+        socket.attach(nil, generation: connectionGeneration)
         audio.onBuffer = nil
         audio.onInputLevel = nil
         audio.onPlaybackDrained = nil
         onAudioStatus?(nil)
         audio.stop()
         pcm.reset()
-        noiseGate.reset()
+        mic.disarm()
         agentText = ""
         activeResponseId = ""
         responseRequestPending = false
         cancelledIds.removeAll()
         muted = false
-        micFramesSent = 0
-        micPending.removeAll(keepingCapacity: true)
         onInputLevel?(0)
         onOutputLevel?(0)
         if emitIdle { onState?(.idle) }
@@ -237,41 +249,17 @@ final class LiveVoiceBackend: VoiceBackend {
         receiveTask = nil
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
+        socket.attach(nil, generation: connectionGeneration)
         audio.onBuffer = nil
         audio.onInputLevel = nil
         audio.onPlaybackDrained = nil
         onAudioStatus?(nil)
         audio.stop()
         pcm.reset()
-        noiseGate.reset()
+        mic.disarm()
         onInputLevel?(0)
         onOutputLevel?(0)
         onState?(.failed(message))
-    }
-
-    private var micFramesSent = 0
-    /// Batches tap buffers (~21ms) up to ~40ms per WS message, matching the
-    /// browser client's chunk size and halving MainActor/WS overhead.
-    private var micPending = [UInt8]()
-    private let micSendThreshold = 1280 // 40ms of 16kHz PCM16 mono
-
-    private func appendMicPCM(_ rawBytes: [UInt8]) {
-        guard connection == .ready, !muted, !closed else {
-            if micFramesSent == 0 {
-                NSLog("[MicPCM] dropped initial frame: conn=\(connection) muted=\(muted) closed=\(closed)")
-            }
-            return
-        }
-        let (bytes, _) = noiseGate.process(rawBytes)
-        micPending.append(contentsOf: bytes)
-        guard micPending.count >= micSendThreshold else { return }
-        let chunk = micPending
-        micPending.removeAll(keepingCapacity: true)
-        micFramesSent += 1
-        if micFramesSent % 25 == 1 {
-            NSLog("[LiveVoice] mic streaming frame #%d (bytes=%d)", micFramesSent, chunk.count)
-        }
-        send(["type": "input_audio_buffer.append", "audio": Data(chunk).base64EncodedString()])
     }
 
     /// Receive off the MainActor. URLSession delivers on the session queue;
@@ -386,6 +374,7 @@ final class LiveVoiceBackend: VoiceBackend {
             sendSessionUpdate()
             replayHistory()
             connection = .ready
+            mic.setAccepting(true)
             handshakeTimeout?.cancel()
             handshakeTimeout = nil
             if !closed { onState?(.listening) }
@@ -399,22 +388,40 @@ final class LiveVoiceBackend: VoiceBackend {
             }
 
         case "input_audio_buffer.speech_started":
+            onUserSpeechStarted?()
             // The server sends cancellation first for confirmed interruptions.
             // A short continuation may emit speech_started without cancelling.
-            if activeResponseId.isEmpty { cancelToolWork() }
-            if activeResponseId.isEmpty, audio.isPlaying {
-                rememberCancelled(activeResponseId)
-                audio.clearPlayback()
-                onOutputLevel?(0)
-                finishAgentTurn()
+            // TTS chunk gaps must not flip the panel to Listening — that was
+            // resizing the transcript and bouncing the conversation scroller.
+            let responseActive = !activeResponseId.isEmpty
+            if VoiceSpeechStartPolicy.shouldInterruptLocalPlayback(responseActive: responseActive) {
+                cancelToolWork()
+                if audio.isPlaying {
+                    rememberCancelled(activeResponseId)
+                    audio.clearPlayback()
+                    onOutputLevel?(0)
+                    finishAgentTurn()
+                }
             }
-            if !closed, !audio.isPlaying { onState?(.listening) }
+            if !closed,
+               VoiceSpeechStartPolicy.shouldShowListening(
+                   responseActive: responseActive,
+                   playing: audio.isPlaying
+               ) {
+                onState?(.listening)
+            }
 
         case "input_audio_buffer.speech_stopped":
             // The turn is over on the server's side: show that the model is
             // working, not that the panel is idly listening. speech_started,
             // turn_ignored, audio or response.done all move it on.
-            if !closed, !audio.isPlaying, activeResponseId.isEmpty { onState?(.thinking) }
+            if !closed,
+               VoiceSpeechStartPolicy.shouldShowListening(
+                   responseActive: !activeResponseId.isEmpty,
+                   playing: audio.isPlaying
+               ) {
+                onState?(.thinking)
+            }
 
         case "conversation.item.input_audio_transcription.delta":
             if let delta = json["delta"] as? String, !delta.isEmpty {
@@ -426,11 +433,21 @@ final class LiveVoiceBackend: VoiceBackend {
             }
 
         case "conversation.item.input_audio_transcription.completed":
-            if let transcript = json["transcript"] as? String, !transcript.isEmpty {
-                partialItemId = json["item_id"] as? String
-                partialText = transcript
-                onUserFinal?(transcript, partialItemId)
+            let itemId = json["item_id"] as? String
+            let transcript = (json["transcript"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if transcript.isEmpty {
+                // Junk finals must not leave the live caption hanging, and must
+                // not call onUserFinal — that would commit an empty bubble.
+                if itemId == nil || itemId == partialItemId {
+                    partialText = ""
+                    onUserPartial?("", itemId ?? partialItemId)
+                }
+                break
             }
+            partialItemId = itemId
+            partialText = transcript
+            onUserFinal?(transcript, partialItemId)
 
         case "response.audio_transcript.delta", "response.output_audio_transcript.delta":
             if cancelledIds.contains(responseId(in: json)) { return }
@@ -503,9 +520,11 @@ final class LiveVoiceBackend: VoiceBackend {
 
         case "error":
             // Transport close is fatal; server events like turn_ignored are not.
-            if let error = json["error"] as? [String: Any], error["code"] as? String == "turn_ignored",
-               !closed, !audio.isPlaying, activeResponseId.isEmpty {
-                onState?(.listening)
+            if let error = json["error"] as? [String: Any], error["code"] as? String == "turn_ignored" {
+                onTurnDropped?()
+                if !closed, !audio.isPlaying, activeResponseId.isEmpty {
+                    onState?(.listening)
+                }
             }
 
         default:
@@ -748,17 +767,7 @@ final class LiveVoiceBackend: VoiceBackend {
     }
 
     private func send(_ object: [String: Any]) {
-        guard !closed,
-              let ws = webSocket,
-              JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object),
-              let text = String(data: data, encoding: .utf8)
-        else { return }
-        ws.send(.string(text)) { error in
-            if let error {
-                NSLog("[LiveVoice] send failed: \(error.localizedDescription)")
-            }
-        }
+        socket.send(object)
     }
 }
 

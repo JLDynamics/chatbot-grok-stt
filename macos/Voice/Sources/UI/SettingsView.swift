@@ -41,6 +41,7 @@ struct SettingsView: View {
                 .buttonStyle(PressableButtonStyle())
                 .contentShape(Rectangle())
                 .accessibilityLabel("Close Settings")
+                .accessibilityIdentifier("voice.settings.close")
             }
             .padding(.bottom, 2)
 
@@ -66,7 +67,7 @@ struct SettingsView: View {
                     toolRow(
                         icon: "camera.viewfinder",
                         title: "Screenshot",
-                        desc: "Capture what is on screen so the assistant can see a layout, image, or chart. Articles still use Search, Fetch, or the Chrome page bridge.",
+                        desc: "Capture what is on screen so the assistant can see a layout, image, or chart. Articles use bash + curl.",
                         isOn: $screenshot
                     ) { val in
                         VoiceToolExecutor.shared.screenshotEnabled = val
@@ -93,16 +94,14 @@ struct SettingsView: View {
 
                     toolRow(
                         icon: "magnifyingglass",
-                        title: "Web Search & Fetch",
-                        desc: "Search Google/TinyFish/Tavily for current facts, news, and fetch public web articles.",
+                        title: "Web research (bash + curl)",
+                        desc: "The voice model checks current facts itself with curl, inside the same reply. Latest news should use a dated RSS feed. The coding agent is not used for web research.",
                         isOn: $webSearch
                     ) { val in
                         VoiceToolExecutor.shared.webSearchEnabled = val
                         session.applyToolSettings()
                     }
-                    if session.sidecarConfig?.search == false {
-                        availabilityNote("No search API key configured. Add one with ./set-keys.sh.")
-                    }
+                    availabilityNote("This branch uses curl instead of TinyFish/Tavily. Search API keys are unused.")
 
                     VStack(alignment: .leading, spacing: 6) {
                         toolRow(
@@ -278,6 +277,15 @@ struct SettingsView: View {
         screenCaptureAllowed = ScreenCapture.isAllowed
     }
 
+    private func toolIdentifier(_ title: String) -> String {
+        switch title {
+        case "Screenshot": return "voice.tools.screenshot"
+        case "Web research (bash + curl)": return "voice.tools.search"
+        case "Chrome Page Bridge": return "voice.tools.chrome"
+        default: return "voice.tools.codeAgent"
+        }
+    }
+
     private func toolRow(
         icon: String,
         title: String,
@@ -308,6 +316,8 @@ struct SettingsView: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .controlSize(.small)
+                .accessibilityLabel(title)
+                .accessibilityIdentifier(toolIdentifier(title))
                 .onChange(of: isOn.wrappedValue) { _, newValue in
                     onChange(newValue)
                 }

@@ -11,6 +11,125 @@ enum VoiceToolFollowUp {
     }
 }
 
+/// When `speech_started` may steal the panel or kill local playback.
+///
+/// Gaps between TTS chunks look like "not playing". An active response
+/// must keep the panel on the agent. Do not second-guess the server with
+/// a local close-talk flag — that swallowed real turns when the gate
+/// opened a moment late.
+enum VoiceSpeechStartPolicy {
+    static func shouldShowListening(responseActive: Bool, playing: Bool) -> Bool {
+        !responseActive && !playing
+    }
+
+    static func shouldInterruptLocalPlayback(responseActive: Bool) -> Bool {
+        !responseActive
+    }
+}
+
+/// Live mic path that never hops to the MainActor: gate, batch, then a chunk
+/// ready for the WebSocket. Mute is a flag the next ingest sees immediately.
+final class MicCapture: @unchecked Sendable {
+    static let sendThreshold = 1280
+
+    private let lock = NSLock()
+    private let gate = PCM16NoiseGate(thresholdDBFS: -48, isEnabled: true)
+    private var pending: [UInt8] = []
+    private var muted = false
+    private var accepting = false
+    private var generation = UUID()
+    private var gateOpen = false
+    private var framesSent = 0
+
+    func arm(generation: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.generation = generation
+        muted = false
+        accepting = false
+        framesSent = 0
+        pending.removeAll(keepingCapacity: true)
+        gateOpen = false
+        gate.reset()
+    }
+
+    func setAccepting(_ on: Bool) {
+        lock.lock()
+        accepting = on
+        lock.unlock()
+    }
+
+    func setMuted(_ on: Bool) {
+        lock.lock()
+        muted = on
+        lock.unlock()
+    }
+
+    func disarm() {
+        lock.lock()
+        defer { lock.unlock() }
+        accepting = false
+        muted = false
+        pending.removeAll(keepingCapacity: true)
+        gate.reset()
+        gateOpen = false
+        generation = UUID()
+    }
+
+    var isGateOpen: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return gateOpen
+    }
+
+    /// Returns a ~40ms PCM16 chunk to send, or nil if muted/closed/not ready.
+    func ingest(_ raw: [UInt8], generation: UUID) -> [UInt8]? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == self.generation, accepting, !muted else { return nil }
+        let (bytes, isOpen) = gate.process(raw)
+        gateOpen = isOpen
+        pending.append(contentsOf: bytes)
+        guard pending.count >= Self.sendThreshold else { return nil }
+        let chunk = pending
+        pending.removeAll(keepingCapacity: true)
+        framesSent += 1
+        return chunk
+    }
+}
+
+/// WebSocket send from the mic queue or the MainActor without serializing UI.
+final class VoiceSocketSend: @unchecked Sendable {
+    private let lock = NSLock()
+    private var webSocket: URLSessionWebSocketTask?
+    private var generation = UUID()
+
+    func attach(_ ws: URLSessionWebSocketTask?, generation: UUID) {
+        lock.lock()
+        webSocket = ws
+        self.generation = generation
+        lock.unlock()
+    }
+
+    func send(_ object: [String: Any], generation: UUID? = nil) {
+        lock.lock()
+        let ws = webSocket
+        let current = self.generation
+        lock.unlock()
+        if let generation, generation != current { return }
+        guard let ws,
+              JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object),
+              let text = String(data: data, encoding: .utf8)
+        else { return }
+        ws.send(.string(text)) { error in
+            if let error {
+                NSLog("[LiveVoice] send failed: \(error.localizedDescription)")
+            }
+        }
+    }
+}
+
 /// Invalidates asynchronous work when a connection or user turn is superseded.
 @MainActor
 final class VoiceWorkScope {

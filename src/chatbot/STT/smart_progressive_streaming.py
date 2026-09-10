@@ -92,18 +92,21 @@ class SmartProgressiveStreamingHandler:
                 is_final=False,
             )
 
-        # Skip if no new audio since last transcription
-        if current_length == self.last_transcribed_length:
+        # VAD now sends a trailing window, not the whole monologue. A sliding
+        # 16s tail stays the same length while the samples change, so equal
+        # length must not skip decode. Decode the provided window as-is so a
+        # stale fixed_end_time cannot slice past the end of a short tail.
+        self.last_transcribed_length = current_length
+        max_window_samples = int(self.max_window_size * self.sample_rate) + self.sample_rate
+        if current_length <= max_window_samples:
+            result = self._decode_window(audio)
             return PartialTranscription(
-                fixed_text=" ".join(self.fixed_sentences),
-                active_text="",
+                fixed_text="",
+                active_text=result.text.strip(),
                 timestamp=current_length / self.sample_rate,
                 is_final=False,
             )
 
-        self.last_transcribed_length = current_length
-
-        # Extract window for transcription (from last fixed sentence to end)
         window_start_samples = int(self.fixed_end_time * self.sample_rate)
         audio_window = audio[window_start_samples:]
 

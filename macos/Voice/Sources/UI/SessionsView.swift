@@ -39,6 +39,7 @@ struct SessionsView: View {
                 .buttonStyle(PressableButtonStyle())
                 .disabled(working)
                 .accessibilityLabel("New conversation")
+                .accessibilityIdentifier("voice.history.new")
 
                 Button(action: onClose) {
                     Image(systemName: "xmark")
@@ -49,6 +50,7 @@ struct SessionsView: View {
                 .buttonStyle(PressableButtonStyle())
                 .contentShape(Rectangle())
                 .accessibilityLabel("Close conversations")
+                .accessibilityIdentifier("voice.history.close")
             }
 
             Divider().background(theme.border)

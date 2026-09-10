@@ -20,7 +20,8 @@ class ModuleArguments:
     turn_quality_gate: bool = field(
         default=True,
         metadata={
-            "help": "Suppress finalized filler-only and explicit non-speech transcripts before the LLM. "
-            "Short commands are always allowed. Enabled by default; pass --no_turn_quality_gate to disable it."
+            "help": "Suppress finalized filler, number/letter ASR noise, one-word junk, and explicit non-speech "
+            "transcripts before the LLM. Commands and greetings are always allowed. Enabled by default; "
+            "pass --no_turn_quality_gate to disable it."
         },
     )

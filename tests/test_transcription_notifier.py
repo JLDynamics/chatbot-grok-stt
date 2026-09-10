@@ -32,6 +32,20 @@ def test_empty_final_transcription_still_emits_completion_after_partial():
     assert completed.transcript == ""
     assert completed.language_code == "en"
     assert completed.speech_stopped_at_s == 123.0
+    assert completed.active_speech_ms is None
+    assert text_output_queue.empty()
+
+
+def test_final_transcription_forwards_active_speech_ms():
+    text_output_queue = Queue()
+    notifier = _notifier(text_output_queue=text_output_queue)
+
+    assert list(notifier.process(Transcription(text="hello", language_code="en", active_speech_ms=448))) == []
+
+    completed = text_output_queue.get_nowait()
+    assert isinstance(completed, TranscriptionCompletedEvent)
+    assert completed.transcript == "hello"
+    assert completed.active_speech_ms == 448
     assert text_output_queue.empty()
 
 

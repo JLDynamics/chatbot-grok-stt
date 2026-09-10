@@ -25,6 +25,7 @@ def _call(name: str, **arguments) -> ResponseFunctionToolCall:
 
 
 def test_handles_only_the_research_tools():
+    assert ServerToolExecutor.handles("bash")
     assert ServerToolExecutor.handles("web_search")
     assert ServerToolExecutor.handles("read_page")
     assert ServerToolExecutor.handles("remember")

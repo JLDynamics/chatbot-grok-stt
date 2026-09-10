@@ -17,7 +17,10 @@ def test_text_prompt_allows_markdown_and_drops_voice_rules():
     prompt = build_text_system_prompt("Be helpful.", memory="- Likes terse answers.", now=NOW)
 
     assert "Use markdown when it helps" in prompt
-    assert "Use web_search on your own initiative" in prompt
+    assert "You drive research yourself with bash (curl)" in prompt
+    assert "Do not wait for the user to tell you that you were wrong." in prompt
+    assert "when:1d" in prompt
+    assert "last 24 hours" in prompt
     assert "- Likes terse answers." in prompt
     # No spoken-channel rules leak into the text prompt.
     assert "Speech is the default" not in prompt

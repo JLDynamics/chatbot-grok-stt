@@ -1,24 +1,36 @@
 import Foundation
 
-/// Fast, stateful noise gate for 16 kHz PCM16 mono mic audio.
-/// Zeroes out room noise, laptop fans, and breath during pauses so VAD
-/// is never falsely triggered while waiting for the assistant to reply.
+/// Cheap close-talk gate for 16 kHz PCM16 mono.
+///
+/// Apple AGC is off on the capture path so upstairs speech stays quiet.
+/// This gate is only a safety net: pass anything above a modest energy
+/// floor, and reject loud muffled rumble (through-floor boom). A hard
+/// brightness *and* energy rule was zeroing real close speech after
+/// Apple's noise suppress, so Silero saw a long padded segment with
+/// ~450ms of active speech and dropped the turn.
+///
+/// Cost is one integer pass per tap — not a per-sample envelope.
 public final class PCM16NoiseGate: @unchecked Sendable {
     private let lock = NSLock()
     private let sampleRate: Double = 16_000.0
     private let bytesPerSample: Int = 2
 
-    public var isEnabled: Bool = false
-    public var thresholdDBFS: Double = -55.0
+    public var isEnabled: Bool = true
+    /// Nearby speech must reach this level to *open* the gate.
+    public var thresholdDBFS: Double = -48.0
+    /// Veto only very muffled loud energy (sub-bass rumble). Real speech
+    /// after Apple NS still sits well above this.
+    public var minBrightness: Double = 0.035
+    public var confirmChunks: Int = 1
 
-    private static let attackMs = 5.0
     private static let holdMs = 250.0
-    private static let releaseMs = 80.0
+    private static let holdMarginDB = 10.0
 
-    private var gain: Double = 1.0
     private var holdSamplesRemaining: Int = 0
+    private var pendingCloseChunks: Int = 0
+    private var zeroScratch: [UInt8] = []
 
-    public init(thresholdDBFS: Double = -55.0, isEnabled: Bool = false) {
+    public init(thresholdDBFS: Double = -48.0, isEnabled: Bool = true) {
         self.thresholdDBFS = thresholdDBFS
         self.isEnabled = isEnabled
     }
@@ -26,8 +38,8 @@ public final class PCM16NoiseGate: @unchecked Sendable {
     public func reset() {
         lock.lock()
         defer { lock.unlock() }
-        gain = isEnabled ? 0.0 : 1.0
         holdSamplesRemaining = 0
+        pendingCloseChunks = 0
     }
 
     /// Process a chunk of 16-bit little-endian PCM samples.
@@ -41,52 +53,49 @@ public final class PCM16NoiseGate: @unchecked Sendable {
         defer { lock.unlock() }
 
         let sampleCount = bytes.count / bytesPerSample
-        var samples = [Int16](repeating: 0, count: sampleCount)
-        var sumSquares: Double = 0.0
-
+        var sumSquares: Int64 = 0
+        var sumAbsDelta: Int64 = 0
+        var previous: Int32 = 0
         bytes.withUnsafeBytes { raw in
             let ptr = raw.bindMemory(to: Int16.self)
             for i in 0..<sampleCount {
-                let s = ptr[i]
-                samples[i] = s
-                let norm = Double(s) / 32768.0
-                sumSquares += norm * norm
+                let value = Int32(ptr[i])
+                sumSquares += Int64(value) * Int64(value)
+                if i > 0 {
+                    sumAbsDelta += Int64(abs(value - previous))
+                }
+                previous = value
             }
         }
 
-        let rms = sqrt(sumSquares / Double(sampleCount))
-        let threshold = pow(10.0, thresholdDBFS / 20.0)
-        let signalAboveThreshold = rms >= threshold
+        let rms = sqrt(Double(sumSquares) / Double(sampleCount))
+        let brightness = Double(sumAbsDelta) / (Double(max(sampleCount - 1, 1)) * max(rms, 1.0))
+        let openFloor = pow(10.0, thresholdDBFS / 20.0) * 32768.0
+        let holdFloor = pow(10.0, (thresholdDBFS - Self.holdMarginDB) / 20.0) * 32768.0
+        let muffledRumble = brightness < minBrightness
+        let closeTalk = rms >= openFloor && !muffledRumble
+        let alreadyOpen = holdSamplesRemaining > 0
 
-        let targetGain: Double
-        if signalAboveThreshold {
+        if closeTalk {
+            pendingCloseChunks += 1
+        } else {
+            pendingCloseChunks = 0
+        }
+
+        let confirmed = pendingCloseChunks >= max(confirmChunks, 1)
+        if confirmed || (alreadyOpen && rms >= holdFloor) {
             holdSamplesRemaining = Int((Self.holdMs / 1000.0) * sampleRate)
-            targetGain = 1.0
         } else if holdSamplesRemaining > 0 {
             holdSamplesRemaining = max(0, holdSamplesRemaining - sampleCount)
-            targetGain = 1.0
-        } else {
-            targetGain = 0.0
         }
 
-        let attackCoeff = exp(-1.0 / ((Self.attackMs / 1000.0) * sampleRate))
-        let releaseCoeff = exp(-1.0 / ((Self.releaseMs / 1000.0) * sampleRate))
-
-        var output = [UInt8]()
-        output.reserveCapacity(bytes.count)
-
-        for s in samples {
-            let coeff = targetGain > gain ? attackCoeff : releaseCoeff
-            gain = targetGain + (gain - targetGain) * coeff
-            let effectiveGain = gain < 0.005 ? 0.0 : gain
-            let scaled = Int((Double(s) * effectiveGain).rounded())
-            let clamped = Int16(max(Int(Int16.min), min(Int(Int16.max), scaled)))
-            let u16 = UInt16(bitPattern: clamped)
-            output.append(UInt8(u16 & 0xff))
-            output.append(UInt8((u16 >> 8) & 0xff))
+        let isOpen = holdSamplesRemaining > 0
+        if isOpen {
+            return (bytes, true)
         }
-
-        let isOpen = signalAboveThreshold || holdSamplesRemaining > 0 || gain > 0.05
-        return (output, isOpen)
+        if zeroScratch.count != bytes.count {
+            zeroScratch = [UInt8](repeating: 0, count: bytes.count)
+        }
+        return (zeroScratch, false)
     }
 }

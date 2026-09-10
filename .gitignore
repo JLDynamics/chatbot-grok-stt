@@ -4,6 +4,9 @@
 .pi/
 .code-review-graph/
 artifacts/
+# Native codebase-memory-mcp binary (project-local MCP, not the Voice app)
+tools/codebase-memory-mcp/
+.codebase-memory/
 
 # Node dependencies (the pi coding agent lives here; restore with npm install)
 node_modules/

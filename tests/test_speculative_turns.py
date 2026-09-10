@@ -422,6 +422,7 @@ def _vad_handler_for_iterator(iterator: _StaticVADIterator) -> VADHandler:
     handler._current_turn_revision = None
     handler._speculative_audio_prefix = None
     handler._speculative_raw_audio_prefix = None
+    handler._speculative_active_speech_ms = 0.0
     handler._last_final_wall_time = None
     handler._last_final_audio_ms = None
     handler._pending_reopen_candidate = None
@@ -555,6 +556,7 @@ def test_vad_complete_smart_turn_selects_shorter_speculative_grace():
 
     assert len(outputs) == 1
     assert outputs[0].processing_delay_s == 0.0
+    assert outputs[0].active_speech_ms == pytest.approx(12 * 512 / 16000 * 1000)
     grace = handler.speculative_turns._reopen_grace["turn_1"]
     assert grace.revision == 0
     assert 0.6 < grace.deadline - time.monotonic() <= 0.8
@@ -666,9 +668,22 @@ def test_trailing_continuation_fragment_accepted_at_finalization():
 
     assert len(outputs) == 1
     assert (outputs[0].turn_id, outputs[0].turn_revision) == ("turn_1", 1)
+    assert outputs[0].active_speech_ms == pytest.approx(12 * 512 / 16000 * 1000 + 8 * 512 / 16000 * 1000)
     started = handler.text_output_queue.get_nowait()
     assert isinstance(started, SpeechStartedEvent)
     assert (started.turn_id, started.turn_revision, started.reopened) == ("turn_1", 1, True)
+
+
+def test_vad_final_active_speech_accumulates_across_reopen_prefix():
+    handler = _handler_after_soft_ended_turn()
+    first_ms = 12 * 512 / 16000 * 1000
+    assert handler._speculative_active_speech_ms == pytest.approx(first_ms)
+
+    outputs = _drive_final_segment(handler, active_chunks=12, segment_chunks=12)
+
+    assert len(outputs) == 1
+    assert outputs[0].active_speech_ms == pytest.approx(first_ms * 2)
+    assert handler._speculative_active_speech_ms == pytest.approx(first_ms * 2)
 
 
 def test_continuation_bar_inactive_when_turn_committed():
@@ -843,6 +858,52 @@ def test_vad_idle_greeting_below_barge_in_bar_is_still_a_turn():
     started = handler.text_output_queue.get_nowait()
     assert isinstance(started, SpeechStartedEvent)
     assert handler._pending_short_segment is None
+
+
+def test_vad_idle_448ms_greeting_is_still_a_turn():
+    # Live log 2026-09-09 19:24: segment=2516ms active=448ms discarded
+    # because the idle floor had been raised to 480ms.
+    active_samples = 14 * 512  # 448ms at 16kHz
+    handler = _vad_handler_for_iterator(
+        _StaticVADIterator(
+            triggered=False,
+            vad_output=[torch.zeros(512) for _ in range(75)],
+            last_utterance_active_speech_samples=active_samples,
+        )
+    )
+    handler.min_speech_ms = 600
+    handler.min_speech_continuation_ms = 192
+    handler.short_segment_merge_ms = 400
+    handler.response_playing = Event()
+
+    outputs = list(handler.process(_audio_bytes()))
+
+    assert len(outputs) == 1
+    started = handler.text_output_queue.get_nowait()
+    assert isinstance(started, SpeechStartedEvent)
+    assert handler._pending_short_segment is None
+
+
+def test_vad_idle_tv_burst_below_idle_floor_is_not_a_turn():
+    # Live log 2026-09-09: Speech started active=288ms, min=280ms from TV
+    # in another room. The idle floor is 400ms.
+    active_samples = 9 * 512  # 288ms at 16kHz
+    handler = _vad_handler_for_iterator(
+        _StaticVADIterator(
+            triggered=False,
+            vad_output=[torch.zeros(512) for _ in range(75)],
+            last_utterance_active_speech_samples=active_samples,
+        )
+    )
+    handler.min_speech_ms = 600
+    handler.min_speech_continuation_ms = 192
+    handler.short_segment_merge_ms = 400
+    handler.response_playing = Event()
+
+    outputs = list(handler.process(_audio_bytes()))
+
+    assert outputs == []
+    assert handler.text_output_queue.empty()
 
 
 def test_vad_keeps_barge_in_bar_while_assistant_is_talking():
@@ -1101,6 +1162,16 @@ def test_vad_progressive_processing_pause_increases_with_speech_duration():
     assert handler._progressive_processing_pause(8_000) == 0.5
     assert handler._progressive_processing_pause(15_000) == 1.0
     assert handler._progressive_processing_pause(30_000) == 1.5
+
+
+def test_vad_progressive_stt_audio_keeps_only_a_trailing_window():
+    handler = object.__new__(VADHandler)
+    handler.sample_rate = 16_000
+    audio = np.arange(20 * 16_000, dtype=np.float32)
+    window = handler._progressive_stt_audio(audio)
+    assert len(window) == 16 * 16_000
+    assert window[0] == audio[-16 * 16_000]
+    assert window[-1] == audio[-1]
 
 
 def test_vad_progressive_processing_pause_is_capped():

@@ -41,6 +41,7 @@ struct ConversationView: View {
             TranscriptView(
                 session: session,
                 showJumpToLatest: $showJumpToLatest,
+                stickToBottom: $stickToBottom,
                 onJumpToLatest: {
                     showJumpToLatest = false
                     stickToBottom = true
@@ -48,32 +49,9 @@ struct ConversationView: View {
             )
             .frame(maxHeight: .infinity)
 
-            if let tool = session.activeTool {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(tool)
-                        .font(.system(size: 11.5, weight: .medium))
-                }
-                .foregroundStyle(resolvedTheme.accent)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(resolvedTheme.surface2)
-                .clipShape(Capsule())
-                .padding(.bottom, 6)
-                .transition(.opacity.combined(with: .scale))
-            }
-
-            if let note = session.audioStatus {
-                Text(note).font(.system(size: 10)).foregroundStyle(resolvedTheme.text3)
-                    .padding(.horizontal, 16)
-            }
-            if session.state == .agentSpeaking || session.state == .thinking || session.activeTool != nil {
-                Button("Stop reply") { session.interrupt() }
-                    .buttonStyle(PressableButtonStyle())
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.vertical, 4)
-            }
+            // Fixed chrome so Listening/Thinking/tool pills cannot resize
+            // the transcript and bounce its scroller.
+            conversationChrome
 
             LevelMeterView(
                 state: session.state,
@@ -102,11 +80,56 @@ struct ConversationView: View {
         }
         .animation(.easeOut(duration: 0.12), value: session.showSettings)
         .animation(.easeOut(duration: 0.12), value: session.showSessions)
-        .animation(.easeOut(duration: 0.12), value: session.activeTool)
         .preferredColorScheme(themePreference == .auto ? nil : (themePreference == .dark ? .dark : .light))
         .onChange(of: session.state) { _, newState in
             announceState(newState)
         }
+    }
+
+    private var canStopReply: Bool {
+        session.state == .agentSpeaking || session.state == .thinking || session.activeTool != nil
+    }
+
+    private var conversationChrome: some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 8) {
+                ZStack {
+                    if let tool = session.activeTool {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(tool)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(resolvedTheme.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(resolvedTheme.surface2)
+                        .clipShape(Capsule())
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+
+                Button("Stop reply") { session.interrupt() }
+                    .buttonStyle(PressableButtonStyle())
+                    .font(.system(size: 11, weight: .medium))
+                    .opacity(canStopReply ? 1 : 0)
+                    .allowsHitTesting(canStopReply)
+                    .accessibilityHidden(!canStopReply)
+                    .accessibilityIdentifier("voice.stopReply")
+            }
+            .frame(height: 28)
+            .padding(.horizontal, 12)
+
+            if let note = session.audioStatus {
+                Text(note)
+                    .font(.system(size: 10))
+                    .foregroundStyle(resolvedTheme.text3)
+                    .padding(.horizontal, 16)
+            }
+        }
+        .padding(.bottom, 2)
     }
 
     private func announceState(_ state: SessionState) {
@@ -114,10 +137,8 @@ struct ConversationView: View {
         switch state {
         case .idle: message = "Session ended"
         case .connecting: message = "Connecting"
-        case .listening: message = session.isMuted ? "Muted" : "Listening"
-        case .thinking: message = "Thinking"
-        case .agentSpeaking: message = "Agent speaking"
-        case .failed: message = nil
+        case .failed: message = "Session failed"
+        default: return
         }
         if let message {
             NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [

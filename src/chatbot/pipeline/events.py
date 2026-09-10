@@ -63,6 +63,7 @@ class TranscriptionCompletedEvent(PipelineEvent):
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = Field(default=None, exclude=True)
     error: str | None = None
+    active_speech_ms: float | None = None
 
 
 # ── Direct audio events (AudioInputNotifier) ─────────────────────────

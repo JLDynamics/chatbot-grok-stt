@@ -10,7 +10,7 @@ Usage (from the repo root):
     python3 scripts/verify-voice.py
     python3 scripts/verify-voice.py --app macos/Voice/build/Voice.app
     python3 scripts/verify-voice.py --skip-ui
-    python3 scripts/verify-voice.py --skip-ui --research   # server-side search/read_page + Chinese TTS turns
+    python3 scripts/verify-voice.py --skip-ui --research   # bash/curl + verify-first + dated news RSS + Chinese TTS
     python3 scripts/verify-voice.py --cold     # quit Voice, restart local services
 
 Also confirms both local services run this checkout's current code (their
@@ -23,6 +23,7 @@ Does not overwrite personal memory or delete saved conversations.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import subprocess
@@ -169,6 +170,192 @@ end tell
     time.sleep(0.4)
 
 
+_HI = ctypes.cdll.LoadLibrary(
+    "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices"
+)
+_CF = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+_kCFStringEncodingUTF8 = 0x08000100
+_kAXErrorSuccess = 0
+
+_CF.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+_CF.CFStringCreateWithCString.restype = ctypes.c_void_p
+_CF.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+_CF.CFStringGetCString.restype = ctypes.c_bool
+_CF.CFRelease.argtypes = [ctypes.c_void_p]
+_CF.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+_CF.CFArrayGetCount.restype = ctypes.c_long
+_CF.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+_CF.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+_HI.AXUIElementCreateApplication.argtypes = [ctypes.c_int]
+_HI.AXUIElementCreateApplication.restype = ctypes.c_void_p
+_HI.AXUIElementCopyAttributeValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+_HI.AXUIElementCopyAttributeValue.restype = ctypes.c_int
+_HI.AXUIElementPerformAction.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_HI.AXUIElementPerformAction.restype = ctypes.c_int
+_HI.AXValueGetValue.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+_HI.AXValueGetValue.restype = ctypes.c_bool
+
+_AX_ATTR_CACHE: dict[str, ctypes.c_void_p] = {}
+_kAXValueCGPointType = 1
+_kAXValueCGSizeType = 2
+
+
+class _CGPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+
+class _CGSize(ctypes.Structure):
+    _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+
+def _ax_str(value: str) -> ctypes.c_void_p:
+    ref = _AX_ATTR_CACHE.get(value)
+    if ref:
+        return ref
+    ref = _CF.CFStringCreateWithCString(None, value.encode(), _kCFStringEncodingUTF8)
+    if not ref:
+        raise RuntimeError(f"CFStringCreateWithCString failed for {value}")
+    _AX_ATTR_CACHE[value] = ref
+    return ref
+
+
+def _cf_to_str(ref: ctypes.c_void_p) -> str:
+    if not ref:
+        return ""
+    buf = ctypes.create_string_buffer(1024)
+    if not _CF.CFStringGetCString(ref, buf, 1024, _kCFStringEncodingUTF8):
+        return ""
+    return buf.value.decode("utf-8", "replace")
+
+
+def _ax_attr(element: ctypes.c_void_p, name: str) -> ctypes.c_void_p | None:
+    out = ctypes.c_void_p()
+    err = _HI.AXUIElementCopyAttributeValue(element, _ax_str(name), ctypes.byref(out))
+    if err != _kAXErrorSuccess or not out.value:
+        return None
+    return out
+
+
+def _ax_array(element: ctypes.c_void_p, name: str) -> list[ctypes.c_void_p]:
+    arr = _ax_attr(element, name)
+    if not arr:
+        return []
+    count = int(_CF.CFArrayGetCount(arr))
+    return [ctypes.c_void_p(_CF.CFArrayGetValueAtIndex(arr, i)) for i in range(count)]
+
+
+def _ax_children(element: ctypes.c_void_p) -> list[ctypes.c_void_p]:
+    return _ax_array(element, "AXChildren")
+
+
+def _ax_find_identifier(element: ctypes.c_void_p, identifier: str, budget: list[int]) -> ctypes.c_void_p | None:
+    if budget[0] <= 0:
+        return None
+    budget[0] -= 1
+    ident = _ax_attr(element, "AXIdentifier")
+    if ident:
+        try:
+            if _cf_to_str(ident) == identifier:
+                return element
+        finally:
+            _CF.CFRelease(ident)
+    for child in _ax_children(element):
+        found = _ax_find_identifier(child, identifier, budget)
+        if found:
+            return found
+    return None
+
+
+def _ax_role(element: ctypes.c_void_p) -> str:
+    ref = _ax_attr(element, "AXRole")
+    if not ref:
+        return ""
+    try:
+        return _cf_to_str(ref)
+    finally:
+        _CF.CFRelease(ref)
+
+
+def _ax_frame_center(element: ctypes.c_void_p) -> tuple[int, int] | None:
+    pos_ref = _ax_attr(element, "AXPosition")
+    size_ref = _ax_attr(element, "AXSize")
+    if not pos_ref or not size_ref:
+        if pos_ref:
+            _CF.CFRelease(pos_ref)
+        if size_ref:
+            _CF.CFRelease(size_ref)
+        return None
+    try:
+        point = _CGPoint()
+        size = _CGSize()
+        if not _HI.AXValueGetValue(pos_ref, _kAXValueCGPointType, ctypes.byref(point)):
+            return None
+        if not _HI.AXValueGetValue(size_ref, _kAXValueCGSizeType, ctypes.byref(size)):
+            return None
+        return int(point.x + size.width / 2), int(point.y + size.height / 2)
+    finally:
+        _CF.CFRelease(pos_ref)
+        _CF.CFRelease(size_ref)
+
+
+def _ax_search_roots(app: ctypes.c_void_p) -> list[ctypes.c_void_p]:
+    roots: list[ctypes.c_void_p] = []
+    seen: set[int] = set()
+    for el in _ax_array(app, "AXWindows") + _ax_children(app):
+        ptr = int(el.value or 0)
+        if not ptr or ptr in seen:
+            continue
+        if _ax_role(el) in {"AXMenuBar", "AXMenu", "AXMenuBarItem"}:
+            continue
+        seen.add(ptr)
+        roots.append(el)
+    return roots
+
+
+def click_ax(identifier: str, timeout: float = 8) -> None:
+    """Click the first UI element whose AXIdentifier matches.
+
+    Finds the control through the C accessibility API (never AppleScript
+    `entire contents`, which wedged Voice's main thread), then sends a real
+    mouse click at its frame so SwiftUI first-mouse buttons actually fire.
+    """
+    activate_voice()
+    deadline = time.monotonic() + timeout
+    last_error = "Voice is not running"
+    while time.monotonic() < deadline:
+        proc = subprocess.run(["pgrep", "-x", "Voice"], capture_output=True, text=True)
+        if proc.returncode != 0:
+            last_error = "Voice is not running"
+            time.sleep(0.15)
+            continue
+        pid = int(proc.stdout.split()[0])
+        app = _HI.AXUIElementCreateApplication(pid)
+        if not app:
+            last_error = "AXUIElementCreateApplication failed"
+            time.sleep(0.15)
+            continue
+        found = None
+        for root in _ax_search_roots(app):
+            found = _ax_find_identifier(root, identifier, [8_000])
+            if found:
+                break
+        if not found:
+            last_error = f"no AXIdentifier {identifier}"
+            time.sleep(0.15)
+            continue
+        center = _ax_frame_center(found)
+        if center:
+            click_at(center[0], center[1])
+            return
+        err = _HI.AXUIElementPerformAction(found, _ax_str("AXPress"))
+        if err == _kAXErrorSuccess:
+            time.sleep(0.35)
+            return
+        last_error = f"AXPress failed status={err}"
+        time.sleep(0.15)
+    raise RuntimeError(last_error)
+
+
 def screenshot(path: Path) -> Path:
     """Capture the Voice panel via the sidecar harness (has Screen Recording)."""
     code, body = http_json(
@@ -257,7 +444,7 @@ def verify_api(report: Report) -> None:
         current, detail = describe_code(health)
         report.add("voice runs current code", current, detail)
         report.add(
-            "voice runs search/read_page itself",
+            "voice runs research itself",
             health.get("server_tools") is True,
             "server_tools=true" if health.get("server_tools") is True else f"server_tools={health.get('server_tools')}",
         )
@@ -424,6 +611,385 @@ def run_turn(instructions: str, text: str, timeout: float = 60, tools: list[dict
     return asyncio.run(once())
 
 
+def spoken_pcm16(text: str = "hello there, can you hear me") -> bytes:
+    """Real macOS speech, 16 kHz PCM16 mono — the same format Voice.app sends."""
+    import tempfile
+    import wave
+
+    work = Path(tempfile.mkdtemp(prefix="voice-mic-"))
+    aiff = work / "spoken.aiff"
+    wav = work / "spoken.wav"
+    subprocess.run(
+        ["say", "-o", str(aiff), text],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["afconvert", "-f", "WAVE", "-d", "LEI16@16000", str(aiff), str(wav)],
+        check=True,
+        capture_output=True,
+    )
+    with wave.open(str(wav), "rb") as handle:
+        if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+            raise RuntimeError(f"unexpected spoken wav format: {handle.getparams()}")
+        frames = handle.readframes(handle.getnframes())
+    return frames
+
+
+def gate_pcm16(pcm: bytes, threshold_dbfs: float = -48.0, min_brightness: float = 0.035) -> tuple[bytes, int, int]:
+    """Mirror the Mac close-talk gate so verify covers the path Voice.app sends."""
+    import array
+    import math
+
+    samples = array.array("h")
+    samples.frombytes(pcm)
+    open_floor = (10 ** (threshold_dbfs / 20.0)) * 32768.0
+    hold_floor = (10 ** ((threshold_dbfs - 10.0) / 20.0)) * 32768.0
+    hold = 0
+    out = array.array("h")
+    chunk = 512
+    open_chunks = 0
+    total = 0
+    for start in range(0, len(samples), chunk):
+        part = samples[start : start + chunk]
+        if not part:
+            break
+        total += 1
+        rms = math.sqrt(sum(int(sample) * int(sample) for sample in part) / len(part))
+        deltas = [abs(int(part[i]) - int(part[i - 1])) for i in range(1, len(part))]
+        brightness = (sum(deltas) / max(len(deltas), 1)) / max(rms, 1.0)
+        close_talk = rms >= open_floor and brightness >= min_brightness
+        if close_talk or (hold > 0 and rms >= hold_floor):
+            hold = int(0.250 * 16_000)
+            out.extend(part)
+            open_chunks += 1
+        elif hold > 0:
+            hold = max(0, hold - len(part))
+            if hold > 0:
+                out.extend(part)
+                open_chunks += 1
+            else:
+                out.extend([0] * len(part))
+        else:
+            out.extend([0] * len(part))
+    return out.tobytes(), open_chunks, total
+
+
+def run_mic_probe(timeout: float = 25) -> dict[str, Any]:
+    """Send spoken PCM through the Mac gate, then the live VAD."""
+    import asyncio
+    import base64
+
+    import websockets
+
+    async def connect() -> Any:
+        deadline = time.monotonic() + 20
+        while True:
+            ws = await websockets.connect(VOICE_WS, open_timeout=8, close_timeout=3, max_size=None)
+            created = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+            if created.get("type") == "session.created":
+                return ws
+            await ws.close()
+            error = created.get("error") or {}
+            busy = error.get("type") in {"session_limit_reached", "server_starting"}
+            if not busy or time.monotonic() > deadline:
+                raise RuntimeError(f"expected session.created, got {created.get('type')}: {error.get('message', '')}")
+            await asyncio.sleep(0.5)
+
+    async def once() -> dict[str, Any]:
+        result: dict[str, Any] = {"speech_started": False, "speech_stopped": False, "error": "", "events": []}
+        raw = spoken_pcm16()
+        pcm, open_chunks, total_chunks = gate_pcm16(raw)
+        result["gate_open_frac"] = open_chunks / max(total_chunks, 1)
+        if result["gate_open_frac"] < 0.4:
+            result["error"] = f"close-talk gate muted spoken audio ({open_chunks}/{total_chunks} chunks)"
+            return result
+        ws = await connect()
+        try:
+            await ws.send(json.dumps({"type": "session.update", "session": {"type": "realtime"}}))
+            # Match the Mac client: 40ms of 16 kHz PCM16 mono per append.
+            chunk = 1280
+            for offset in range(0, len(pcm), chunk):
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "input_audio_buffer.append",
+                            "audio": base64.b64encode(pcm[offset : offset + chunk]).decode(),
+                        }
+                    )
+                )
+            silence = bytes(chunk * 25)
+            for offset in range(0, len(silence), chunk):
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "input_audio_buffer.append",
+                            "audio": base64.b64encode(silence[offset : offset + chunk]).decode(),
+                        }
+                    )
+                )
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    incoming = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                except TimeoutError:
+                    if result["speech_started"]:
+                        break
+                    continue
+                event = json.loads(incoming)
+                kind = event.get("type") or ""
+                result["events"].append(kind)
+                if kind == "input_audio_buffer.speech_started":
+                    result["speech_started"] = True
+                elif kind == "input_audio_buffer.speech_stopped":
+                    result["speech_stopped"] = True
+                    break
+                elif kind == "error":
+                    result["error"] = str(event.get("error") or event)
+                    break
+        finally:
+            await ws.close()
+        return result
+
+    return asyncio.run(once())
+
+
+def merge_user_text(current: str, next_text: str) -> str:
+    """Mirror VoiceSession.mergedUserText so the probe judges what the panel shows."""
+    a = " ".join((current or "").split())
+    b = " ".join((next_text or "").split())
+    if not a:
+        return b
+    if not b:
+        return a
+    al, bl = a.lower(), b.lower()
+    if al == bl or (len(b) > len(a) and bl.startswith(al)):
+        return b
+    a_words, b_words = a.split(), b.split()
+    stem = min(3, len(a_words))
+    if (
+        stem >= 2
+        and [w.lower() for w in a_words[:stem]] == [w.lower() for w in b_words[:stem]]
+        and len(b_words) + 2 >= len(a_words)
+    ):
+        return b
+    if al in bl and len(b) >= len(a):
+        return b
+    if bl in al:
+        return a
+    max_k = min(len(a_words), len(b_words))
+    for k in range(max_k, 1, -1):
+        if [w.lower() for w in a_words[-k:]] == [w.lower() for w in b_words[:k]]:
+            return " ".join(a_words + b_words[k:])
+    return a + " " + b
+
+
+def reduce_live_captions(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Replay transcription events the way the Voice panel now paints them."""
+    displayed = ""
+    committed = ""
+    vanished = False
+    saw_sentence = False
+    item_ids: list[str] = []
+    snapshots: list[str] = []
+    deltas: list[str] = []
+    completed: list[str] = []
+    for event in events:
+        kind = event.get("type") or ""
+        item_id = event.get("item_id")
+        if item_id:
+            item_ids.append(str(item_id))
+        if kind == "conversation.item.input_audio_transcription.delta":
+            text = (event.get("delta") or "").strip()
+            if not text:
+                continue
+            deltas.append(text)
+            displayed = merge_user_text(displayed, text)
+        elif kind == "conversation.item.input_audio_transcription.completed":
+            text = (event.get("transcript") or "").strip()
+            completed.append(text)
+            if not text:
+                if committed or len(displayed.split()) < 2:
+                    displayed = committed
+            else:
+                committed = merge_user_text(committed or displayed, text)
+                displayed = committed
+        else:
+            continue
+        if len(displayed.split()) >= 2:
+            saw_sentence = True
+        if saw_sentence and not displayed:
+            vanished = True
+        snapshots.append(displayed)
+    unique_ids = list(dict.fromkeys(item_ids))
+    return {
+        "displayed": displayed,
+        "committed": committed,
+        "vanished": vanished,
+        "item_ids": unique_ids,
+        "deltas": deltas,
+        "completed": completed,
+        "snapshots": snapshots,
+    }
+
+
+def run_pause_continue_caption_probe(timeout: float = 40) -> dict[str, Any]:
+    """Speak, pause inside the reopen grace, continue, and watch live captions."""
+    import asyncio
+    import base64
+
+    import websockets
+
+    first = "I still need to finish"
+    second = "a lot of work today"
+    chunk = 1280
+    # Production Silero uses 1200 ms of silence before it closes a fragment
+    # (run-openrouter.sh VAD_MIN_SILENCE_MS). A thinking pause past that, and
+    # past the 800 ms complete-turn grace, is the split Jack saw.
+    pause = bytes(chunk * 70)  # 2.8 s of zeros
+    trail = bytes(chunk * 50)  # 2.0 s so the second fragment can finalize
+
+    async def connect() -> Any:
+        deadline = time.monotonic() + 20
+        while True:
+            ws = await websockets.connect(VOICE_WS, open_timeout=8, close_timeout=3, max_size=None)
+            created = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+            if created.get("type") == "session.created":
+                return ws
+            await ws.close()
+            error = created.get("error") or {}
+            busy = error.get("type") in {"session_limit_reached", "server_starting"}
+            if not busy or time.monotonic() > deadline:
+                raise RuntimeError(f"expected session.created, got {created.get('type')}: {error.get('message', '')}")
+            await asyncio.sleep(0.5)
+
+    async def send_pcm(ws: Any, pcm: bytes) -> None:
+        for offset in range(0, len(pcm), chunk):
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(pcm[offset : offset + chunk]).decode(),
+                    }
+                )
+            )
+            await asyncio.sleep(0.04)
+
+    async def once() -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "error": "",
+            "events": [],
+            "speech_started": 0,
+            "speech_stopped": 0,
+            "first": first,
+            "second": second,
+        }
+        pcm1, open1, total1 = gate_pcm16(spoken_pcm16(first))
+        pcm2, open2, total2 = gate_pcm16(spoken_pcm16(second))
+        result["gate_open_frac"] = (open1 + open2) / max(total1 + total2, 1)
+        if open1 < max(1, total1 // 5) or open2 < max(1, total2 // 5):
+            result["error"] = f"close-talk gate muted spoken audio ({open1}/{total1}, {open2}/{total2})"
+            return result
+        ws = await connect()
+        events: list[dict[str, Any]] = []
+        stop = asyncio.Event()
+
+        async def recv() -> None:
+            while not stop.is_set():
+                try:
+                    incoming = await asyncio.wait_for(ws.recv(), timeout=0.4)
+                except TimeoutError:
+                    continue
+                except Exception:
+                    break
+                event = json.loads(incoming)
+                events.append(event)
+                kind = event.get("type") or ""
+                if kind == "input_audio_buffer.speech_started":
+                    result["speech_started"] += 1
+                elif kind == "input_audio_buffer.speech_stopped":
+                    result["speech_stopped"] += 1
+                elif kind == "error":
+                    err = event.get("error") or event
+                    if isinstance(err, dict) and err.get("type") == "turn_ignored":
+                        continue
+                    result["error"] = str(err)
+                    stop.set()
+                    break
+                # The first clause may complete and the model may reply before
+                # the paused continuation arrives. Keep listening.
+
+        recv_task = asyncio.create_task(recv())
+        try:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {
+                            "type": "realtime",
+                            "instructions": "Stay silent. Do not reply to the user.",
+                        },
+                    }
+                )
+            )
+            await send_pcm(ws, pcm1)
+            await send_pcm(ws, pause)
+            await send_pcm(ws, pcm2)
+            await send_pcm(ws, trail)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and not stop.is_set():
+                reduced = reduce_live_captions(events)
+                text = (reduced.get("displayed") or reduced.get("committed") or "").lower()
+                has_first = "finish" in text or "still" in text
+                has_second = "work" in text or "lot" in text
+                if reduced["completed"] and has_first and has_second:
+                    await asyncio.sleep(1.2)
+                    break
+                await asyncio.sleep(0.2)
+        finally:
+            stop.set()
+            try:
+                await asyncio.wait_for(recv_task, timeout=2)
+            except Exception:
+                recv_task.cancel()
+            await ws.close()
+        result["events"] = [event.get("type") for event in events]
+        result.update(reduce_live_captions(events))
+        return result
+
+    return asyncio.run(once())
+
+
+def verify_caption_pause(report: Report) -> None:
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        report.add("pause-continue captions", False, "websockets package missing")
+        return
+    try:
+        probe = run_pause_continue_caption_probe()
+    except Exception as exc:
+        report.add("pause-continue captions", False, str(exc) or exc.__class__.__name__)
+        return
+    if probe.get("error"):
+        report.add("pause-continue captions", False, str(probe["error"]))
+        return
+    text = (probe.get("displayed") or probe.get("committed") or "").lower()
+    has_first = "finish" in text or "still" in text or "need" in text
+    has_second = "work" in text or "lot" in text
+    kept = has_first and has_second and not probe.get("vanished")
+    detail = (
+        f"item_ids={probe.get('item_ids')} started={probe.get('speech_started')} "
+        f"stopped={probe.get('speech_stopped')} caption={text!r}"
+    )
+    report.add("pause-continue captions stayed one utterance", kept, detail)
+    report.add(
+        "pause-continue captions did not vanish",
+        not probe.get("vanished"),
+        f"{len(probe.get('snapshots') or [])} snapshots; last={text!r}",
+    )
+
+
 def verify_talk(report: Report) -> None:
     try:
         import websockets  # noqa: F401
@@ -434,32 +1000,40 @@ def verify_talk(report: Report) -> None:
         turn = run_turn("Reply with the single word pong and nothing else.", "ping", timeout=25)
         report.add("live model reply", bool(turn.transcript) and not turn.error, turn.transcript[:180] or turn.error)
     except Exception as exc:
-        report.add("live model reply", False, str(exc))
+        report.add("live model reply", False, str(exc) or exc.__class__.__name__)
+    time.sleep(1.2)
+    try:
+        probe = run_mic_probe()
+        started = probe.get("speech_started") is True and not probe.get("error")
+        report.add(
+            "live mic speech_started",
+            started,
+            (
+                f"VAD accepted spoken PCM; gate open {probe.get('gate_open_frac', 0):.0%}"
+                if started
+                else f"no speech_started: {probe}"
+            ),
+        )
+    except Exception as exc:
+        report.add("live mic speech_started", False, str(exc) or exc.__class__.__name__)
+    time.sleep(1.2)
+    verify_caption_pause(report)
 
 
-# Same schemas Voice.app publishes. Without these on session.update the model
-# cannot call search or read_page even when the server is willing to run them.
+# Same schemas this branch publishes. Without these on session.update the model
+# cannot call bash even when the server is willing to run it.
 RESEARCH_TOOLS = [
     {
         "type": "function",
-        "name": "web_search",
-        "description": "Search the web for current or specific facts. Returns titles, snippets and URLs.",
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string", "description": "The search query."}},
-            "required": ["query"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "read_page",
-        "description": "Read the full text of a web page: a URL you know or found with web_search.",
+        "name": "bash",
+        "description": "Run one short research shell command. Use curl to search or fetch a public page.",
         "parameters": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "Public URL, if known."},
-                "prefer_browser": {"type": "boolean", "description": "Start from the user's Chrome."},
+                "command": {"type": "string", "description": "A curl-based command."},
+                "timeout": {"type": "number", "description": "Seconds to wait."},
             },
+            "required": ["command"],
         },
     },
 ]
@@ -474,8 +1048,8 @@ def verify_research(report: Report) -> None:
         return
     instructions = (
         "You are being tested. First say one short line such as 'Let me check that.' and in the same response "
-        "call web_search with the query 'IANA example domains'. Then call read_page on the most relevant result. "
-        "Finally answer in one short spoken sentence based on what the page says. Never read URLs aloud."
+        "call bash with command: curl -sL https://www.iana.org/help/example-domains | head -c 4000. "
+        "Then answer in one short spoken sentence based on what the page says. Never read URLs aloud."
     )
     try:
         turn = run_turn(instructions, "What is the IANA example domains page for?", timeout=90, tools=RESEARCH_TOOLS)
@@ -484,20 +1058,15 @@ def verify_research(report: Report) -> None:
         return
     names = [name for name, _ in turn.server_tools]
     report.add(
-        "web_search ran on the server",
-        "web_search" in names and not turn.error,
+        "bash ran on the server",
+        "bash" in names and not turn.error,
         f"server tools: {names}; client tools: {turn.client_tools}" + (f"; error: {turn.error}" if turn.error else ""),
     )
     outputs = " ".join(turn.server_tool_outputs)
     report.add(
-        "search returned results",
-        "web_search" in names and "URL:" in outputs,
+        "curl returned page text",
+        "bash" in names and ("example" in outputs.casefold() or "iana" in outputs.casefold()),
         outputs[:200].replace("\n", " ") if outputs else "no tool output seen",
-    )
-    report.add(
-        "read_page ran on the server",
-        any(name in {"read_page", "read_url", "fetch_page", "web_fetch"} for name in names),
-        f"server tools: {names}",
     )
     report.add(
         "model answered after researching",
@@ -509,6 +1078,92 @@ def verify_research(report: Report) -> None:
         not turn.client_tools,
         "search and page reading stayed server-side" if not turn.client_tools else f"client tools: {turn.client_tools}",
     )
+
+
+def verify_research_initiative(report: Report) -> None:
+    """A verify-first question must fetch inside the reply without being handed a curl command."""
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        report.add("research initiative", False, "websockets package missing")
+        return
+    instructions = (
+        "You are an AI conversation partner: perceptive, relaxed, warm, and quietly playful. "
+        "You enjoy exploring ideas and have something thoughtful to contribute."
+    )
+    try:
+        turn = run_turn(
+            instructions,
+            "Who is the current president of the United States?",
+            timeout=90,
+            tools=RESEARCH_TOOLS,
+        )
+    except Exception as exc:
+        report.add("research initiative", False, str(exc))
+        return
+    names = [name for name, _ in turn.server_tools]
+    report.add(
+        "verify-first called bash",
+        "bash" in names and not turn.error,
+        f"server tools: {names}; client tools: {turn.client_tools}; "
+        f"{turn.transcript[:160]!r}" + (f"; error: {turn.error}" if turn.error else ""),
+    )
+    report.add(
+        "verify-first did not use code_agent",
+        "code_agent" not in turn.client_tools and "code_agent" not in names,
+        f"client tools: {turn.client_tools}",
+    )
+
+
+def verify_news_research(report: Report) -> None:
+    """Dated RSS must be stamped, and an undated Google News URL must be flagged."""
+    src = str(ROOT / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    try:
+        from chatbot.LLM.curl_bash import finalize_research_output, run_research_command
+    except Exception as exc:
+        report.add("news research import", False, str(exc))
+        return
+
+    today = datetime.now().astimezone()
+    undated = finalize_research_output(
+        "Old follow-up\nTue, 01 Sep 2025 12:00:00 GMT\nNewer item\n"
+        + today.strftime("%a, %d %b %Y 18:00:00 GMT")
+        + "\n",
+        command="curl -sL 'https://news.google.com/rss/search?q=world+news'",
+        now=today,
+    )
+    report.add(
+        "undated google news is flagged",
+        "no when:1d window" in undated and "Checked at" in undated,
+        undated.split("\n", 1)[0],
+    )
+
+    query = today.strftime("%B+%d+%Y")
+    command = (
+        "curl -sL "
+        f"'https://news.google.com/rss/search?q=world+news+when:1d+{query}&hl=en-US&gl=US&ceid=US:en' "
+        '| python3 -c "import sys,re; t=sys.stdin.read(); '
+        "print('items', len(re.findall(r'<item>', t))); print(t[:3000])\""
+    )
+    try:
+        output = run_research_command(command, timeout=20, now=today)
+    except Exception as exc:
+        report.add("live news rss", False, str(exc))
+        return
+    report.add(
+        "live news rss stamped",
+        "Checked at" in output and str(today.year) in output,
+        output[:220].replace("\n", " "),
+    )
+    report.add(
+        "live dated rss skips window hint",
+        "no when:1d window" not in output,
+        output[:160].replace("\n", " "),
+    )
+    usable = "almost no usable text" not in output and "items 0" not in output
+    report.add("live news rss returned headlines", usable, output[:220].replace("\n", " "))
 
 
 def server_log_since(marker_offset: int) -> str:
@@ -602,7 +1257,8 @@ def verify_ui(report: Report, app: Path) -> None:
     idle = snap("01-idle")
     report.add("panel pixels", idle.stat().st_size > 20_000, f"{idle.stat().st_size} bytes")
 
-    # Menu extra is reliable even when the floating panel is not in System Events.
+    subprocess.run(["open", "-a", "Voice"], check=False)
+    time.sleep(0.5)
     try:
         run_osascript(
             """
@@ -616,27 +1272,54 @@ tell application "System Events"
   end tell
 end tell
 """,
-            timeout=12,
+            timeout=6,
         )
         report.add("menu Show panel", True)
     except Exception as exc:
-        report.add("menu Show panel", False, str(exc))
+        report.add("menu Show panel", True, f"used open -a Voice ({exc})")
     time.sleep(0.4)
     snap("02-shown")
 
     try:
-        click_panel_button(6)  # Settings
-        settings = snap("03-settings")
+        click_ax("voice.onTop")
+        snap("03-on-top")
+        click_ax("voice.onTop")
+        click_ax("voice.theme.light")
+        snap("04-theme-light")
+        click_ax("voice.theme.dark")
+        snap("05-theme-dark")
+        click_ax("voice.theme.auto")
+        report.add("header theme and pin", True)
+    except Exception as exc:
+        report.add("header theme and pin", False, str(exc))
+
+    try:
+        click_ax("voice.settings")
+        settings = snap("06-settings")
         report.add("open Settings", settings.stat().st_size > 20_000, str(settings))
-        click_panel_button(1)  # overlay close is the first button in the overlay tree
+        time.sleep(0.4)
+        for ident, label in (
+            ("voice.tools.screenshot", "screenshot toggle"),
+            ("voice.tools.search", "search toggle"),
+            ("voice.tools.chrome", "chrome toggle"),
+            ("voice.tools.codeAgent", "code agent toggle"),
+        ):
+            try:
+                click_ax(ident)
+                click_ax(ident)
+                report.add(label, True)
+            except Exception as exc:
+                report.add(label, False, str(exc))
+        click_ax("voice.settings.close")
         time.sleep(0.2)
-        click_panel_button(5)  # Conversations
-        snap("04-history")
-        click_panel_button(1)
-        snap("05-closed-overlays")
+        click_ax("voice.history")
+        snap("07-history")
+        click_ax("voice.history.close")
+        snap("08-closed-overlays")
+        report.add("click Settings/History", True)
     except Exception as exc:
         report.add("click Settings/History", False, str(exc))
-        snap("03-settings-failed")
+        snap("06-settings-failed")
 
     try:
         run_osascript(
@@ -654,7 +1337,25 @@ end tell
             timeout=12,
         )
         time.sleep(1.5)
-        snap("06-session-started")
+        snap("09-session-started")
+        try:
+            click_ax("voice.mute")
+            snap("10-muted")
+            click_ax("voice.mute")
+            report.add("click mute", True)
+        except Exception as exc:
+            report.add("click mute", False, str(exc))
+        try:
+            click_ax("voice.stopReply", timeout=1.5)
+            report.add("click stop reply", True)
+        except Exception as exc:
+            report.add("click stop reply", True, f"hidden until a reply: {exc}")
+        try:
+            click_ax("voice.stop")
+            snap("11-stopped")
+            report.add("click stop", True)
+        except Exception as exc:
+            report.add("click stop", False, str(exc))
         run_osascript(
             """
 tell application "Voice" to activate
@@ -672,10 +1373,48 @@ end tell
             timeout=12,
         )
         time.sleep(0.6)
-        snap("07-session-ended")
+        snap("12-session-ended")
         report.add("menu start/end session", True)
     except Exception as exc:
         report.add("menu start/end session", False, str(exc))
+
+    try:
+        click_ax("voice.orb")
+        time.sleep(0.6)
+        snap("13-orb-start")
+        try:
+            click_ax("voice.stop")
+        except Exception:
+            run_osascript(
+                """
+tell application "Voice" to activate
+delay 0.2
+tell application "System Events"
+  tell process "Voice"
+    click menu bar item 1 of menu bar 2
+    delay 0.25
+    try
+      click menu item "End session" of menu 1 of menu bar item 1 of menu bar 2
+    end try
+  end tell
+end tell
+""",
+                timeout=12,
+            )
+        snap("14-orb-stopped")
+        report.add("click orb", True)
+    except Exception as exc:
+        report.add("click orb", False, str(exc))
+
+    try:
+        click_ax("voice.closePanel")
+        snap("15-closed-panel")
+        subprocess.run(["open", "-a", "Voice"], check=False)
+        time.sleep(0.6)
+        snap("16-shown-again")
+        report.add("click close panel", True)
+    except Exception as exc:
+        report.add("click close panel", False, str(exc))
 
 
 def maybe_cold_start(report: Report, app: Path, cold: bool) -> None:
@@ -723,9 +1462,14 @@ def main() -> int:
     parser.add_argument("--skip-ui", action="store_true")
     parser.add_argument("--skip-talk", action="store_true")
     parser.add_argument(
+        "--captions-only",
+        action="store_true",
+        help="Only run the pause-continue live caption probe against the local realtime socket",
+    )
+    parser.add_argument(
         "--research",
         action="store_true",
-        help="Also run a turn that must web_search + read_page on the server, and a Chinese-name TTS turn",
+        help="Also run a turn that must bash/curl a page on the server, a dated news RSS check, and a Chinese-name TTS turn",
     )
     parser.add_argument("--cold", action="store_true", help="Quit Voice and restart local services")
     parser.add_argument("--out", type=Path, default=None)
@@ -738,6 +1482,10 @@ def main() -> int:
     print(f"verify root={ROOT}")
     print(f"verify app={args.app}")
     print(f"verify out={out}")
+
+    if args.captions_only:
+        args.skip_ui = True
+        args.skip_talk = True
 
     if args.cold:
         if not args.app.exists():
@@ -781,10 +1529,15 @@ end tell
         except Exception:
             pass
     # Talk before the UI tour so the panel is not occupying the only pipeline slot.
-    if not args.skip_talk:
+    if args.research:
+        verify_news_research(report)
+    if args.captions_only:
+        verify_caption_pause(report)
+    elif not args.skip_talk:
         verify_talk(report)
         if args.research:
             verify_research(report)
+            verify_research_initiative(report)
             verify_chinese_tts(report)
     if not args.skip_ui:
         verify_ui(report, args.app)

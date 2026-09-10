@@ -48,6 +48,11 @@ protocol VoiceBackend: AnyObject {
     var onState: ((SessionState) -> Void)? { get set }
     var onInputLevel: ((Float) -> Void)? { get set }        // 0...1, ~30 Hz
     var onOutputLevel: ((Float) -> Void)? { get set }       // 0...1, ~30 Hz
+    /// The user began speaking. Drives the talking indicator, which stands in
+    /// for the live transcript when progressive STT is off.
+    var onUserSpeechStarted: (() -> Void)? { get set }
+    /// The server finalized a turn but will not answer it (turn_ignored).
+    var onTurnDropped: (() -> Void)? { get set }
     var onUserPartial: ((String, String?) -> Void)? { get set }      // interim transcript
     var onUserFinal: ((String, String?) -> Void)? { get set } // final transcript + server item id (stable across pause-merged segments)
     var onAgentDelta: ((String) -> Void)? { get set }       // streamed reply text
@@ -84,8 +89,20 @@ final class SessionController: ObservableObject {
     @Published private(set) var state: SessionState = .idle
     @Published private(set) var turns: [Turn] = []
     @Published private(set) var interim: String?
+    /// True from the moment speech is detected until the turn's text is painted
+    /// or dropped. Drives the talking indicator that stands in for a live
+    /// transcript: streaming ASR text necessarily revises itself, so the panel
+    /// shows that you are talking rather than an unstable guess at the words.
+    @Published private(set) var userSpeaking = false
     @Published private(set) var activeTool: String?
     let levels = AudioLevels()
+
+    /// A finalized transcript waiting for its turn to be over. Pausing mid-turn
+    /// makes the server finalize each revision, so painting every one made the
+    /// bubble rewrite itself while the user was still talking. Revisions
+    /// overwrite this; it is painted once, when the turn settles.
+    private var pendingUserText: String?
+    private var pendingUserItemId: String?
     @Published private(set) var isMuted = false
     @Published var showSettings = false
 
@@ -112,6 +129,9 @@ final class SessionController: ObservableObject {
     private var messages: [ChatMessage] = []
     private var pendingAgentText = ""
     private var lastUserItemId: String?
+    private var lastUserActivityAt: Date?
+    private static let pauseMergeWindow: TimeInterval = 4
+    private static let fillerAgentLimit = 24
     private var saveTask: Task<Void, Never>?
     private var dirty = false
     private static let lastSessionKey = "chat.sessionId"
@@ -144,26 +164,71 @@ final class SessionController: ObservableObject {
             self.state = state
             if case .failed(let message) = state { self.errorText = message }
         }
+        backend.onUserSpeechStarted = { [weak self] in
+            guard let self else { return }
+            self.userSpeaking = true
+            self.markUserActivity()
+        }
+        backend.onTurnDropped = { [weak self] in
+            // The server finalized this turn but will not answer it. Whatever it
+            // chose to send is all we will get, so paint it and stop indicating.
+            self?.flushPendingUser()
+            self?.userSpeaking = false
+        }
         backend.onInputLevel = { [weak self] level in self?.levels.input = level }
         backend.onOutputLevel = { [weak self] level in self?.levels.output = level }
 
         backend.onAudioStatus = { [weak self] note in self?.audioStatus = note }
         backend.onToolsCancelled = { [weak self] in self?.activeTool = nil }
         backend.onUserPartial = { [weak self] text, itemId in
-            self?.interimItemId = itemId
-            self?.interim = text
+            guard let self else { return }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                // A junk final must not leave an overlay hanging on a committed
+                // bubble. A live-only sentence must not vanish when STT later
+                // sends an empty completed for a short or failed revision.
+                let hasCommitted = itemId.map { self.userRows[$0] != nil } ?? false
+                if !hasCommitted, Self.wordCount(self.interim) >= 2 {
+                    return
+                }
+                self.interim = nil
+                self.interimItemId = nil
+                return
+            }
+            // Each partial is a complete hypothesis for the turn so far: the
+            // text of already-finalized fragments plus a fresh decode of the one
+            // being spoken. Merging it into the previous hypothesis re-appended
+            // the whole turn every time Parakeet flipped a word between passes
+            // ("dropping" -> "jobing"), and once one copy slipped in, the length
+            // guard in isContinuation stopped recognizing the next hypothesis as
+            // a restatement, so it appended forever. Show what the server sent.
+            self.interimItemId = itemId
+            self.interim = trimmed
+            self.markUserActivity()
         }
 
         backend.onUserFinal = { [weak self] text, itemId in
             guard let self else { return }
             self.interim = nil
             self.interimItemId = nil
-            self.upsertUserTurn(text: text, itemId: itemId)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            // A final for a different item means the held turn is definitively
+            // over, so it can be painted before this one starts being held.
+            if let held = self.pendingUserItemId, held != itemId {
+                self.flushPendingUser()
+            }
+            self.pendingUserText = trimmed
+            self.pendingUserItemId = itemId
+            self.markUserActivity()
         }
 
         // Deltas stream into a single agent turn rather than appending rows.
         backend.onAgentDelta = { [weak self] chunk in
             guard let self else { return }
+            // The agent is answering this turn, so the turn is settled: paint
+            // the user's words before the reply lands under them.
+            self.flushPendingUser()
             self.userTurnOpen = false
             self.pendingAgentText += chunk
             if let last = self.turns.last, last.speaker == .agent, self.agentTurnOpen {
@@ -175,6 +240,8 @@ final class SessionController: ObservableObject {
         }
         backend.onAgentDone = { [weak self] in
             guard let self else { return }
+            // A reply that produced no text still settles the turn.
+            self.flushPendingUser()
             self.agentTurnOpen = false
             self.userTurnOpen = false
             let text = self.pendingAgentText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -182,9 +249,11 @@ final class SessionController: ObservableObject {
             if !text.isEmpty { self.recordAssistant(text) }
         }
         backend.onToolActive = { [weak self] name in
+            self?.flushPendingUser()
             self?.userTurnOpen = false
             let desc: String
             switch name {
+            case "bash": desc = "Fetching the web…"
             case "web_search": desc = "Searching the web…"
             case "read_page": desc = "Reading page…"
             case "screenshot": desc = "Taking a screenshot…"
@@ -226,19 +295,21 @@ final class SessionController: ObservableObject {
     func toggleSession() {
         // Allow tapping End while a connect is still in flight;
         // otherwise the orb looks dead for up to the 8s handshake timeout.
-        if isLive, state == .connecting {
-            beginTask?.cancel()
-            Task { await end() }
+        if isLive {
+            requestEnd()
             return
         }
         guard !isTransitioning else { return }
-        if isLive {
-            Task { await end() }
-            return
-        }
         errorText = nil
         state = .connecting
         Task { await begin() }
+    }
+
+    /// Paint idle on this click, then tear down and save without blocking the button.
+    func requestEnd() {
+        beginTask?.cancel()
+        applyIdleChrome()
+        Task { await end() }
     }
 
     func begin() async {
@@ -268,19 +339,8 @@ final class SessionController: ObservableObject {
         let cancelled = task.isCancelled
         isTransitioning = false
         if cancelled {
-            // Tap-to-cancel won during connecting but backend.start() still
-            // ran to completion underneath: shut it back down so we never
-            // leave a live mic/WS behind an idle UI.
             await backend.stop()
-            interim = nil
-            agentTurnOpen = false
-            userTurnOpen = false
-            if isMuted {
-                isMuted = false
-                backend.setMuted(false)
-            }
-            levels.reset()
-            state = .idle
+            applyIdleChrome()
             return
         }
         if errorText == nil {
@@ -299,25 +359,22 @@ final class SessionController: ObservableObject {
         let leftover = pendingAgentText.trimmingCharacters(in: .whitespacesAndNewlines)
         pendingAgentText = ""
         if !leftover.isEmpty { recordAssistant(leftover + " [interrupted]") }
-        guard !isTransitioning else {
-            // If a begin is in flight, stop the backend anyway so we never
-            // get stuck in .connecting with a live connection.
+        applyIdleChrome()
+        if isTransitioning {
             await backend.stop()
-            interim = nil
-            agentTurnOpen = false
-            userTurnOpen = false
-            if isMuted {
-                isMuted = false
-                backend.setMuted(false)
-            }
-            levels.reset()
-            state = .idle
             await flushSave()
             return
         }
         isTransitioning = true
         defer { isTransitioning = false }
         await backend.stop()
+        await flushSave()
+    }
+
+    /// Mute, Stop, and hide must paint idle before teardown or a sidecar save.
+    private func applyIdleChrome() {
+        flushPendingUser()
+        userSpeaking = false
         interim = nil
         agentTurnOpen = false
         userTurnOpen = false
@@ -326,9 +383,8 @@ final class SessionController: ObservableObject {
             backend.setMuted(false)
         }
         levels.reset()
-        state = .idle
         activeTool = nil
-        await flushSave()
+        state = .idle
     }
 
     func toggleMute() {
@@ -382,6 +438,7 @@ final class SessionController: ObservableObject {
             userRows.removeAll()
             userMessages.removeAll()
             lastUserItemId = nil
+            lastUserActivityAt = nil
             messages = s.messages
             turns = s.messages.compactMap { m -> Turn? in
                 switch m.role {
@@ -466,6 +523,7 @@ final class SessionController: ObservableObject {
         agentTurnOpen = false
         pendingAgentText = ""
         lastUserItemId = nil
+        lastUserActivityAt = nil
         userTurnOpen = false
     }
 
@@ -496,25 +554,40 @@ final class SessionController: ObservableObject {
     /// below covers the last gap: the assistant answered the partial before
     /// you finished, so the restated final extends an earlier bubble with
     /// other rows in between. One utterance still reads as one bubble.
+    /// Paint the held transcript and stop indicating. Called only when the turn
+    /// is settled: the agent started answering it, the reply finished, the
+    /// server dropped it, or a different turn finalized after it.
+    private func flushPendingUser() {
+        guard let text = pendingUserText else { return }
+        let itemId = pendingUserItemId
+        pendingUserText = nil
+        pendingUserItemId = nil
+        userSpeaking = false
+        upsertUserTurn(text: text, itemId: itemId)
+    }
+
     private func upsertUserTurn(text: String, itemId: String?) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
+        markUserActivity()
         if let id = itemId, let row = userRows[id],
            let index = turns.firstIndex(where: { $0.id == row }) {
+            // Same item id means the same turn, and a revision's final is
+            // decoded from all of that turn's audio. It replaces the bubble;
+            // merging it in appended one more copy of the turn per pause.
             turns[index].text = t
             if let messageIndex = userMessages[id], messages.indices.contains(messageIndex) {
-                messages[messageIndex].text = t
+                messages[messageIndex].text = turns[index].text
             }
             dirty = true
             scheduleSave()
             lastUserItemId = id
             return
         }
-        if let last = turns.last, last.speaker == .you,
-           userTurnOpen && Self.isContinuation(of: last.text, next: t) {
-            turns[turns.count - 1].text = t
+        if let last = turns.last, last.speaker == .you, userTurnOpen {
+            turns[turns.count - 1].text = Self.mergedUserText(current: last.text, next: t)
             if let idx = messages.lastIndex(where: { $0.role == "user" }) {
-                messages[idx].text = t
+                messages[idx].text = turns[turns.count - 1].text
             }
             dirty = true
             scheduleSave()
@@ -529,6 +602,19 @@ final class SessionController: ObservableObject {
             turns[idx].text = t
             if let mIdx = messages.lastIndex(where: { $0.role == "user" }) {
                 messages[mIdx].text = t
+            }
+            dirty = true
+            scheduleSave()
+            lastUserItemId = itemId
+            bindUserItem(itemId)
+            userTurnOpen = true
+            return
+        }
+        if shouldMergePausedContinuation(),
+           let idx = turns.lastIndex(where: { $0.speaker == .you }) {
+            turns[idx].text = Self.mergedUserText(current: turns[idx].text, next: t)
+            if let mIdx = messages.lastIndex(where: { $0.role == "user" }) {
+                messages[mIdx].text = turns[idx].text
             }
             dirty = true
             scheduleSave()
@@ -552,24 +638,112 @@ final class SessionController: ObservableObject {
     }
 
     func displayedText(for turn: Turn) -> String {
-        guard let item = interimItemId, userRows[item] == turn.id, let interim else { return turn.text }
-        return interim
+        guard turn.speaker == .you, let interim else { return turn.text }
+        // Same item id means the interim is the complete hypothesis for *this*
+        // bubble's turn: it already carries that turn's finalized fragments as a
+        // prefix, so it replaces the bubble's text. Merging the two appended the
+        // turn to itself on every pause.
+        if let item = interimItemId, userRows[item] == turn.id {
+            return interim
+        }
+        // The remaining cases are a different turn's interim, which does not
+        // include this bubble's words, so those still merge.
+        if shouldMergePausedContinuation(),
+           turns.last(where: { $0.speaker == .you })?.id == turn.id {
+            return Self.mergedUserText(current: turn.text, next: interim)
+        }
+        return turn.text
     }
 
     var interimHasExistingRow: Bool {
-        guard let item = interimItemId, let row = userRows[item] else { return false }
-        return turns.contains(where: { $0.id == row })
+        if let item = interimItemId, let row = userRows[item],
+           turns.contains(where: { $0.id == row }) {
+            return true
+        }
+        if userTurnOpen && turns.last?.speaker == .you && interim != nil {
+            return true
+        }
+        return shouldMergePausedContinuation() && interim != nil
+    }
+
+    private func markUserActivity() {
+        lastUserActivityAt = Date()
+    }
+
+    private func isRecentUserActivity() -> Bool {
+        guard let at = lastUserActivityAt else { return false }
+        return Date().timeIntervalSince(at) < Self.pauseMergeWindow
+    }
+
+    private func trailingAgentIsFiller() -> Bool {
+        guard let last = turns.last, last.speaker == .agent else { return false }
+        let text = last.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.count < Self.fillerAgentLimit
+    }
+
+    /// A thinking pause can finalize the first clause, let the model start a
+    /// tiny reply, then the rest of the sentence arrives as a new item id.
+    /// Keep that as one bubble when the agent has not actually answered yet.
+    private func shouldMergePausedContinuation() -> Bool {
+        guard isRecentUserActivity(),
+              turns.contains(where: { $0.speaker == .you }) else { return false }
+        if turns.last?.speaker == .you { return true }
+        return trailingAgentIsFiller()
+    }
+
+    /// Merge a later hypothesis into text already shown for this utterance.
+    /// A restated whole replaces the bubble; a new pause fragment is appended
+    /// so the first words cannot vanish.
+    private static func mergedUserText(current: String, next: String) -> String {
+        let a = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        let b = next.trimmingCharacters(in: .whitespacesAndNewlines)
+        if a.isEmpty { return b }
+        if b.isEmpty { return a }
+        if isContinuation(of: a, next: b) { return b }
+        let al = a.lowercased()
+        let bl = b.lowercased()
+        if bl.contains(al) && b.count >= a.count { return b }
+        if al.contains(bl) { return a }
+        let aw = a.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let bw = b.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let maxK = min(aw.count, bw.count)
+        if maxK >= 2 {
+            for k in stride(from: maxK, through: 2, by: -1) {
+                let tail = aw.suffix(k).map { $0.lowercased() }
+                let head = bw.prefix(k).map { $0.lowercased() }
+                if tail == Array(head) {
+                    return (aw + bw.dropFirst(k)).joined(separator: " ")
+                }
+            }
+        }
+        return a + " " + b
+    }
+
+    private static func wordCount(_ text: String?) -> Int {
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty { return 0 }
+        return trimmed.split(whereSeparator: { $0.isWhitespace }).count
     }
 
     /// Whether a new final restates and extends an earlier partial bubble:
     /// same words (STT may revise the spelling), or the old bubble is a
     /// prefix of the restated whole. Adjacency is enforced by the caller.
     private static func isContinuation(of old: String, next newText: String) -> Bool {
-        let a = old.lowercased()
-        let b = newText.lowercased()
+        let a = old.lowercased().replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let b = newText.lowercased().replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !a.isEmpty, !b.isEmpty else { return false }
         if a == b || (b.count > a.count && b.hasPrefix(a)) { return true }
-        return false
+        let oldWords = a.split(separator: " ")
+        let newWords = b.split(separator: " ")
+        let stem = min(3, oldWords.count)
+        guard stem >= 2 else { return false }
+        guard zip(oldWords.prefix(stem), newWords.prefix(stem)).allSatisfy({ $0 == $1 }) else {
+            return false
+        }
+        // Final STT often restates the same utterance a word shorter or longer.
+        return newWords.count + 2 >= oldWords.count
     }
 
     /// Append a tool result to the transcript so it survives into later turns.

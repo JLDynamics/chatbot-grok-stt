@@ -15,7 +15,7 @@ def test_voice_prompt_preserves_persona_and_spoken_constraints():
     prompt = build_voice_system_prompt("Be concise and dryly funny.", now=NOW)
 
     assert "Be concise and dryly funny." in prompt
-    assert "Speech is the default" in prompt
+    assert "Tools run inside the spoken reply" in prompt
     assert "no Markdown, headings, bullets, emoji" in prompt
     assert "Treat speech transcripts as imperfect." in prompt
 
@@ -24,13 +24,22 @@ def test_voice_prompt_tells_the_model_the_date_and_when_to_search():
     prompt = build_voice_system_prompt("Be concise.", now=NOW)
 
     assert "Current date and time: Tuesday, September 8, 2026, 9:35 PM (MDT)." in prompt
-    assert "Use web_search on your own initiative" in prompt
-    assert "then read_page on the result that matters" in prompt
+    assert "You drive research yourself with bash (curl)" in prompt
+    assert "Never hand search or fetch to code_agent." in prompt
+    assert "On every question, decide for yourself whether your knowledge is still current" in prompt
+    assert "Do not wait for the user to tell you that you were wrong" in prompt
+    assert "Stable facts" in prompt
+    assert "curl Wikipedia or an official page" in prompt
+    assert "There is no web_search or read_page tool." in prompt
+    assert "when:1d" in prompt
+    assert "keep only the last 24 hours" in prompt
+    assert "a new article about an old event is not happening today" in prompt
     assert "Several tool calls in one round are fine." in prompt
     assert "Keep research quick" in prompt
     # The old rules that stopped proactive research are gone.
     assert "Use at most one tool" not in prompt
     assert "If unsure whether a tool is needed, just speak" not in prompt
+    assert "Speech is the default" not in prompt
 
 
 def test_voice_prompt_is_compact():
@@ -65,11 +74,11 @@ def test_identity_survives_a_long_session_tool_block():
     personality = prompt.find("perceptive, relaxed, warm, and quietly playful")
     last_tool = prompt.rfind("use read_page.")
     identity = prompt.rfind("Do not take on a branded product name")
-    speech_default = prompt.find("Speech is the default")
+    tools_inside = prompt.find("Tools run inside the spoken reply")
 
     assert personality != -1
     assert personality < last_tool < identity
-    assert speech_default > last_tool
+    assert tools_inside > last_tool
 
 
 def test_format_now_reads_like_speech():
