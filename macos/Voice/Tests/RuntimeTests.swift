@@ -251,7 +251,7 @@ struct RuntimeTests {
 
         // Pausing repeatedly inside one turn must not append the turn to itself.
         // Every revision's final is decoded from all of that turn's audio, and
-        // Parakeet flips words between passes ("thing" -> "things over there").
+        // STT revises words between passes ("thing" -> "things over there").
         // That defeated the merge heuristic, which then appended one more copy
         // of the whole turn on each pause until the bubble was unreadable.
         let repeatBackend = MockVoiceBackend()

@@ -31,6 +31,39 @@ from chatbot.STT.base_stt_handler import BaseSTTHandler
 
 logger = logging.getLogger(__name__)
 
+# Languages xAI documents for this endpoint. Kept here because the language
+# prompt map in chatbot.LLM.utils is checked against whatever the active STT
+# can report, so a code missing a name would silently drop that prompt.
+# Note there is no Chinese entry: Kokoro can speak Mandarin, but this endpoint
+# does not document transcribing it.
+SUPPORTED_LANGUAGES = [
+    "ar",
+    "cs",
+    "da",
+    "de",
+    "en",
+    "es",
+    "fa",
+    "fil",
+    "fr",
+    "hi",
+    "id",
+    "it",
+    "ja",
+    "ko",
+    "mk",
+    "ms",
+    "nl",
+    "pl",
+    "pt",
+    "ro",
+    "ru",
+    "sv",
+    "th",
+    "tr",
+    "vi",
+]
+
 
 class GrokAuthError(RuntimeError):
     """No usable credential. Distinct from a request that failed in flight."""

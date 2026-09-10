@@ -4,7 +4,7 @@ Audio layers (close-talk gate, Silero) decide whether something sounded like
 speech. This module decides whether the transcript is talking:
 
 - Protected commands (stop, yes, wait) always pass, even at one word.
-- Filler, tagged non-speech, and Parakeet number/letter bursts never pass.
+- Filler, tagged non-speech, and number/letter noise bursts never pass.
 - A command or greeting may be one short word ("stop", "hello").
 - Anything else needs ~480ms of *active* Silero speech. A 416ms blip can
   still transcribe as "can you hear" because STT sees padded audio; word
@@ -117,7 +117,9 @@ _FILLER_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Parakeet on brief noise often emits a lone number or "six a".
+# Brief noise often transcribes as a lone number or "six a". These patterns
+# were observed on the previous local STT engine; they are conservative, but
+# worth re-checking against what the current backend actually emits.
 _MAX_ASR_NOISE_WORDS = 2
 _NUMBER_WORDS = frozenset(
     {
@@ -211,12 +213,12 @@ def _is_asr_noise_token(word: str) -> bool:
 
 
 def _is_asr_noise_burst(words: list[str]) -> bool:
-    """True when the whole transcript is Parakeet's number/letter noise pattern.
+    """True when the whole transcript is the number/letter noise pattern.
 
     Bounded so it stops eating real speech. A long *number-only* string is
     someone talking ("nine one one", "twenty twenty five"); dropping those
     also hid them from the client, so the turn vanished with no explanation.
-    Parakeet's noise instead glues numbers to connectors ("six and a"), so a
+    Noise instead glues numbers to connectors ("six and a"), so a
     connector is what licenses the pattern beyond a two-word burst.
     """
     if len(words) > _MAX_ASR_NOISE_WORDS and not any(word in _NOISE_CONNECTORS for word in words):

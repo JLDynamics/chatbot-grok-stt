@@ -141,7 +141,7 @@ final class LocalServiceStarter {
     }
 
     /// Bring up the FastAPI sidecar so saved chats and personal memory load
-    /// without waiting on Parakeet/TTS. No-op for a custom sidecar URL.
+    /// without waiting on the speech models. No-op for a custom sidecar URL.
     func ensureSidecar() async throws {
         let sidecar = LocalService.sidecarAPI
         guard Self.managesSidecar(sidecar) else { return }

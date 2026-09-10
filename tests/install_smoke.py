@@ -44,11 +44,11 @@ def main() -> None:
 
     modules = ModuleArguments()
     kokoro = KokoroTTSHandlerArguments()
-    assert (modules.stt, modules.llm_backend, modules.tts) == ("parakeet-tdt", "responses-api", "kokoro")
+    assert (modules.stt, modules.llm_backend, modules.tts) == ("grok-stt", "responses-api", "kokoro")
     assert kokoro.kokoro_tts_voice == "bm_fable"
     assert kokoro.kokoro_tts_model_name == "mlx-community/Kokoro-82M-bf16"
     for module in (
-        "chatbot.STT.parakeet_tdt_handler",
+        "chatbot.STT.grok_stt_handler",
         "chatbot.LLM.responses_api_language_model",
         "chatbot.TTS.kokoro_tts_handler",
         "chatbot.api.openai_realtime.server",

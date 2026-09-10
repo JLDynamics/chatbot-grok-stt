@@ -81,12 +81,11 @@ def test_remove_unspeechable_strips_markdown_list_markers() -> None:
 #     if lang_name and self.enable_lang_prompt:
 #         active_chat.add_item(make_user_message(f"Please reply to my message in {lang_name}."))
 #
-# so `--enable_lang_prompt` silently emits nothing for that language. Parakeet TDT is the
-# default STT and reports 25 languages, of which only 8 overlapped the original 12-entry map.
+# so `--enable_lang_prompt` silently emits nothing for that language.
 
-# Parakeet is the single retained STT backend.
-_STT_HANDLER_MODULES = ["chatbot.STT.parakeet_tdt_handler"]
-_ALWAYS_IMPORTABLE = {"chatbot.STT.parakeet_tdt_handler"}
+# grok-stt is the single retained STT backend.
+_STT_HANDLER_MODULES = ["chatbot.STT.grok_stt_handler"]
+_ALWAYS_IMPORTABLE = {"chatbot.STT.grok_stt_handler"}
 
 
 def _supported_languages(module_name):
@@ -114,12 +113,16 @@ def test_every_stt_language_has_an_llm_language_name(module_name):
     )
 
 
-def test_parakeet_default_stt_is_fully_covered():
-    """Explicit guard for the default backend, independent of the parametrized sweep."""
-    parakeet = importlib.import_module("chatbot.STT.parakeet_tdt_handler")
+def test_default_stt_languages_are_fully_covered():
+    """Explicit guard for the default backend, independent of the parametrized sweep.
 
-    assert len(parakeet.SUPPORTED_LANGUAGES) == 1
-    assert set(parakeet.SUPPORTED_LANGUAGES) <= set(WHISPER_LANGUAGE_TO_LLM_LANGUAGE)
+    Every code the STT can report needs a name here, or --enable_lang_prompt
+    silently emits nothing for that language.
+    """
+    stt = importlib.import_module("chatbot.STT.grok_stt_handler")
+
+    missing = sorted(set(stt.SUPPORTED_LANGUAGES) - set(WHISPER_LANGUAGE_TO_LLM_LANGUAGE))
+    assert not missing, f"no language name for: {missing}"
 
 
 def test_language_names_are_lowercase_and_non_empty():
@@ -143,7 +146,7 @@ def test_language_names_are_lowercase_and_non_empty():
         ("en-auto", ("en", "english")),
     ],
 )
-def test_resolve_auto_language_names_parakeet_languages(code, expected):
+def test_resolve_auto_language_names_stt_languages(code, expected):
     assert resolve_auto_language(code) == expected
 
 

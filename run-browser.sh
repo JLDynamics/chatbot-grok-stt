@@ -200,7 +200,7 @@ else
 fi
 echo "Ctrl+C stops the services started by this launcher."
 # Sidecar is independent of model load — start it immediately so Settings,
-# memory, and history work while Parakeet/TTS warm up.
+# memory, and history work while the TTS model warms up.
 if [[ -z "$(listener "$WEB_PORT")" ]]; then
   if [[ -x .venv/bin/uvicorn ]]; then
     sidecar_command=(.venv/bin/uvicorn)

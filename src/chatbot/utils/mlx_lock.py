@@ -83,7 +83,7 @@ def _synchronize_gpu() -> None:
     other lazily built arrays can still be in flight when the lock is handed
     over, and Metal aborts the process when a second thread starts encoding
     into that state (``_status < MTLCommandBufferStatusCommitted``, seen at
-    startup when Kokoro's warmup handed the lock to Parakeet's load).
+    startup when one model's warmup handed the lock straight to another's load).
     """
     try:
         import mlx.core as mx

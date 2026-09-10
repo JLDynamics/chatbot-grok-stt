@@ -13,7 +13,7 @@ def test_cli_has_browser_server_only():
 def test_current_defaults_are_mac_voice_profile():
     args = parse_arguments([])
     assert args.realtime_server_kwargs.port == 8766
-    assert args.stt_backend.name == "parakeet-tdt"
+    assert args.stt_backend.name == "grok-stt"
     assert args.llm_backend.name == "responses-api"
     assert args.tts_backend.name == "kokoro"
     assert args.llm_backend.config["model_name"] == "openai/gpt-5.6-luna"

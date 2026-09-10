@@ -67,7 +67,7 @@ WHISPER_LANGUAGE_TO_LLM_LANGUAGE = {
     "pl": "polish",
     "it": "italian",
     "nl": "dutch",
-    # The languages Parakeet TDT 1.1B (the default STT) is configured to report.
+    # The remaining languages the STT backend can report.
     "ru": "russian",
     "uk": "ukrainian",
     "cs": "czech",
@@ -85,6 +85,17 @@ WHISPER_LANGUAGE_TO_LLM_LANGUAGE = {
     "et": "estonian",
     "lv": "latvian",
     "lt": "lithuanian",
+    # Reported by the STT backend but previously unnamed here, which made
+    # --enable_lang_prompt silently emit nothing for them.
+    "ar": "arabic",
+    "fa": "persian",
+    "fil": "filipino",
+    "id": "indonesian",
+    "mk": "macedonian",
+    "ms": "malay",
+    "th": "thai",
+    "tr": "turkish",
+    "vi": "vietnamese",
 }
 
 

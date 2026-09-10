@@ -2,7 +2,7 @@
 
 A Mac-first live voice chatbot that runs its ears and voice locally, while a Responses API model handles the conversation.
 
-`native panel microphone → Parakeet MLX → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → speakers`
+`native panel microphone → xAI speech-to-text → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → speakers`
 
 It keeps realtime WebSocket turn-taking, interruption/cancellation, long-term memory, in-response web search and page reading (including the Chrome page bridge for logged-in or paywalled tabs), in-app screenshots, and optional coding-agent delegation.
 
@@ -31,9 +31,9 @@ uv sync
 open /Applications/Voice.app
 ```
 
-Use the copy in **Applications**. The tree under `macos/Voice/build/` is only the compiler output; Launchpad should not list it. `run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`). Opening Voice starts those services when the default local ports are used, and **replaces a stale process** whose code no longer matches this checkout (that is how an old backend could sit on the ports without search). The first launch may download the Parakeet and TTS model files.
+Use the copy in **Applications**. The tree under `macos/Voice/build/` is only the compiler output; Launchpad should not list it. `run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`). Opening Voice starts those services when the default local ports are used, and **replaces a stale process** whose code no longer matches this checkout (that is how an old backend could sit on the ports without search). The first launch may download the TTS model files.
 
-The default model path is `openai/gpt-5.6-luna` through OpenRouter. **Parakeet TDT 1.1B** STT and the TTS model run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language). A Chinese name inside an English reply is spoken by the Mandarin pipeline, not spelled out as “Chinese letter.” Set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
+The default model path is `openai/gpt-5.6-luna` through OpenRouter. Speech-to-text runs on **xAI** (`--stt grok-stt`), authenticated with the Grok CLI session in `~/.grok/auth.json`, so there is nothing metered to buy; `XAI_API_KEY` overrides it. That auth path is undocumented and can stop working, and the endpoint does not document Chinese transcription. The TTS model runs locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language). A Chinese name inside an English reply is spoken by the Mandarin pipeline, not spelled out as “Chinese letter.” Set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
 
 ## Configuration
 
@@ -41,6 +41,7 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
+| `GROK_STT_LANG` | `en` | Language sent to xAI STT; a fixed language also enables punctuation. `auto` detects instead, without punctuation |
 | `TTS` | `kokoro` | TTS backend: `kokoro` (Kokoro-82M) or `vibevoice` (Microsoft VibeVoice) |
 | `MODEL` | `openai/gpt-5.6-luna` | OpenRouter Responses API model ID |
 | `KOKORO_MODEL` | `mlx-community/Kokoro-82M-bf16` | Kokoro-82M MLX model repo |
@@ -53,7 +54,6 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `VIBEVOICE_CFG_SCALE` | `1.5` | Classifier-free guidance; higher is more distinct but harsher |
 | `KOKORO_DENOISE_FLOOR` / `VIBEVOICE_DENOISE_FLOOR` | `0.04` | Spectral-denoiser suppression floor; lower removes more hiss (slight risk of a processed texture) |
 | `PORT` / `WEB_PORT` | `8766` / `7860` | Realtime and browser ports |
-| `PARAKEET_MODEL` | `mlx-community/parakeet-tdt-1.1b` | MLX Parakeet STT model (English) |
 | `VAD_MIN_SILENCE_MS` | `1200` | Silence (ms) before a spoken turn is considered finished. Higher keeps ~1 s thinking pauses inside one turn instead of splitting it; lower answers faster after you truly stop |
 | `VAD_THRESH` | `0.65` | VAD confidence threshold; higher = fewer false voice triggers |
 | `VAD_MIN_SPEECH_MS` | `600` | Sustained speech (ms) before a user turn / barge-in is confirmed. Raise to soften barge-in (so brief noises or the assistant's own echo don't cut a reply) |
