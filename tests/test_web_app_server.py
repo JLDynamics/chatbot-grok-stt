@@ -33,7 +33,7 @@ def test_config_exposes_retained_sidecar_capabilities(monkeypatch, tmp_path):
     assert data["stale"] is False
     assert Path(data["source"]) == ROOT
     assert data["pid"] > 0
-    assert data["codeAgent"] is True
+    assert "codeAgent" not in data, "the coding agent was removed"
     assert data["webPort"] == server.WEB_PORT
 
     monkeypatch.setattr(server, "DESKTOP_CONTROL_ENABLED", False)
@@ -914,25 +914,10 @@ async def test_search_prefers_user_tavily_key(monkeypatch):
     assert body["results"][0]["snippet"].startswith("C")
 
 
-def test_code_agent_disabled_when_turned_off(monkeypatch):
-    monkeypatch.setattr(server, "CODE_AGENT_ENABLED", False)
-    response = client.post("/api/code", json={"task": "say hi"})
-    assert response.status_code == 503
-    assert "turned off" in response.json()["detail"]
-
-
-def test_code_agent_requires_task_and_grok(monkeypatch, tmp_path):
-    monkeypatch.setattr(server, "CODE_AGENT_ENABLED", True)
-    assert client.post("/api/code", json={"task": "  "}).status_code == 400
-
-    grok = tmp_path / "grok"
-    grok.write_text('#!/bin/sh\necho \'{"text":"done"}\'\n')
-    grok.chmod(0o700)
-    monkeypatch.setattr(server, "GROK_BIN", grok)
-
-    body = client.post("/api/code", json={"task": "build it"}).json()
-    assert body["ok"] is True
-    assert body["output"] == "done"
+def test_the_code_endpoint_is_gone():
+    """Claude Code covers that job; a voice-triggered agent with write access
+    to the home folder does not need to exist for it."""
+    assert client.post("/api/code", json={"task": "build it"}).status_code == 404
 
 
 def test_desktop_scroll_blocks_sensitive_scope(monkeypatch, tmp_path):

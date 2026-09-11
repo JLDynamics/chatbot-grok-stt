@@ -30,7 +30,7 @@ def test_handles_only_the_research_tools():
     assert ServerToolExecutor.handles("read_page")
     assert ServerToolExecutor.handles("remember")
     assert not ServerToolExecutor.handles("screenshot")
-    assert not ServerToolExecutor.handles("code_agent")
+    assert not ServerToolExecutor.handles("screenshot")
 
 
 def test_web_search_posts_query_and_formats_results():

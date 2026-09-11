@@ -31,7 +31,7 @@ def test_personal_memory_envelope_matches_native_client(isolated_client):
     assert "Nicole is Jack's daughter" in body["content"]
     assert body["max_chars"] >= len(body["content"])
     config = isolated_client.get("/api/config").json()
-    assert {"search", "codeAgent", "desktopControl", "chatbotUrl"} <= set(config)
+    assert {"search", "desktopControl", "chatbotUrl"} <= set(config)
 
 
 def test_personal_memory_round_trip(isolated_client):

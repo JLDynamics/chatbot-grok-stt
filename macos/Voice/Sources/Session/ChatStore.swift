@@ -47,12 +47,10 @@ public struct ChatSessionSummary: Codable, Identifiable {
 
 public struct SidecarConfig: Codable, Equatable {
     public var search: Bool
-    public var codeAgent: Bool
     public var desktopControl: Bool
 
-    public init(search: Bool = false, codeAgent: Bool = false, desktopControl: Bool = false) {
+    public init(search: Bool = false, desktopControl: Bool = false) {
         self.search = search
-        self.codeAgent = codeAgent
         self.desktopControl = desktopControl
     }
 }

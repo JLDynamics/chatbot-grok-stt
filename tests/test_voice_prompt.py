@@ -25,7 +25,7 @@ def test_voice_prompt_tells_the_model_the_date_and_when_to_search():
 
     assert "Current date and time: Tuesday, September 8, 2026, 9:35 PM (MDT)." in prompt
     assert "You drive research yourself with bash (curl)" in prompt
-    assert "Never hand search or fetch to code_agent." in prompt
+    assert "You drive research yourself with bash (curl) in this same reply" in prompt
     assert "On every question, decide for yourself whether your knowledge is still current" in prompt
     assert "Do not wait for the user to tell you that you were wrong" in prompt
     assert "Stable facts" in prompt

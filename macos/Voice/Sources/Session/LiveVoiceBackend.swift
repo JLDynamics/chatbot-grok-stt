@@ -624,7 +624,7 @@ final class LiveVoiceBackend: VoiceBackend {
         responseRequestPending = false
     }
 
-    /// Run a tool the server forwarded to the client (screenshot, code_agent),
+    /// Run a tool the server forwarded to the client (screenshot),
     /// post its output and ask the model to continue.
     private func executeTool(name: String, argsJson: String, callId: String) {
         guard !closed, seenToolCalls.insert(callId).inserted else { return }

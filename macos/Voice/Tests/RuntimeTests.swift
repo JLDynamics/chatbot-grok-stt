@@ -40,9 +40,9 @@ struct RuntimeTests {
         assert(summary.id == "abc" && summary.title == "hello" && summary.preview == "hi")
         let config = try JSONDecoder().decode(
             SidecarConfig.self,
-            from: Data(#"{"search":true,"codeAgent":false,"desktopControl":true,"chatbotUrl":"ws://x"}"#.utf8)
+            from: Data(#"{"search":true,"desktopControl":true,"chatbotUrl":"ws://x"}"#.utf8)
         )
-        assert(config.search && !config.codeAgent && config.desktopControl)
+        assert(config.search && config.desktopControl)
         let storeError = ChatStoreError.from(
             status: 400,
             data: Data(#"{"detail":"Personal memory is too long; consolidate it first."}"#.utf8)
@@ -104,7 +104,7 @@ struct RuntimeTests {
         scope.cancel()
 
         // The page ladder and the screen-read budget moved to the server: the
-        // client only publishes definitions and runs screenshot / code_agent.
+        // client only publishes definitions and runs screenshot.
         let names = VoiceToolExecutor.shared.activeToolDefinitions().compactMap { $0["name"] as? String }
         assert(Set(names).count == names.count, "Tool names must be unique")
         assert(names.contains("remember") && names.contains("forget") && names.contains("search_chat_history"))
@@ -115,11 +115,8 @@ struct RuntimeTests {
         assert(bashDesc.contains("when:1d"), "bash tool must tell the model to date-filter news")
         assert(bashDesc.contains("Wikipedia"), "office-holder facts should fetch Wikipedia, not a news feed")
         assert(bashDesc.contains("voice model") || bashDesc.contains("Research the voice model"),
-               "bash is the voice model's research tool, not code_agent")
-        let codeAgent = VoiceToolExecutor.shared.activeToolDefinitions().first { $0["name"] as? String == "code_agent" }
-        let codeDesc = codeAgent?["description"] as? String ?? ""
-        assert(codeDesc.contains("Do not use this to search the web") || codeDesc.isEmpty,
-               "code_agent must not be the web-research path")
+               "bash is the voice model's research tool")
+        assert(!names.contains("code_agent"), "The coding agent was removed; Claude Code covers that job")
         assert(!names.contains("web_fetch") && !names.contains("read_article"), "Legacy page tools are gone")
         for name in names where VoiceToolExecutor.serverSideTools.contains(name) {
             assert(["bash", "remember", "forget", "search_chat_history"].contains(name))

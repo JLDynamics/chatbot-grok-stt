@@ -225,7 +225,6 @@ final class SessionController: ObservableObject {
             case "web_search": desc = "Searching the web…"
             case "read_page": desc = "Reading page…"
             case "screenshot": desc = "Taking a screenshot…"
-            case "code_agent": desc = "Coding agent running…"
             case "remember": desc = "Saving memory…"
             case "forget": desc = "Updating memory…"
             case "search_chat_history": desc = "Searching past chats…"

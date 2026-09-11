@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import re
-import signal
 import socket
 import tempfile
 import time
@@ -355,7 +354,6 @@ def config() -> dict:
         # Legacy field kept for the verify harness and older clients.
         "s2sUrl": CHATBOT_VOICE_URL,
         "startupGreeting": STARTUP_GREETING,
-        "codeAgent": CODE_AGENT_ENABLED,
         "desktopControl": _desktop_control_available(),
         "webPort": WEB_PORT,
         **SOURCE_SNAPSHOT.describe(),
@@ -875,13 +873,6 @@ async def read_page(req: ReadPageRequest) -> JSONResponse:
     return JSONResponse(failure)
 
 
-GROK_BIN = Path(os.path.expanduser("~/.local/bin/grok"))
-CODE_AGENT_ENABLED = os.environ.get("CODE_AGENT", "on").lower() not in {"off", "0", "false"}
-CODE_AGENT_CWD = Path(os.path.expanduser(os.environ.get("CODE_AGENT_CWD", "~")))
-CODE_AGENT_MODEL = os.environ.get("CODE_AGENT_MODEL", "grok-4.6")
-CODE_AGENT_TIMEOUT_S = _env_float("CODE_AGENT_TIMEOUT", 300.0)
-
-
 async def _while_connected(work, request: Request, timeout: float):
     stopped = asyncio.Event()
 
@@ -909,66 +900,6 @@ async def _while_connected(work, request: Request, timeout: float):
             if not task.done():
                 task.cancel()
         await asyncio.gather(running, watcher, return_exceptions=True)
-
-
-class CodeRequest(BaseModel):
-    task: str
-
-
-@app.post("/api/code")
-async def code_agent(req: CodeRequest, request: Request) -> JSONResponse:
-    task = req.task.strip()
-    if not CODE_AGENT_ENABLED:
-        raise HTTPException(status_code=503, detail="The coding agent is turned off.")
-    if not task:
-        raise HTTPException(status_code=400, detail="No task given.")
-    if not GROK_BIN.exists():
-        raise HTTPException(status_code=503, detail="Grok Build (grok) is not installed on ~/.local/bin.")
-    logger.warning("code_agent: cwd=%s task_chars=%d model=%s", CODE_AGENT_CWD, len(task), CODE_AGENT_MODEL)
-    try:
-        process = await asyncio.create_subprocess_exec(
-            str(GROK_BIN),
-            "-p",
-            task,
-            "--model",
-            CODE_AGENT_MODEL,
-            "--cwd",
-            str(CODE_AGENT_CWD),
-            "--permission-mode",
-            "bypassPermissions",
-            "--output-format",
-            "json",
-            env=dict(os.environ),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
-        )
-        output, _ = await _while_connected(process.communicate(), request, CODE_AGENT_TIMEOUT_S)
-    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            process.kill()
-        await process.wait()
-        if isinstance(exc, asyncio.CancelledError):
-            raise
-        raise HTTPException(status_code=504, detail="The coding agent timed out.") from exc
-    except OSError as exc:
-        raise HTTPException(status_code=502, detail="Could not start the coding agent.") from exc
-    raw = output.decode("utf-8", errors="replace").strip()
-    # --output-format json emits a single object with the response `text`.
-    text = raw
-    try:
-        payload = json.loads(raw)
-        if isinstance(payload, dict) and isinstance(payload.get("text"), str):
-            text = payload["text"]
-        elif isinstance(payload, list):
-            text = "\n".join(str(x) for x in payload)
-    except (json.JSONDecodeError, ValueError):
-        pass
-    if len(text) > 4000:
-        text = text[:4000] + "\n[output truncated]"
-    return JSONResponse({"ok": process.returncode == 0, "exit_code": process.returncode, "output": text})
 
 
 DESKTOP_HARNESS_BIN = Path(os.path.expanduser("~/.local/bin/desktop-harness"))

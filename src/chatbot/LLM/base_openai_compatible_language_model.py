@@ -639,7 +639,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                         generation_completed = yield from self._run_server_tools(server_calls, state, turn)
                         if not generation_completed:
                             break
-                    # A screenshot / code_agent in the same round still has to
+                    # A client-side tool in the same round still has to
                     # finish on the client before the model can continue.
                     if client_calls or not server_calls:
                         break

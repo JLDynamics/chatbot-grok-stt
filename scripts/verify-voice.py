@@ -457,7 +457,7 @@ def verify_api(report: Report) -> None:
     report.add(
         "sidecar config",
         ok,
-        f"search={cfg.get('search')} codeAgent={cfg.get('codeAgent')} desktopControl={cfg.get('desktopControl')}"
+        f"search={cfg.get('search')} desktopControl={cfg.get('desktopControl')}"
         if ok
         else f"status {code} {cfg}",
     )
@@ -522,7 +522,7 @@ class Turn:
     # (name, arguments) of tools the server ran inside the response.
     server_tools: list[tuple[str, str]] = field(default_factory=list)
     server_tool_outputs: list[str] = field(default_factory=list)
-    # Tools the server handed to the client to run (screenshot, code_agent).
+    # Tools the server handed to the client to run (screenshot).
     client_tools: list[str] = field(default_factory=list)
     error: str = ""
 
@@ -870,11 +870,6 @@ def verify_research_initiative(report: Report) -> None:
         f"server tools: {names}; client tools: {turn.client_tools}; "
         f"{turn.transcript[:160]!r}" + (f"; error: {turn.error}" if turn.error else ""),
     )
-    report.add(
-        "verify-first did not use code_agent",
-        "code_agent" not in turn.client_tools and "code_agent" not in names,
-        f"client tools: {turn.client_tools}",
-    )
 
 
 def verify_news_research(report: Report) -> None:
@@ -1064,7 +1059,6 @@ end tell
             ("voice.tools.screenshot", "screenshot toggle"),
             ("voice.tools.search", "search toggle"),
             ("voice.tools.chrome", "chrome toggle"),
-            ("voice.tools.codeAgent", "code agent toggle"),
         ):
             try:
                 click_ax(ident)

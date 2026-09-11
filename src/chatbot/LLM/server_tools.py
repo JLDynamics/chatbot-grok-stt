@@ -8,9 +8,8 @@ memory) none of that is necessary. The LLM handler calls the sidecar directly,
 appends the output to the conversation and continues the same response, so
 "let me check" is followed by the answer with no client round trip.
 
-Only tools that need the app process stay client-side: ``screenshot`` (Screen
-Recording permission is per code identity) and ``code_agent`` (runs for
-minutes and must not block the pipeline thread).
+Only tools that need the app process stay client-side: ``screenshot``, because
+Screen Recording permission is granted per code identity.
 """
 
 from __future__ import annotations

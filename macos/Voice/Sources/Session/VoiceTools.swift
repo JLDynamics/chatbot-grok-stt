@@ -19,18 +19,15 @@ public struct VoiceToolResult: Sendable {
 /// `remember`, `forget`) run inside the Python server's response loop, so a
 /// "let me check" is followed by the answer with no client
 /// round trip. This executor only owns what needs the app process:
-/// `screenshot` (Screen Recording permission is per code identity) and
-/// `code_agent` (a minutes-long sidecar call the pipeline thread must not
-/// wait on). It also publishes the tool definitions for `session.update`.
+/// `screenshot`, because Screen Recording permission is per code identity.
+/// It also publishes the tool definitions for `session.update`.
 public final class VoiceToolExecutor: @unchecked Sendable {
     public static let shared = VoiceToolExecutor()
 
     private let baseURL = LocalService.sidecarAPI
 
-    /// Per-tool URLSessions. `URLSession.shared` defaults to a 60s request
-    /// timeout, which is *shorter* than the sidecar's own budget for the
-    /// coding agent (`CODE_AGENT_TIMEOUT_S`, 300s): with the shared session a
-    /// long coding task reported failure while the server kept working.
+    /// Per-tool URLSessions, so one tool's budget cannot be capped by
+    /// `URLSession.shared`'s 60s default.
     private static func session(timeout: TimeInterval) -> URLSession {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = timeout
@@ -42,8 +39,6 @@ public final class VoiceToolExecutor: @unchecked Sendable {
     /// Sidecar screenshot fallback. Keep this short so a hung capture cannot
     /// pin the voice turn (a 75s wait left the session silent until barge-in).
     private let screenshotSession = session(timeout: 12)
-    /// `/api/code` — `CODE_AGENT_TIMEOUT_S` defaults to 300s.
-    private let codeAgentSession = session(timeout: 360)
 
     /// Surface the sidecar's own `detail` instead of a bare status code.
     private func errorDetail(_ data: Data, _ response: URLResponse?) -> String {
@@ -72,11 +67,6 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         set { UserDefaults.standard.set(newValue, forKey: "tools.chrome_bridge") }
     }
 
-    public var codeAgentEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "tools.code_agent") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "tools.code_agent") }
-    }
-
     /// Tool names the server executes inside the response. Anything else the
     /// model calls is forwarded to `run(name:argsJson:)`.
     public static let serverSideTools: Set<String> = [
@@ -97,7 +87,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
                     + "public page and strip HTML with python3. For who holds an office or a similar current "
                     + "fact, curl Wikipedia or a primary page — not a news feed. For latest news, use Google "
                     + "News RSS with when:1d and today's date, print pubDate, keep the last 24 hours. Search "
-                    + "HTML often blocks curl; retry a primary page. Not for files on disk (use code_agent). "
+                    + "HTML often blocks curl; retry a primary page. "
                     + "No web_search or read_page tool exists.",
                 properties: [
                     "command": Self.string("A curl-based command. Pipes to python3/head/rg are fine."),
@@ -111,16 +101,6 @@ public final class VoiceToolExecutor: @unchecked Sendable {
                 "screenshot",
                 "Capture what is visible on the Mac screen. For visual questions about the screen, a layout, an "
                     + "image or a chart. Not for reading an article: use bash with curl for page text."
-            ))
-        }
-        if codeAgentEnabled {
-            defs.append(Self.tool(
-                "code_agent",
-                "Hand a coding or file task to the coding agent on this machine (reads files, runs shell commands, "
-                    + "edits code). Only when the user asks to inspect, change, run, test or fix files on disk. "
-                    + "Do not use this to search the web or fetch a page; the voice model uses bash for that.",
-                properties: ["task": Self.string("The full task as one self-contained instruction.")],
-                required: ["task"]
             ))
         }
         defs.append(Self.tool(
@@ -164,8 +144,11 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         ["type": "boolean", "description": description]
     }
 
+    /// `argsJson` goes unread while `screenshot` is the only client-side tool,
+    /// since it takes no arguments. The parameter stays: the server always
+    /// sends the call's arguments, and tests/test_tool_contract.py reads this
+    /// signature to check the client dispatches exactly the client-side tools.
     public func run(name: String, argsJson: String) async -> VoiceToolResult {
-        let args = (try? JSONSerialization.jsonObject(with: Data(argsJson.utf8)) as? [String: Any]) ?? [:]
         NSLog("[VoiceTools] executing tool name=\(name)")
         do {
             try Task.checkCancellation()
@@ -173,8 +156,6 @@ public final class VoiceToolExecutor: @unchecked Sendable {
             case "screenshot":
                 try Task.checkCancellation()
                 return try await execScreenshot()
-            case "code_agent":
-                return try await execCodeAgent(task: args["task"] as? String ?? "")
             default:
                 // A research tool only reaches the client when the server was
                 // started without a sidecar URL; say so instead of failing silently.
@@ -234,26 +215,6 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         return .failed("Screenshot fallback failed (\(errorDetail(data, res))).")
     }
 
-    private func execCodeAgent(task: String) async throws -> VoiceToolResult {
-        guard !task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return VoiceToolResult(output: "No task provided.")
-        }
-        let url = baseURL.appendingPathComponent("code")
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["task": task])
-
-        let (data, res) = try await codeAgentSession.data(for: req)
-        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
-            return VoiceToolResult(output: "Coding agent request failed: \(errorDetail(data, res))")
-        }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return VoiceToolResult(output: "Invalid coding agent response.")
-        }
-        let output = json["output"] as? String ?? "Task finished with no output."
-        return VoiceToolResult(output: output)
-    }
 
     public func checkChromeBridgeStatus() async -> Bool {
         let url = baseURL.appendingPathComponent("browser/status")

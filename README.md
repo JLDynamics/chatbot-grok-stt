@@ -13,7 +13,6 @@ In the default **Speakers (echo cancellation)** mode, the mic stays open while t
 - Apple Silicon Mac, macOS 26 or newer (the on-device speech engine)
 - Python 3.10 or newer
 - [uv](https://docs.astral.sh/uv/)
-- [Grok Build](https://x.ai/cli) (`grok` on `~/.local/bin`), for the optional coding agent
 - An OpenRouter key
 
 ## Install and run
@@ -62,19 +61,15 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | `PROMPT` | concise voice prompt | Backend system prompt |
 | `STARTUP_GREETING` | empty | Optional greeting instruction on connection |
 | `TINYFISH_API_KEY` / `TAVILY_API_KEY` / `SERPER_API_KEY` | empty | Enables local web search; TinyFish also powers page fetch |
-| `CODE_AGENT` | `on` | Set `off` to hide coding-agent delegation |
-| `CODE_AGENT_CWD` | home folder | Default working folder for coding tasks |
-| `CODE_AGENT_MODEL` | `grok-4.6` | Model for coding-agent delegation (via Grok Build) |
 | `DESKTOP_CONTROL` | `on` | Unused by Voice; kept for the sidecar verify harness |
 | `CHATBOT_DATA_DIR` | `~/.chatbot` | Saved chats, personal profile, and project notebooks |
 | `CHATBOT_SESSION_RETENTION` | `50` | Maximum saved conversations kept on disk |
 
 ### Search, fetch, and the Chrome bridge
 
-The **voice model** searches and reads pages **inside the same reply** (not the coding agent). It answers from knowledge when that knowledge is still current. If a fact may have changed since training (who holds office, versions, scores, news, prices), it says a short line such as “Let me check that” and runs `bash` with `curl` on the server — without waiting for the user to ask. No Mac round trip per hop.
+The **voice model** searches and reads pages **inside the same reply**. It answers from knowledge when that knowledge is still current. If a fact may have changed since training (who holds office, versions, scores, news, prices), it says a short line such as “Let me check that” and runs `bash` with `curl` on the server — without waiting for the user to ask. No Mac round trip per hop.
 
 - **Research (`bash` + `curl`)**: the conversational model writes a short curl command, like Pi. No search API key. For latest news it should use a dated RSS feed (`when:1d`).
-- **`code_agent`**: on-disk coding only. It is not the web-research path.
 - **Chrome page bridge**: bounded reader-style text from the visible public tab, including pages a normal fetch cannot open. Read-only; no replies/timelines on X. The extension still has to be enabled on the tab.
 - **Screenshot** stays in Voice.app (Screen Recording is per app). It is for visual questions, not for reading articles.
 
@@ -107,7 +102,6 @@ Natural article wording uses `read_page` (fetch, then Chrome when needed). Gener
 
 ## Optional tools
 
-- **Coding agent** runs the locally installed [Grok Build](https://x.ai/cli) `grok` CLI (model `grok-4.6`) on this Mac when you ask it to inspect or change files.
 - **Screenshot** captures the main display from Voice.app. Screen Recording permission is required. Sensitive sign-in/payment windows stay blocked.
 - **Memory** uses an editable personal Markdown profile and saved conversations. The assistant can update it when you say “remember…” or “forget…”.
 

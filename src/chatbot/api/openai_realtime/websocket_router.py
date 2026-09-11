@@ -428,7 +428,7 @@ def create_app(
 
     def _server_tools_enabled() -> bool:
         # The LLM handler owns a ServerToolExecutor once it is set up with a
-        # sidecar URL. The app only executes screenshot/code_agent itself, so
+        # sidecar URL. The app only executes screenshot itself, so
         # a backend without this is one it cannot research with.
         return any(getattr(handler, "server_tools", None) is not None for handler in unit.handlers)
 

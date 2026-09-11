@@ -3,7 +3,7 @@
 A response may take several model calls: text streams out, the model calls a
 research tool, the handler runs it against the sidecar, appends the output and
 asks the model again — all inside one response. Tools the client must run
-(screenshot, code_agent) still end the response the old way.
+(screenshot) still end the response the old way.
 """
 
 from __future__ import annotations

@@ -20,7 +20,7 @@ SESSION_SOURCES = ROOT / "macos" / "Voice" / "Sources" / "Session"
 
 # Tools that must stay in the app process: Screen Recording permission is per
 # code identity, and the coding agent runs for minutes.
-CLIENT_TOOL_NAMES = frozenset({"screenshot", "code_agent"})
+CLIENT_TOOL_NAMES = frozenset({"screenshot"})
 
 
 def _swift_string_set(source: str, name: str) -> set[str]:

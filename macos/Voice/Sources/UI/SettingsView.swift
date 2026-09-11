@@ -9,7 +9,6 @@ struct SettingsView: View {
     @State private var webSearch: Bool = VoiceToolExecutor.shared.webSearchEnabled
     @State private var screenshot: Bool = VoiceToolExecutor.shared.screenshotEnabled
     @State private var chromeBridge: Bool = VoiceToolExecutor.shared.chromeBridgeEnabled
-    @State private var codeAgent: Bool = VoiceToolExecutor.shared.codeAgentEnabled
     @State private var chromeBridgeConnected: Bool = false
     @State private var memoryText: String = ""
     @State private var memoryNote: String = ""
@@ -125,18 +124,6 @@ struct SettingsView: View {
                         .padding(.leading, 32)
                     }
 
-                    toolRow(
-                        icon: "chevron.left.forwardslash.chevron.right",
-                        title: "Coding Agent",
-                        desc: "Hands a coding or file task to Grok on this Mac (read/edit files, run commands). Not used for news, search, or reading websites.",
-                        isOn: $codeAgent
-                    ) { val in
-                        VoiceToolExecutor.shared.codeAgentEnabled = val
-                        session.applyToolSettings()
-                    }
-                    if session.sidecarConfig?.codeAgent == false {
-                        availabilityNote("Coding agent is turned off on the server (CODE_AGENT=off).")
-                    }
                 }
                 .padding(.vertical, 4)
             }
@@ -281,8 +268,7 @@ struct SettingsView: View {
         switch title {
         case "Screenshot": return "voice.tools.screenshot"
         case "Web research (bash + curl)": return "voice.tools.search"
-        case "Chrome Page Bridge": return "voice.tools.chrome"
-        default: return "voice.tools.codeAgent"
+        default: return "voice.tools.chrome"
         }
     }
 

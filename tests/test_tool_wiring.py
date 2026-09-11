@@ -25,7 +25,7 @@ SIDECAR = os.environ.get("SIDECAR", "http://127.0.0.1:7860/api")
 
 def test_config_exposes_tool_availability():
     body = client.get("/api/config").json()
-    assert {"search", "codeAgent", "desktopControl", "chatbotUrl"} <= set(body)
+    assert {"search", "desktopControl", "chatbotUrl"} <= set(body)
 
 
 def test_chrome_bridge_reports_disconnected_without_extension():
@@ -54,7 +54,7 @@ def sidecar_up() -> bool:
 
 
 @pytest.mark.skipif(not sidecar_up(), reason="sidecar not running")
-def test_live_search_fetch_code_and_screenshot():
+def test_live_search_fetch_and_screenshot():
     search = httpx.post(f"{SIDECAR}/search", json={"query": "OpenAI"}, timeout=20)
     assert search.status_code == 200, search.text
     assert search.json().get("results")
@@ -63,10 +63,6 @@ def test_live_search_fetch_code_and_screenshot():
     assert fetched.status_code == 200, fetched.text
     body = fetched.json()
     assert "Example" in (body.get("title") or "") or (body.get("text") or "")
-
-    code = httpx.post(f"{SIDECAR}/code", json={"task": "echo tool-wiring-ok"}, timeout=30)
-    assert code.status_code == 200, code.text
-    assert "tool-wiring-ok" in (code.json().get("output") or "")
 
     shot = httpx.post(f"{SIDECAR}/desktop/act", json={"action": "screenshot"}, timeout=30)
     assert shot.status_code in {200, 403, 451}, shot.text
