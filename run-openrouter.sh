@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the single supported realtime backend:
-# xAI STT -> Responses API -> Kokoro TTS.
+# on-device macOS STT -> Responses API -> Kokoro TTS.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +32,10 @@ VAD_MIN_SILENCE_MS="${VAD_MIN_SILENCE_MS:-1200}"
 VAD_MIN_SPEECH_MS="${VAD_MIN_SPEECH_MS:-600}"
 VAD_SPEECH_PAD_MS="${VAD_SPEECH_PAD_MS:-500}"
 VAD_SHORT_SEGMENT_MERGE_MS="${VAD_SHORT_SEGMENT_MERGE_MS:-400}"
-# Transcription runs on xAI, authenticated with the Grok CLI session.
+# Transcription runs on this Mac, through Apple's on-device engine. STT=grok-stt
+# switches back to the xAI endpoint, which needs a live Grok subscription.
+STT="${STT:-native-stt}"
+STT_LOCALE="${STT_LOCALE:-en-US}"
 GROK_STT_LANG="${GROK_STT_LANG:-en}"
 
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
@@ -47,6 +50,14 @@ elif command -v chatbot >/dev/null 2>&1; then
 else
   echo "Error: chatbot is not installed. Run: uv sync" >&2
   exit 1
+fi
+
+if [[ "$STT" == "native-stt" ]]; then
+  SPEECH_HELPER="$ROOT/macos/SpeechHelper/build/speech-helper"
+  if [[ ! -x "$SPEECH_HELPER" ]]; then
+    echo "Building the on-device speech helper..."
+    "$ROOT/macos/SpeechHelper/scripts/build.sh" >/dev/null
+  fi
 fi
 
 occupant="$(lsof -ti "TCP:$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
@@ -76,7 +87,7 @@ args=(
   serve
   --host 127.0.0.1
   --port "$PORT"
-  --stt grok-stt
+  --stt "$STT"
   --llm_backend responses-api
   --tts "$TTS"
 )
@@ -116,6 +127,10 @@ args+=(
   --short_segment_merge_ms "$VAD_SHORT_SEGMENT_MERGE_MS"
 )
 
-args+=(--grok_stt_language "$GROK_STT_LANG")
+if [[ "$STT" == "native-stt" ]]; then
+  args+=(--native_stt_locale "$STT_LOCALE")
+else
+  args+=(--grok_stt_language "$GROK_STT_LANG")
+fi
 
 exec "$CHATBOT_BIN" "${args[@]}"

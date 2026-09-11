@@ -84,8 +84,8 @@ def test_remove_unspeechable_strips_markdown_list_markers() -> None:
 # so `--enable_lang_prompt` silently emits nothing for that language.
 
 # grok-stt is the single retained STT backend.
-_STT_HANDLER_MODULES = ["chatbot.STT.grok_stt_handler"]
-_ALWAYS_IMPORTABLE = {"chatbot.STT.grok_stt_handler"}
+_STT_HANDLER_MODULES = ["chatbot.STT.native_stt_handler", "chatbot.STT.grok_stt_handler"]
+_ALWAYS_IMPORTABLE = {"chatbot.STT.native_stt_handler", "chatbot.STT.grok_stt_handler"}
 
 
 def _supported_languages(module_name):

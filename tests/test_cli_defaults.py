@@ -13,13 +13,21 @@ def test_cli_has_browser_server_only():
 def test_current_defaults_are_mac_voice_profile():
     args = parse_arguments([])
     assert args.realtime_server_kwargs.port == 8766
-    assert args.stt_backend.name == "grok-stt"
+    assert args.stt_backend.name == "native-stt"
     assert args.llm_backend.name == "responses-api"
     assert args.tts_backend.name == "kokoro"
     assert args.llm_backend.config["model_name"] == "openai/gpt-5.6-luna"
     assert args.tts_backend.config["voice"] == "bm_fable"
     assert args.tts_backend.config["model_name"] == "mlx-community/Kokoro-82M-bf16"
     assert args.module_kwargs.turn_quality_gate is True
+
+
+def test_the_xai_backend_is_still_selectable():
+    """The subscription lapsed; the code path stays for whoever renews one."""
+    args = parse_arguments(["--stt", "grok-stt", "--grok_stt_language", "ja"])
+
+    assert args.stt_backend.name == "grok-stt"
+    assert args.stt_backend.config["language"] == "ja"
 
 
 def test_turn_quality_gate_can_be_disabled():

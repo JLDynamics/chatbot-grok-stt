@@ -1,7 +1,22 @@
-# Native macOS Voice panel
+# Native macOS pieces
 
-This replaces the browser UI (`web_app/`) as the product surface for chatting
-with the Chatbot voice backend. Spec comes from `~/voice-chat-window-design`.
+`Voice/` is the panel: it replaces the browser UI (`web_app/`) as the product
+surface for chatting with the Chatbot voice backend. Spec comes from
+`~/voice-chat-window-design`.
+
+`SpeechHelper/` is the transcriber the Python backend shells out to, one
+process per spoken turn. It exists because `SpeechAnalyzer` and
+`SpeechTranscriber` are Swift-only, so PyObjC cannot reach the fast on-device
+engine, and the bridged `SFSpeechRecognizer` is the slower one.
+
+```bash
+./macos/SpeechHelper/scripts/build.sh          # writes build/speech-helper
+./macos/SpeechHelper/build/speech-helper --locales
+```
+
+`run-openrouter.sh` builds it when the binary is missing, so a fresh clone
+needs no extra step. It reads raw 16-bit mono PCM on stdin and prints one JSON
+object; a turn's audio never touches disk. Needs macOS 26 or newer.
 
 ## Build and run
 
@@ -35,5 +50,8 @@ macos/Voice/
   Sources/Session/   VoiceBackend, SessionController, Mock + Live backends
   Sources/Audio/     AudioEngine (shared mic/playback, AEC when available)
   Resources/         Info.plist, entitlements
+  scripts/build.sh
+macos/SpeechHelper/
+  Sources/main.swift   PCM on stdin -> JSON transcript on stdout
   scripts/build.sh
 ```

@@ -8,7 +8,7 @@ from chatbot.s2s_pipeline import build_pipeline, parse_arguments
 def test_default_profile_is_the_single_retained_pipeline():
     args = parse_arguments([])
 
-    assert args.stt_backend.name == "grok-stt"
+    assert args.stt_backend.name == "native-stt"
     assert args.llm_backend.name == "responses-api"
     assert args.tts_backend.name == "kokoro"
     assert args.module_kwargs.turn_quality_gate is True

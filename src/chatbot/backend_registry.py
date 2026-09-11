@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from chatbot.arguments_classes.grok_stt_arguments import GrokSTTHandlerArguments
 from chatbot.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
+from chatbot.arguments_classes.native_stt_arguments import NativeSTTHandlerArguments
 from chatbot.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
@@ -146,21 +147,41 @@ def _factory(
     return create
 
 
-def _create_grok_stt(context: HandlerContext, config: Mapping[str, Any]) -> Any:
-    handler = _load_handler("chatbot.STT.grok_stt_handler", "GrokSTTHandler")(
-        context.stop_event,
-        queue_in=context.queue_in,
-        queue_out=context.queue_out,
-        setup_kwargs={**config},
-        defer_setup=True,
-    )
-    handler.speculative_turns = context.speculative_turns
-    return handler
+def _create_stt(module_name: str, class_name: str) -> HandlerFactory:
+    """STT handlers take no should_listen event and no runtime context."""
+
+    def create(context: HandlerContext, config: Mapping[str, Any]) -> Any:
+        handler = _load_handler(module_name, class_name)(
+            context.stop_event,
+            queue_in=context.queue_in,
+            queue_out=context.queue_out,
+            setup_kwargs={**config},
+            defer_setup=True,
+        )
+        handler.speculative_turns = context.speculative_turns
+        return handler
+
+    return create
 
 
 STT_BACKENDS = build_backend_registry(
     "stt",
-    [BackendSpec("grok-stt", "stt", GrokSTTHandlerArguments, _create_grok_stt, "grok_stt")],
+    [
+        BackendSpec(
+            "native-stt",
+            "stt",
+            NativeSTTHandlerArguments,
+            _create_stt("chatbot.STT.native_stt_handler", "NativeSTTHandler"),
+            "native_stt",
+        ),
+        BackendSpec(
+            "grok-stt",
+            "stt",
+            GrokSTTHandlerArguments,
+            _create_stt("chatbot.STT.grok_stt_handler", "GrokSTTHandler"),
+            "grok_stt",
+        ),
+    ],
 )
 LLM_BACKENDS = build_backend_registry(
     "llm",

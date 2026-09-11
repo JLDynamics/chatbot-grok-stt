@@ -96,6 +96,23 @@ WHISPER_LANGUAGE_TO_LLM_LANGUAGE = {
     "th": "thai",
     "tr": "turkish",
     "vi": "vietnamese",
+    # Locales the on-device macOS engine transcribes that no hosted backend
+    # here ever offered. Cantonese gets its own entry because the engine
+    # reports it separately from Mandarin.
+    "bn": "bengali",
+    "gu": "gujarati",
+    "kn": "kannada",
+    "ks": "kashmiri",
+    "mai": "maithili",
+    "ml": "malayalam",
+    "mr": "marathi",
+    "ne": "nepali",
+    "or": "odia",
+    "pa": "punjabi",
+    "ta": "tamil",
+    "te": "telugu",
+    "ur": "urdu",
+    "yue": "cantonese",
 }
 
 

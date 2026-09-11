@@ -25,7 +25,7 @@ def _factory(_context, config):
 def test_registry_matches_the_only_supported_cli_choices():
     module_fields = {item.name: item for item in fields(ModuleArguments)}
 
-    assert tuple(STT_BACKENDS) == module_fields["stt"].metadata["choices"] == ("grok-stt",)
+    assert tuple(STT_BACKENDS) == module_fields["stt"].metadata["choices"] == ("native-stt", "grok-stt")
     assert tuple(LLM_BACKENDS) == module_fields["llm_backend"].metadata["choices"] == ("responses-api",)
     assert tuple(TTS_BACKENDS) == module_fields["tts"].metadata["choices"] == ("kokoro", "vibevoice")
 

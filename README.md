@@ -2,7 +2,7 @@
 
 A Mac-first live voice chatbot that runs its ears and voice locally, while a Responses API model handles the conversation.
 
-`native panel microphone → xAI speech-to-text → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → speakers`
+`native panel microphone → on-device macOS speech-to-text → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → speakers`
 
 It keeps realtime WebSocket turn-taking, interruption/cancellation, long-term memory, in-response web search and page reading (including the Chrome page bridge for logged-in or paywalled tabs), in-app screenshots, and optional coding-agent delegation.
 
@@ -10,7 +10,7 @@ In the default **Speakers (echo cancellation)** mode, the mic stays open while t
 
 ## Requirements
 
-- Apple Silicon Mac
+- Apple Silicon Mac, macOS 26 or newer (the on-device speech engine)
 - Python 3.10 or newer
 - [uv](https://docs.astral.sh/uv/)
 - [Grok Build](https://x.ai/cli) (`grok` on `~/.local/bin`), for the optional coding agent
@@ -33,7 +33,11 @@ open /Applications/Voice.app
 
 Use the copy in **Applications**. The tree under `macos/Voice/build/` is only the compiler output; Launchpad should not list it. `run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`). Opening Voice starts those services when the default local ports are used, and **replaces a stale process** whose code no longer matches this checkout (that is how an old backend could sit on the ports without search). The first launch may download the TTS model files.
 
-The default model path is `openai/gpt-5.6-luna` through OpenRouter. Speech-to-text runs on **xAI** (`--stt grok-stt`), authenticated with the Grok CLI session in `~/.grok/auth.json`, so there is nothing metered to buy; `XAI_API_KEY` overrides it. That auth path is undocumented and can stop working. The endpoint's language table omits Chinese, but Mandarin transcribes correctly in practice, punctuation included, so treat that table as incomplete. The TTS model runs locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language). A Chinese name inside an English reply is spoken by the Mandarin pipeline, not spelled out as “Chinese letter.” Set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
+The default model path is `openai/gpt-5.6-luna` through OpenRouter. Speech-to-text runs **on this Mac** (`--stt native-stt`) through Apple's on-device engine, so there is no key, no metering, and nothing that expires: a turn transcribes punctuated in ~170ms, including the helper process launch. It covers 45 locales, Mandarin, Cantonese and Taiwanese among them; `STT_LOCALE` picks one, because the engine has no auto-detect. `macos/SpeechHelper/build/speech-helper --locales` lists what this Mac supports and which models are already installed, and a locale's model downloads itself the first time the backend starts with it.
+
+`STT=grok-stt` switches back to the xAI endpoint that used to be the default. It needs a live Grok subscription: the CLI session in `~/.grok/auth.json` keeps authenticating after one lapses, and the endpoint then answers `403 personal-team-blocked:spending-limit`, which is what moved transcription on-device. `XAI_API_KEY` overrides the session.
+
+The TTS model runs locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language). A Chinese name inside an English reply is spoken by the Mandarin pipeline, not spelled out as “Chinese letter.” Set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
 
 ## Configuration
 
@@ -41,7 +45,9 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `GROK_STT_LANG` | `en` | Language sent to xAI STT; a fixed language also enables punctuation. `auto` detects instead, without punctuation |
+| `STT` | `native-stt` | Transcriber: `native-stt` (on-device macOS) or `grok-stt` (xAI, needs a Grok subscription) |
+| `STT_LOCALE` | `en-US` | Locale for `native-stt`, e.g. `en-GB`, `zh-CN`, `yue-CN`, `ja-JP`. The engine has no auto-detect, so this fixes the spoken language |
+| `GROK_STT_LANG` | `en` | Language sent to xAI STT when `STT=grok-stt`; a fixed language also enables punctuation. `auto` detects instead, without punctuation |
 | `TTS` | `kokoro` | TTS backend: `kokoro` (Kokoro-82M) or `vibevoice` (Microsoft VibeVoice) |
 | `MODEL` | `openai/gpt-5.6-luna` | OpenRouter Responses API model ID |
 | `KOKORO_MODEL` | `mlx-community/Kokoro-82M-bf16` | Kokoro-82M MLX model repo |
