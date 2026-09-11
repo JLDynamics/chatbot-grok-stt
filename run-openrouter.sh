@@ -62,7 +62,11 @@ if [[ -n "$occupant" ]]; then
   exit 1
 fi
 
-TTS="${TTS:-kokoro}"
+# Siri is the default voice. Voice.app launches run-browser.sh with no
+# environment of its own, so this default is what the panel actually gets --
+# exporting TTS in a shell only affects a launcher you started yourself.
+# TTS=kokoro or TTS=vibevoice switch backends.
+TTS="${TTS:-siri}"
 
 # Kokoro (default)
 KOKORO_MODEL="${KOKORO_MODEL:-mlx-community/Kokoro-82M-bf16}"
@@ -88,7 +92,15 @@ args=(
   --tts "$TTS"
 )
 
-if [[ "$TTS" == "kokoro" ]]; then
+SIRI_VOICE="${SIRI_VOICE:-en-US-F}"
+SIRI_TTS_BIN="${SIRI_TTS_BIN:-$HOME/.local/bin/siri-tts}"
+
+if [[ "$TTS" == "siri" ]]; then
+  args+=(
+    --siri_tts_voice "$SIRI_VOICE"
+    --siri_tts_binary "$SIRI_TTS_BIN"
+  )
+elif [[ "$TTS" == "kokoro" ]]; then
   args+=(
     --kokoro_tts_model_name "$KOKORO_MODEL"
     --kokoro_tts_voice "$KOKORO_VOICE"

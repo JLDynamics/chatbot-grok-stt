@@ -19,6 +19,7 @@ from chatbot.arguments_classes.realtime_server_arguments import RealtimeServerAr
 from chatbot.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
+from chatbot.arguments_classes.siri_tts_arguments import SiriTTSHandlerArguments
 from chatbot.arguments_classes.vad_arguments import VADHandlerArguments
 from chatbot.arguments_classes.vibevoice_tts_arguments import VibeVoiceTTSHandlerArguments
 from chatbot.backend_registry import (
@@ -74,16 +75,15 @@ def parse_arguments(
         NativeSTTHandlerArguments,
         ResponsesApiLanguageModelHandlerArguments,
         KokoroTTSHandlerArguments,
+        SiriTTSHandlerArguments,
         VibeVoiceTTSHandlerArguments,
     )
     parser = HfArgumentParser(argument_types, prog=f"chatbot {command}")
     parsed = parser.parse_args_into_dataclasses(args=list(argv) if argv is not None else None)
-    module, server, vad, stt_config, llm_config, kokoro_config, vibevoice_config = parsed
+    module, server, vad, stt_config, llm_config, kokoro_config, siri_config, vibevoice_config = parsed
     stt_backend = BackendSelection(STT_BACKENDS[module.stt], STT_BACKENDS[module.stt].normalize(stt_config))
-    if module.tts == "kokoro":
-        tts_backend = BackendSelection(TTS_BACKENDS["kokoro"], TTS_BACKENDS["kokoro"].normalize(kokoro_config))
-    else:
-        tts_backend = BackendSelection(TTS_BACKENDS["vibevoice"], TTS_BACKENDS["vibevoice"].normalize(vibevoice_config))
+    tts_config = {"kokoro": kokoro_config, "siri": siri_config, "vibevoice": vibevoice_config}[module.tts]
+    tts_backend = BackendSelection(TTS_BACKENDS[module.tts], TTS_BACKENDS[module.tts].normalize(tts_config))
     return ParsedArguments(
         module_kwargs=module,
         realtime_server_kwargs=server,

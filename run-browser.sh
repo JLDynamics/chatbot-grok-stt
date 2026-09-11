@@ -5,6 +5,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
+# The sidecar runs out of this checkout too. Without this it imports whichever
+# `chatbot` the venv has installed, which for a git worktree sharing a venv is
+# the other checkout's -- and then /api/config reports that path, the app sees
+# a service from a foreign root, and restarts it forever.
+export PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}"
+
 CHATBOT_ENV="${CHATBOT_ENV:-$HOME/.config/chatbot/env}"
 if [[ -f "$CHATBOT_ENV" ]]; then
   saved_openrouter="${OPENROUTER_API_KEY:-}"

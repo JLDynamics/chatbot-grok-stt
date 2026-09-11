@@ -13,6 +13,7 @@ from chatbot.arguments_classes.native_stt_arguments import NativeSTTHandlerArgum
 from chatbot.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
+from chatbot.arguments_classes.siri_tts_arguments import SiriTTSHandlerArguments
 from chatbot.arguments_classes.vibevoice_tts_arguments import VibeVoiceTTSHandlerArguments
 from chatbot.pipeline.cancel_scope import CancelScope
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
@@ -206,6 +207,19 @@ TTS_BACKENDS = build_backend_registry(
                 text_output_queue=True,
             ),
             "kokoro_tts",
+        ),
+        BackendSpec(
+            "siri",
+            "tts",
+            SiriTTSHandlerArguments,
+            _factory(
+                "chatbot.TTS.siri_tts_handler",
+                "SiriTTSHandler",
+                should_listen=True,
+                runtime_context=True,
+                text_output_queue=True,
+            ),
+            "siri_tts",
         ),
         BackendSpec(
             "vibevoice",

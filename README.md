@@ -2,7 +2,7 @@
 
 A Mac-first live voice chatbot that runs its ears and voice locally, while a Responses API model handles the conversation.
 
-`native panel microphone → on-device macOS speech-to-text → Responses API → TTS (Kokoro-82M by default, or VibeVoice) → speakers`
+`native panel microphone → on-device macOS speech-to-text → Responses API → Siri text-to-speech → speakers`
 
 It keeps realtime WebSocket turn-taking, interruption/cancellation, long-term memory, in-response web search and page reading (including the Chrome page bridge for logged-in or paywalled tabs), in-app screenshots, and optional coding-agent delegation.
 
@@ -34,7 +34,14 @@ Use the copy in **Applications**. The tree under `macos/Voice/build/` is only th
 
 The default model path is `openai/gpt-5.6-luna` through OpenRouter. Speech-to-text runs **on this Mac** through Apple's on-device engine, so there is no key, no metering, and nothing that expires: a turn transcribes punctuated in ~170ms, including the helper process launch, and a live 33s turn with four pauses took 370ms. It covers 45 locales, Mandarin, Cantonese and Taiwanese among them; `STT_LOCALE` picks one, because the engine has no auto-detect. `macos/SpeechHelper/build/speech-helper --locales` lists what this Mac supports and which models are already installed, and a locale's model downloads itself the first time the backend starts with it. It transcribes fillers literally and does not know proper nouns it has no context for, which a hosted service tidied.
 
-The TTS model runs locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language). A Chinese name inside an English reply is spoken by the Mandarin pipeline, not spelled out as “Chinese letter.” Set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
+Text-to-speech uses **Apple's Siri voices** (`en-US-F` by default) through
+[siri-tts](https://github.com/maximilianromer/siri-tts-cli), which reaches the neural voices Apple
+publishes to no API: `AVSpeechSynthesisVoice` never lists them and `say -v` ignores their names.
+Measured against Kokoro on the same sentence, it is 84ms to first audio versus 208ms. That binary
+dlopens private frameworks, so a macOS update can break it; `TTS=kokoro` is the supported fallback
+and needs no extra binary. Siri ships no Chinese voice.
+
+Kokoro and VibeVoice still run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language). A Chinese name inside an English reply is spoken by the Mandarin pipeline, not spelled out as “Chinese letter.” Set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
 
 ## Configuration
 
@@ -43,7 +50,9 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `STT_LOCALE` | `en-US` | Transcription locale, e.g. `en-GB`, `zh-CN`, `yue-CN`, `ja-JP`. The engine has no auto-detect, so this fixes the spoken language |
-| `TTS` | `kokoro` | TTS backend: `kokoro` (Kokoro-82M) or `vibevoice` (Microsoft VibeVoice) |
+| `TTS` | `siri` | TTS backend: `siri` (Apple's Siri voices), `kokoro` (Kokoro-82M), or `vibevoice` (Microsoft VibeVoice) |
+| `SIRI_VOICE` | `en-US-F` | Siri voice name; `siri-tts voices --available` lists what this Mac has installed |
+| `SIRI_TTS_BIN` | `~/.local/bin/siri-tts` | Path to the siri-tts binary |
 | `MODEL` | `openai/gpt-5.6-luna` | OpenRouter Responses API model ID |
 | `KOKORO_MODEL` | `mlx-community/Kokoro-82M-bf16` | Kokoro-82M MLX model repo |
 | `KOKORO_VOICE` | `bm_fable` | Kokoro voice (e.g. `bm_fable` British male, `af_heart` American female); auto-switches with the detected language |
