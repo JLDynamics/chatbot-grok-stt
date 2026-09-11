@@ -58,9 +58,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/JLDynamics/chatbot"
-Repository = "https://github.com/JLDynamics/chatbot"
-Issues = "https://github.com/JLDynamics/chatbot/issues"
+Homepage = "https://github.com/JLDynamics/chatbot-grok-stt"
+Repository = "https://github.com/JLDynamics/chatbot-grok-stt"
+Issues = "https://github.com/JLDynamics/chatbot-grok-stt/issues"
 
 [project.scripts]
 chatbot = "chatbot.cli:main"
