@@ -12,7 +12,6 @@ from typing import Any, Literal, Optional, Sequence
 from rich.console import Console
 
 from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
-from chatbot.arguments_classes.grok_stt_arguments import GrokSTTHandlerArguments
 from chatbot.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from chatbot.arguments_classes.module_arguments import ModuleArguments
 from chatbot.arguments_classes.native_stt_arguments import NativeSTTHandlerArguments
@@ -73,15 +72,13 @@ def parse_arguments(
         RealtimeServerArguments,
         VADHandlerArguments,
         NativeSTTHandlerArguments,
-        GrokSTTHandlerArguments,
         ResponsesApiLanguageModelHandlerArguments,
         KokoroTTSHandlerArguments,
         VibeVoiceTTSHandlerArguments,
     )
     parser = HfArgumentParser(argument_types, prog=f"chatbot {command}")
     parsed = parser.parse_args_into_dataclasses(args=list(argv) if argv is not None else None)
-    module, server, vad, native_stt_config, grok_stt_config, llm_config, kokoro_config, vibevoice_config = parsed
-    stt_config = native_stt_config if module.stt == "native-stt" else grok_stt_config
+    module, server, vad, stt_config, llm_config, kokoro_config, vibevoice_config = parsed
     stt_backend = BackendSelection(STT_BACKENDS[module.stt], STT_BACKENDS[module.stt].normalize(stt_config))
     if module.tts == "kokoro":
         tts_backend = BackendSelection(TTS_BACKENDS["kokoro"], TTS_BACKENDS["kokoro"].normalize(kokoro_config))

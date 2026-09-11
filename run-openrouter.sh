@@ -32,11 +32,9 @@ VAD_MIN_SILENCE_MS="${VAD_MIN_SILENCE_MS:-1200}"
 VAD_MIN_SPEECH_MS="${VAD_MIN_SPEECH_MS:-600}"
 VAD_SPEECH_PAD_MS="${VAD_SPEECH_PAD_MS:-500}"
 VAD_SHORT_SEGMENT_MERGE_MS="${VAD_SHORT_SEGMENT_MERGE_MS:-400}"
-# Transcription runs on this Mac, through Apple's on-device engine. STT=grok-stt
-# switches back to the xAI endpoint, which needs a live Grok subscription.
-STT="${STT:-native-stt}"
+# Transcription runs on this Mac, through Apple's on-device engine. The engine
+# has no auto-detect, so this fixes the spoken language.
 STT_LOCALE="${STT_LOCALE:-en-US}"
-GROK_STT_LANG="${GROK_STT_LANG:-en}"
 
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   echo "Error: OPENROUTER_API_KEY is not set. Run ./set-keys.sh first." >&2
@@ -52,12 +50,10 @@ else
   exit 1
 fi
 
-if [[ "$STT" == "native-stt" ]]; then
-  SPEECH_HELPER="$ROOT/macos/SpeechHelper/build/speech-helper"
-  if [[ ! -x "$SPEECH_HELPER" ]]; then
-    echo "Building the on-device speech helper..."
-    "$ROOT/macos/SpeechHelper/scripts/build.sh" >/dev/null
-  fi
+SPEECH_HELPER="$ROOT/macos/SpeechHelper/build/speech-helper"
+if [[ ! -x "$SPEECH_HELPER" ]]; then
+  echo "Building the on-device speech helper..."
+  "$ROOT/macos/SpeechHelper/scripts/build.sh" >/dev/null
 fi
 
 occupant="$(lsof -ti "TCP:$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
@@ -87,7 +83,7 @@ args=(
   serve
   --host 127.0.0.1
   --port "$PORT"
-  --stt "$STT"
+  --stt native-stt
   --llm_backend responses-api
   --tts "$TTS"
 )
@@ -127,10 +123,6 @@ args+=(
   --short_segment_merge_ms "$VAD_SHORT_SEGMENT_MERGE_MS"
 )
 
-if [[ "$STT" == "native-stt" ]]; then
-  args+=(--native_stt_locale "$STT_LOCALE")
-else
-  args+=(--grok_stt_language "$GROK_STT_LANG")
-fi
+args+=(--native_stt_locale "$STT_LOCALE")
 
 exec "$CHATBOT_BIN" "${args[@]}"

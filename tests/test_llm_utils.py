@@ -83,9 +83,9 @@ def test_remove_unspeechable_strips_markdown_list_markers() -> None:
 #
 # so `--enable_lang_prompt` silently emits nothing for that language.
 
-# grok-stt is the single retained STT backend.
-_STT_HANDLER_MODULES = ["chatbot.STT.native_stt_handler", "chatbot.STT.grok_stt_handler"]
-_ALWAYS_IMPORTABLE = {"chatbot.STT.native_stt_handler", "chatbot.STT.grok_stt_handler"}
+# native-stt is the single retained STT backend.
+_STT_HANDLER_MODULES = ["chatbot.STT.native_stt_handler"]
+_ALWAYS_IMPORTABLE = {"chatbot.STT.native_stt_handler"}
 
 
 def _supported_languages(module_name):
@@ -119,7 +119,7 @@ def test_default_stt_languages_are_fully_covered():
     Every code the STT can report needs a name here, or --enable_lang_prompt
     silently emits nothing for that language.
     """
-    stt = importlib.import_module("chatbot.STT.grok_stt_handler")
+    stt = importlib.import_module("chatbot.STT.native_stt_handler")
 
     missing = sorted(set(stt.SUPPORTED_LANGUAGES) - set(WHISPER_LANGUAGE_TO_LLM_LANGUAGE))
     assert not missing, f"no language name for: {missing}"

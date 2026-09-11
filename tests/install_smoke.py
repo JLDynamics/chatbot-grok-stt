@@ -49,7 +49,6 @@ def main() -> None:
     assert kokoro.kokoro_tts_model_name == "mlx-community/Kokoro-82M-bf16"
     for module in (
         "chatbot.STT.native_stt_handler",
-        "chatbot.STT.grok_stt_handler",
         "chatbot.LLM.responses_api_language_model",
         "chatbot.TTS.kokoro_tts_handler",
         "chatbot.api.openai_realtime.server",

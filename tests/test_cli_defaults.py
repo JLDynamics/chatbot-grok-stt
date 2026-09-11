@@ -22,14 +22,6 @@ def test_current_defaults_are_mac_voice_profile():
     assert args.module_kwargs.turn_quality_gate is True
 
 
-def test_the_xai_backend_is_still_selectable():
-    """The subscription lapsed; the code path stays for whoever renews one."""
-    args = parse_arguments(["--stt", "grok-stt", "--grok_stt_language", "ja"])
-
-    assert args.stt_backend.name == "grok-stt"
-    assert args.stt_backend.config["language"] == "ja"
-
-
 def test_turn_quality_gate_can_be_disabled():
     args = parse_arguments(["--no_turn_quality_gate"])
 
@@ -41,3 +33,5 @@ def test_removed_commands_and_backends_are_rejected():
         parse_command(["local"])
     with pytest.raises(SystemExit):
         parse_arguments(["--stt", "whisper"])
+    with pytest.raises(SystemExit):
+        parse_arguments(["--stt", "grok-stt"])
