@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the single supported realtime backend:
-# on-device macOS STT -> Responses API -> Kokoro TTS.
+# on-device macOS STT -> Responses API -> Siri TTS.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,18 +65,10 @@ fi
 # Siri is the default voice. Voice.app launches run-browser.sh with no
 # environment of its own, so this default is what the panel actually gets --
 # exporting TTS in a shell only affects a launcher you started yourself.
-# TTS=kokoro or TTS=vibevoice switch backends.
+# TTS=vibevoice switches to the local MLX fallback.
 TTS="${TTS:-siri}"
 
-# Kokoro (default)
-KOKORO_MODEL="${KOKORO_MODEL:-mlx-community/Kokoro-82M-bf16}"
-KOKORO_VOICE="${KOKORO_VOICE:-bm_fable}"
-KOKORO_LANG="${KOKORO_LANG:-b}"
-KOKORO_SPEED="${KOKORO_SPEED:-1.0}"
-KOKORO_BLOCKSIZE="${KOKORO_BLOCKSIZE:-512}"
-KOKORO_DENOISE_FLOOR="${KOKORO_DENOISE_FLOOR:-0.04}"
-
-# VibeVoice (alternative)
+# VibeVoice (local MLX fallback)
 VIBEVOICE_MODEL="${VIBEVOICE_MODEL:-mlx-community/VibeVoice-Realtime-0.5B-8bit}"
 VIBEVOICE_VOICE="${VIBEVOICE_VOICE:-en-Emma_woman}"
 VIBEVOICE_MAX_TOKENS="${VIBEVOICE_MAX_TOKENS:-1024}"
@@ -99,15 +91,6 @@ if [[ "$TTS" == "siri" ]]; then
   args+=(
     --siri_tts_voice "$SIRI_VOICE"
     --siri_tts_binary "$SIRI_TTS_BIN"
-  )
-elif [[ "$TTS" == "kokoro" ]]; then
-  args+=(
-    --kokoro_tts_model_name "$KOKORO_MODEL"
-    --kokoro_tts_voice "$KOKORO_VOICE"
-    --kokoro_tts_lang_code "$KOKORO_LANG"
-    --kokoro_tts_speed "$KOKORO_SPEED"
-    --kokoro_tts_blocksize "$KOKORO_BLOCKSIZE"
-    --kokoro_tts_gen_spectral_denoise_floor "$KOKORO_DENOISE_FLOOR"
   )
 else
   args+=(

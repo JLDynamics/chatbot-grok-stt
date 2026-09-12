@@ -1,10 +1,11 @@
-"""Shared skeleton for the MLX TTS backends (Kokoro-82M, VibeVoice).
+"""Shared skeleton for the streaming TTS backends (Siri, VibeVoice).
 
 Both backends run the same streaming pipeline under the MLX lock: generate
-model audio -> per-backend mapping -> shared spectral denoise + noise gate ->
+audio -> per-backend mapping -> shared spectral denoise + noise gate ->
 fixed-size block chunking with leftover carry. Backends only differ in how
 they generate (`_generate`), map native-rate chunks (`_map_chunk`), flush
-model tail audio (`_model_tail`), and pick voices (`_apply_voice`).
+tail audio (`_model_tail`), and pick voices (`_apply_voice`). Siri generates
+outside MLX; it takes the lock anyway so one backend cannot starve another.
 """
 
 from __future__ import annotations

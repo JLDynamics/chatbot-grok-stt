@@ -240,7 +240,7 @@ def trim_edge_silence(
 ) -> np.ndarray:
     """Shorten the silence at the edges of one synthesized run.
 
-    Every Kokoro generation starts and ends with a few hundred milliseconds of
+    An MLX generation starts and ends with a few hundred milliseconds of
     silence, which is right for a sentence and wrong in the middle of one: a
     run of another script spliced into a sentence would otherwise sit between
     two long pauses. ``None`` leaves that edge alone (a run that starts or ends

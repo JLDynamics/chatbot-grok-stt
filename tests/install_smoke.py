@@ -39,18 +39,17 @@ def main() -> None:
     if "serve" not in root_help or "talk" in root_help or "local" in root_help:
         raise RuntimeError("Installed CLI does not expose the browser-only serve command.")
 
-    from chatbot.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
     from chatbot.arguments_classes.module_arguments import ModuleArguments
+    from chatbot.arguments_classes.siri_tts_arguments import SiriTTSHandlerArguments
 
     modules = ModuleArguments()
-    kokoro = KokoroTTSHandlerArguments()
-    assert (modules.stt, modules.llm_backend, modules.tts) == ("native-stt", "responses-api", "kokoro")
-    assert kokoro.kokoro_tts_voice == "bm_fable"
-    assert kokoro.kokoro_tts_model_name == "mlx-community/Kokoro-82M-bf16"
+    siri = SiriTTSHandlerArguments()
+    assert (modules.stt, modules.llm_backend, modules.tts) == ("native-stt", "responses-api", "siri")
+    assert siri.siri_tts_voice == "en-US-F"
     for module in (
         "chatbot.STT.native_stt_handler",
         "chatbot.LLM.responses_api_language_model",
-        "chatbot.TTS.kokoro_tts_handler",
+        "chatbot.TTS.siri_tts_handler",
         "chatbot.api.openai_realtime.server",
     ):
         importlib.import_module(module)

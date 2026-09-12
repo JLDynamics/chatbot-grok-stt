@@ -12,7 +12,6 @@ from typing import Any, Literal, Optional, Sequence
 from rich.console import Console
 
 from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
-from chatbot.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from chatbot.arguments_classes.module_arguments import ModuleArguments
 from chatbot.arguments_classes.native_stt_arguments import NativeSTTHandlerArguments
 from chatbot.arguments_classes.realtime_server_arguments import RealtimeServerArguments
@@ -74,15 +73,14 @@ def parse_arguments(
         VADHandlerArguments,
         NativeSTTHandlerArguments,
         ResponsesApiLanguageModelHandlerArguments,
-        KokoroTTSHandlerArguments,
         SiriTTSHandlerArguments,
         VibeVoiceTTSHandlerArguments,
     )
     parser = HfArgumentParser(argument_types, prog=f"chatbot {command}")
     parsed = parser.parse_args_into_dataclasses(args=list(argv) if argv is not None else None)
-    module, server, vad, stt_config, llm_config, kokoro_config, siri_config, vibevoice_config = parsed
+    module, server, vad, stt_config, llm_config, siri_config, vibevoice_config = parsed
     stt_backend = BackendSelection(STT_BACKENDS[module.stt], STT_BACKENDS[module.stt].normalize(stt_config))
-    tts_config = {"kokoro": kokoro_config, "siri": siri_config, "vibevoice": vibevoice_config}[module.tts]
+    tts_config = {"siri": siri_config, "vibevoice": vibevoice_config}[module.tts]
     tts_backend = BackendSelection(TTS_BACKENDS[module.tts], TTS_BACKENDS[module.tts].normalize(tts_config))
     return ParsedArguments(
         module_kwargs=module,

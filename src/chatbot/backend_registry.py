@@ -8,7 +8,6 @@ from queue import Queue
 from threading import Event
 from typing import Any, Literal
 
-from chatbot.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from chatbot.arguments_classes.native_stt_arguments import NativeSTTHandlerArguments
 from chatbot.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
@@ -195,19 +194,6 @@ LLM_BACKENDS = build_backend_registry(
 TTS_BACKENDS = build_backend_registry(
     "tts",
     [
-        BackendSpec(
-            "kokoro",
-            "tts",
-            KokoroTTSHandlerArguments,
-            _factory(
-                "chatbot.TTS.kokoro_tts_handler",
-                "KokoroTTSHandler",
-                should_listen=True,
-                runtime_context=True,
-                text_output_queue=True,
-            ),
-            "kokoro_tts",
-        ),
         BackendSpec(
             "siri",
             "tts",

@@ -7,7 +7,7 @@ class ModuleArguments:
 
     stt: str = field(default="native-stt", metadata={"choices": ("native-stt",)})
     llm_backend: str = field(default="responses-api", metadata={"choices": ("responses-api",)})
-    tts: str = field(default="kokoro", metadata={"choices": ("kokoro", "siri", "vibevoice")})
+    tts: str = field(default="siri", metadata={"choices": ("siri", "vibevoice")})
     log_level: str = field(default="info", metadata={"help": "Python logging level."})
     turn_quality_gate: bool = field(
         default=True,

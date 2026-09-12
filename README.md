@@ -23,7 +23,7 @@ uv sync
 ./run-browser.sh
 ```
 
-`uv sync` installs the app and the English spaCy model Kokoro needs at startup.
+`uv sync` installs the app and its dependencies.
 
 ```bash
 ./macos/Voice/scripts/install.sh
@@ -37,11 +37,12 @@ The default model path is `openai/gpt-5.6-luna` through OpenRouter. Speech-to-te
 Text-to-speech uses **Apple's Siri voices** (`en-US-F` by default) through
 [siri-tts](https://github.com/maximilianromer/siri-tts-cli), which reaches the neural voices Apple
 publishes to no API: `AVSpeechSynthesisVoice` never lists them and `say -v` ignores their names.
-Measured against Kokoro on the same sentence, it is 84ms to first audio versus 208ms. That binary
-dlopens private frameworks, so a macOS update can break it; `TTS=kokoro` is the supported fallback
-and needs no extra binary. Siri ships no Chinese voice.
+Measured against the Kokoro backend it replaced, on the same sentence, it is 84ms to first audio
+versus 208ms. That binary dlopens private frameworks, so a macOS update can break it; `TTS=vibevoice`
+is the fallback, running entirely on MLX with nothing private underneath. VibeVoice is far slower
+(roughly real time), so it is a way to keep talking after a break, not a daily driver.
 
-Kokoro and VibeVoice still run locally with MLX. `TTS=kokoro` uses **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language); `TTS=vibevoice` uses VibeVoice (`en-Emma_woman`).
+`TTS=vibevoice` runs **VibeVoice** (`en-Emma_woman`) locally with MLX.
 
 This build does not speak Chinese. No backend here has a Chinese voice, so a Han character in a reply is dropped rather than read aloud — espeak-ng, which the English front end falls back to, pronounces one as the words “Chinese letter.”
 
@@ -52,19 +53,15 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `STT_LOCALE` | `en-US` | Transcription locale, e.g. `en-GB`, `en-AU`, `ja-JP`, `fr-FR`. The engine has no auto-detect, so this fixes the spoken language |
-| `TTS` | `siri` | TTS backend: `siri` (Apple's Siri voices), `kokoro` (Kokoro-82M), or `vibevoice` (Microsoft VibeVoice) |
+| `TTS` | `siri` | TTS backend: `siri` (Apple's Siri voices) or `vibevoice` (Microsoft VibeVoice, the local fallback) |
 | `SIRI_VOICE` | `en-US-F` | Siri voice name; `siri-tts voices --available` lists what this Mac has installed |
 | `SIRI_TTS_BIN` | `~/.local/bin/siri-tts` | Path to the siri-tts binary |
 | `MODEL` | `openai/gpt-5.6-luna` | OpenRouter Responses API model ID |
-| `KOKORO_MODEL` | `mlx-community/Kokoro-82M-bf16` | Kokoro-82M MLX model repo |
-| `KOKORO_VOICE` | `bm_fable` | Kokoro voice (e.g. `bm_fable` British male, `af_heart` American female); auto-switches with the detected language |
-| `KOKORO_LANG` | `b` | Kokoro language code (`a`/`b`/`e`/`j`/`f`/`i`/`p`/`z`/`h`) |
-| `KOKORO_SPEED` | `1.0` | Kokoro speech-speed multiplier |
 | `VIBEVOICE_MODEL` | `mlx-community/VibeVoice-Realtime-0.5B-8bit` | VibeVoice MLX model repo (alternative backend) |
 | `VIBEVOICE_VOICE` | `en-Emma_woman` | VibeVoice voice from the repo (`*_voices/*.safetensors`) |
 | `VIBEVOICE_MAX_TOKENS` | `1024` | Safety ceiling on generated tokens (model stops on EOS) |
 | `VIBEVOICE_CFG_SCALE` | `1.5` | Classifier-free guidance; higher is more distinct but harsher |
-| `KOKORO_DENOISE_FLOOR` / `VIBEVOICE_DENOISE_FLOOR` | `0.04` | Spectral-denoiser suppression floor; lower removes more hiss (slight risk of a processed texture) |
+| `VIBEVOICE_DENOISE_FLOOR` | `0.04` | Spectral-denoiser suppression floor; lower removes more hiss (slight risk of a processed texture) |
 | `PORT` / `WEB_PORT` | `8766` / `7860` | Realtime and browser ports |
 | `VAD_MIN_SILENCE_MS` | `1200` | Silence (ms) before a spoken turn is considered finished. Higher keeps ~1 s thinking pauses inside one turn instead of splitting it; lower answers faster after you truly stop |
 | `VAD_THRESH` | `0.65` | VAD confidence threshold; higher = fewer false voice triggers |

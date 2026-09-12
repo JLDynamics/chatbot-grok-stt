@@ -8,14 +8,15 @@ no streaming, which a live conversation cannot use.
 
 siri-tts (MIT, github.com/maximilianromer/siri-tts-cli) dlopens the private
 SiriTTSService/TextToSpeech frameworks and streams raw PCM instead. Measured
-against Kokoro on the same sentence: 84ms to first audio versus 208ms, and
-the whole utterance rendered in 92ms.
+against the Kokoro backend it replaced, on the same sentence: 84ms to first
+audio versus 208ms, and the whole utterance rendered in 92ms.
 
 The cost is honest: private frameworks are not API, so a macOS update can
 rename or remove what this depends on. That failure is loud -- the binary
-exits non-zero and the turn degrades -- and Kokoro remains selectable with
-`--tts kokoro`. Siri ships no Chinese voice, so a Mandarin reply still needs
-Kokoro.
+exits non-zero and the turn degrades -- and `--tts vibevoice` is the local
+fallback, which runs entirely on MLX with nothing private underneath. It is
+far slower (roughly real time against Siri's 0.014 RTF), so it is a way to
+keep talking after a macOS update breaks this, not a daily driver.
 """
 
 from __future__ import annotations

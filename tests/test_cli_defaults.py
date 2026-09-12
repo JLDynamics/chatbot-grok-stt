@@ -15,10 +15,9 @@ def test_current_defaults_are_mac_voice_profile():
     assert args.realtime_server_kwargs.port == 8766
     assert args.stt_backend.name == "native-stt"
     assert args.llm_backend.name == "responses-api"
-    assert args.tts_backend.name == "kokoro"
+    assert args.tts_backend.name == "siri"
     assert args.llm_backend.config["model_name"] == "openai/gpt-5.6-luna"
-    assert args.tts_backend.config["voice"] == "bm_fable"
-    assert args.tts_backend.config["model_name"] == "mlx-community/Kokoro-82M-bf16"
+    assert args.tts_backend.config["voice"] == "en-US-F"
     assert args.module_kwargs.turn_quality_gate is True
 
 
@@ -35,3 +34,5 @@ def test_removed_commands_and_backends_are_rejected():
         parse_arguments(["--stt", "whisper"])
     with pytest.raises(SystemExit):
         parse_arguments(["--stt", "grok-stt"])
+    with pytest.raises(SystemExit):
+        parse_arguments(["--tts", "kokoro"])
