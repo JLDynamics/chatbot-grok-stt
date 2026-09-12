@@ -9,8 +9,8 @@ AGENT="${1:-$ORCHESTRATOR_AGENT}"
 # Coordinator gets no file-editing tools (hard block, not just prompt). $COORDINATOR_FLAGS from config.sh.
 CMD="$AGENT"
 if [ "$AGENT" = "claude" ]; then CMD="claude $COORDINATOR_FLAGS"; fi
-OUT=$(orca terminal create --worktree active --title "Coordinator ($AGENT)" --command "$CMD" --json)
-HANDLE=$(echo "$OUT" | jq -r .result.handle // .result.terminal.handle // empty)
+OUT=$(orca terminal create --worktree "path:$REPO_PATH" --title "Coordinator ($AGENT)" --command "$CMD" --json)
+HANDLE=$(echo "$OUT" | jq -r '.result.handle // .result.terminal.handle // empty')
 if [ -z "$HANDLE" ] || [ "$HANDLE" = "null" ]; then echo "$OUT"; exit 1; fi
 echo "new terminal: $HANDLE"
 orca orchestration run-use --id "$RUN_ID" --from "$HANDLE" --json | jq .
