@@ -10,7 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from chatbot.LLM.voice_prompt import build_voice_system_prompt
+# E402 is intentional here: the bootstrap above must run before this import so
+# the script works as `python3 scripts/print_system_prompt.py` without install.
+from chatbot.LLM.voice_prompt import build_voice_system_prompt  # noqa: E402
 
 DEFAULT_PERSONA = (
     "You are an AI conversation partner: perceptive, relaxed, warm, and quietly "

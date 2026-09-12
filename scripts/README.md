@@ -24,6 +24,7 @@ What it covers:
 - A short live model reply over the realtime WebSocket (`ping` → `pong`)
 - With `--research`: dated news RSS checks, a turn that must `bash`/`curl` a
   page on the server, a verify-first turn that must research without being
-  told the command, and a TTS turn checking `华为` is dropped rather than read
+  told the command, and a live TTS turn containing `华为` (no Chinese voice;
+  the turn must still complete with audio and no error)
 
 Screenshots land in `/tmp/voice-verify-<timestamp>/`. The tool does not overwrite personal memory or delete saved chats.
