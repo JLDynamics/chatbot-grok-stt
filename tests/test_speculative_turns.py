@@ -1106,3 +1106,264 @@ def test_vad_keeps_queued_audio_for_a_different_live_turn():
     handler.before_emit_output(_vad_audio())
 
     assert list(handler.queue_out.queue) == [other_turn]
+
+
+# ── Noise-gate regression tests ──────────────────────────────────────────
+# Live session 2026-09-12 (turn_11): the user said "Well, yeah, there is a lot
+# of noise there." The turn soft-ended, Smart Turn scored it complete
+# (p=0.982), and ~500ms later a 192ms noise burst reopened it as rev=1. The
+# whole 6.0s turn was re-transcribed with an appended "Uh." (reopened Smart
+# Turn p=0.005) and the assistant answered the corrupted transcript after a
+# 2s incomplete-delay. These tests pin the fixed behavior: trailing audio
+# after a *complete* turn must qualify as a new utterance instead of riding
+# the weak continuation hysteresis, and a confident-incomplete reopen must
+# not supersede a confident-complete turn.
+
+
+def _noise_gate_handler(*smart_turn_results: SmartTurnResult) -> VADHandler:
+    """VAD handler mirroring the live session knobs: fresh turns need 400ms
+    of active speech, continuation hysteresis needs 192ms."""
+    handler = _vad_handler_for_iterator(_StaticVADIterator(triggered=False, vad_output=None))
+    handler.min_speech_ms = 400
+    handler.min_speech_continuation_ms = 192
+    handler.smart_turn_analyzer = _StaticSmartTurnAnalyzer(*smart_turn_results)
+    handler.reopen_complete_window_ms = -1
+    handler.reopen_complete_min_speech_ms = 0
+    handler.reopen_require_complete = True
+    return handler
+
+
+def _complete_turn(p: float = 0.982) -> SmartTurnResult:
+    return SmartTurnResult(complete=True, probability=p, inference_ms=12.5)
+
+
+def _incomplete_turn(p: float = 0.005) -> SmartTurnResult:
+    return SmartTurnResult(complete=False, probability=p, inference_ms=12.5)
+
+
+def _live_speech(handler: VADHandler, active_chunks: int) -> list:
+    chunks = [torch.zeros(512) for _ in range(active_chunks)]
+    handler.iterator = _StaticVADIterator(
+        triggered=True,
+        vad_output=None,
+        buffer_chunks=chunks,
+        speech_chunks=chunks,
+        active_speech_samples=active_chunks * 512,
+    )
+    return list(handler.process(_audio_bytes()))
+
+
+def test_completed_turn_is_not_reopened_by_short_noise():
+    """turn_11 live path: a 192ms noise burst after a Smart-Turn-complete turn
+    must neither start a reopened turn nor finalize into one. The 192ms
+    hysteresis only bridges pauses inside an *unfinished* utterance; trailing
+    audio after a finished one must clear the fresh-turn bar (400ms)."""
+    handler = _noise_gate_handler(_complete_turn(), _incomplete_turn())
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert len(first) == 1
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    # Live 192ms burst: must not start a reopened turn.
+    assert _live_speech(handler, active_chunks=6) == []
+    assert handler.text_output_queue.empty()
+
+    # Finalized 192ms fragment: must be discarded, not emitted as rev=1.
+    revived = _drive_final_segment(handler, active_chunks=6, segment_chunks=6)
+    assert revived == []
+    assert handler.text_output_queue.empty()
+    assert (handler._current_turn_id, handler._current_turn_revision) == ("turn_1", 0)
+    assert handler.speculative_turns.is_latest("turn_1", 0)
+    assert handler.speculative_turns._pending_reopen == {}
+    # The discarded noise never reaches Smart Turn: no wasted inference.
+    assert len(handler.smart_turn_analyzer.calls) == 1
+
+
+def test_completed_turn_low_confidence_reopen_is_not_retranscribed():
+    """turn_11 rev=1 soft-end: 704ms of active noise clears any duration bar,
+    but Smart Turn scores the reopened audio p=0.005. A confident-incomplete
+    reopen must not supersede a confident-complete turn, so no VADAudio is
+    emitted: STT never re-transcribes the 6s turn and the committed transcript
+    is not corrupted with an appended filler."""
+    handler = _noise_gate_handler(_complete_turn(), _incomplete_turn())
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    revived = _drive_final_segment(handler, active_chunks=22, segment_chunks=71)
+    assert revived == []
+    started = handler.text_output_queue.get_nowait()
+    assert isinstance(started, SpeechStartedEvent)
+    assert (started.turn_id, started.turn_revision, started.reopened) == ("turn_1", 1, True)
+    # The suppressed audio is retained in the turn prefix so a genuine
+    # continuation that completes later still carries its full audio.
+    assert len(handler._speculative_audio_prefix) == (31 + 71) * 512
+
+
+def test_sustained_noise_after_suppressed_reopen_stays_suppressed():
+    """One suppressed noise blip must not launder the next one: after rev=1
+    is suppressed, the turn still has its rev=0 complete endpoint, so a
+    second 192ms blip faces the fresh-turn bar (not the hysteresis) and a
+    second sustained-but-incomplete blip is suppressed again, not emitted."""
+    handler = _noise_gate_handler(_complete_turn(), _incomplete_turn(), _incomplete_turn())
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    assert _drive_final_segment(handler, active_chunks=22, segment_chunks=71) == []
+    _drain_text_events(handler)
+    assert (handler._current_turn_id, handler._current_turn_revision) == ("turn_1", 1)
+
+    # Second blip, short: must not even start a turn, let alone emit one.
+    assert _live_speech(handler, active_chunks=6) == []
+    assert handler.text_output_queue.empty()
+    assert _drive_final_segment(handler, active_chunks=6, segment_chunks=6) == []
+    assert handler.text_output_queue.empty()
+    assert (handler._current_turn_id, handler._current_turn_revision) == ("turn_1", 1)
+    assert handler.speculative_turns._pending_reopen == {}
+    assert len(handler.smart_turn_analyzer.calls) == 2
+
+
+def test_completed_turn_reopens_for_genuine_continuation():
+    """The noise gate must not break real speakers: sustained resumed speech
+    that scores Smart-Turn-complete still reopens the turn and is emitted."""
+    handler = _noise_gate_handler(_complete_turn(), _complete_turn(p=0.9))
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    revived = _drive_final_segment(handler, active_chunks=22, segment_chunks=71)
+    assert len(revived) == 1
+    assert (revived[0].turn_id, revived[0].turn_revision) == ("turn_1", 1)
+
+
+def test_incomplete_turn_keeps_continuation_hysteresis():
+    """Mid-thought pauses are why hysteresis exists: when Smart Turn says the
+    base turn is incomplete, a 192ms continuation still reopens it."""
+    handler = _noise_gate_handler(_incomplete_turn(p=0.2), _complete_turn(p=0.9))
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    assert _live_speech(handler, active_chunks=6) == []
+    started = handler.text_output_queue.get_nowait()
+    assert isinstance(started, SpeechStartedEvent)
+    assert (started.turn_id, started.turn_revision, started.reopened) == ("turn_1", 1, True)
+
+
+def test_completed_turn_closes_reopen_window_after_speculative_grace():
+    """turn_8: 'Ah, yeah.' (complete) was re-transcribed three times by noise
+    arriving 5-15s later. A complete turn stops being reopenable after the
+    short speculative grace; later audio is a new turn instead of a revision."""
+    handler = _noise_gate_handler(_complete_turn(), _complete_turn())
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    # 6s later: past the 800ms speculative grace but inside the 7s unanswered cap.
+    # (The 71-chunk segment itself spans ~2.3s, so the gap must exceed that for
+    # the segment *start* to land outside the grace.)
+    handler._total_samples = 16000 * 6
+    second = _drive_final_segment(handler, active_chunks=22, segment_chunks=71)
+    assert len(second) == 1
+    assert (second[0].turn_id, second[0].turn_revision) == ("turn_2", 0)
+    started = handler.text_output_queue.get_nowait()
+    assert isinstance(started, SpeechStartedEvent)
+    assert started.reopened is False
+
+
+def test_incomplete_turn_keeps_unanswered_reopen_window():
+    """Companion to the window test above: an incomplete turn still reopens
+    inside the long unanswered cap, so slow answerers do not orphan pauses."""
+    handler = _noise_gate_handler(_incomplete_turn(p=0.2), _complete_turn(p=0.9))
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    handler._total_samples = 16000 * 6
+    revived = _drive_final_segment(handler, active_chunks=22, segment_chunks=71)
+    assert len(revived) == 1
+    assert (revived[0].turn_id, revived[0].turn_revision) == ("turn_1", 1)
+
+
+def test_reopen_require_complete_false_restores_legacy_emission():
+    """Escape hatch: with reopen_require_complete=False a low-confidence
+    reopen is emitted exactly as before the noise gate, for rooms that prefer
+    speculative churn to suppression."""
+    handler = _noise_gate_handler(_complete_turn(), _incomplete_turn())
+    handler.reopen_require_complete = False
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    revived = _drive_final_segment(handler, active_chunks=22, segment_chunks=71)
+    assert len(revived) == 1
+    assert (revived[0].turn_id, revived[0].turn_revision) == ("turn_1", 1)
+
+
+def test_reopen_complete_window_override_keeps_late_reopen():
+    """Escape hatch: an explicit reopen_complete_window_ms wider than the
+    speculative grace keeps late post-complete reopens for users whose
+    afterthoughts arrive seconds later."""
+    handler = _noise_gate_handler(_complete_turn(), _complete_turn(p=0.9))
+    handler.reopen_complete_window_ms = 5000
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    handler._total_samples = 16000 * 6
+    revived = _drive_final_segment(handler, active_chunks=22, segment_chunks=71)
+    assert len(revived) == 1
+    assert (revived[0].turn_id, revived[0].turn_revision) == ("turn_1", 1)
+
+
+def test_reopen_complete_floor_override_blocks_medium_noise():
+    """Escape hatch in the other direction: reopen_complete_min_speech_ms
+    replaces the fresh-turn bar for post-complete reopens, so a noisy room
+    can demand more than 400ms before a finished turn is touched."""
+    handler = _noise_gate_handler(_complete_turn(), _incomplete_turn())
+    handler.reopen_complete_min_speech_ms = 600
+
+    first = _drive_final_segment(handler, active_chunks=13, segment_chunks=31)
+    assert (first[0].turn_id, first[0].turn_revision) == ("turn_1", 0)
+    _drain_text_events(handler)
+
+    # 448ms of active noise clears the default 400ms fresh bar but not the
+    # 600ms override.
+    revived = _drive_final_segment(handler, active_chunks=14, segment_chunks=45)
+    assert revived == []
+    assert handler.text_output_queue.empty()
+
+
+def test_reopen_noise_gate_setup_validation(monkeypatch):
+    """Out-of-range noise-gate knobs fail at setup, like the Smart Turn timings."""
+
+    class FakeSileroModel:
+        def reset_states(self) -> None:
+            pass
+
+    monkeypatch.setattr(torch.hub, "load", lambda *_args, **_kwargs: (FakeSileroModel(), None))
+
+    with pytest.raises(ValueError):
+        object.__new__(VADHandler).setup(
+            Event(),
+            speculative_turns=SpeculativeTurnTracker(),
+            smart_turn=False,
+            reopen_complete_window_ms=-2,
+        )
+    with pytest.raises(ValueError):
+        object.__new__(VADHandler).setup(
+            Event(),
+            speculative_turns=SpeculativeTurnTracker(),
+            smart_turn=False,
+            reopen_complete_min_speech_ms=-1,
+        )
