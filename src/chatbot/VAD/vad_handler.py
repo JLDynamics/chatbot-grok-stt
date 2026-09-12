@@ -74,6 +74,9 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         text_output_queue: Queue[TextEventItem] | None = None,
         speculative_reopen_ms: int = 800,
         unanswered_reopen_ms: int = 7000,
+        reopen_complete_window_ms: int = -1,
+        reopen_complete_min_speech_ms: int = 0,
+        reopen_require_complete: bool = True,
         short_segment_merge_ms: int = 0,
         smart_turn: bool = True,
         smart_turn_model_path: str | None = None,
@@ -88,6 +91,20 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self.sample_rate = sample_rate
         self.min_silence_ms = min_silence_ms
         self.min_speech_ms = min_speech_ms
+        if reopen_complete_window_ms < -1:
+            raise ValueError(
+                f"reopen_complete_window_ms must be -1 (follow speculative_reopen_ms), 0 (disable), or positive, got {reopen_complete_window_ms}"
+            )
+        if reopen_complete_min_speech_ms < 0:
+            raise ValueError(f"reopen_complete_min_speech_ms must be at least 0, got {reopen_complete_min_speech_ms}")
+        self.reopen_complete_window_ms = reopen_complete_window_ms
+        self.reopen_complete_min_speech_ms = reopen_complete_min_speech_ms
+        self.reopen_require_complete = reopen_require_complete
+        # Smart Turn verdict per soft-ended (turn_id, revision): (complete, probability).
+        # Drives the post-complete noise gate: trailing audio after a complete
+        # turn must qualify as a new utterance, and a confident-incomplete
+        # reopen must not supersede a confident-complete turn.
+        self._smart_turn_complete: dict[tuple[str, int], tuple[bool, float]] = {}
         self.min_speech_continuation_ms = self._resolve_min_speech_continuation_ms(
             self.min_speech_ms,
             min_speech_continuation_ms,
@@ -249,8 +266,19 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
 
     def _active_speech_min_ms(self, start_ms: int) -> float:
         """Duration hysteresis for speech that continues a reopenable turn."""
-        if self._pending_reopen_candidate is not None or self._should_reopen_current_turn(start_ms):
+        reopenable = self._pending_reopen_candidate is not None or self._should_reopen_current_turn(start_ms)
+        if reopenable and not self._reopening_completed_turn():
             return self.min_speech_continuation_ms
+        if reopenable:
+            # Trailing audio after a Smart-Turn-complete turn is a new
+            # utterance, not a continuation: it must clear the fresh-turn bar
+            # (or the explicit post-complete override) instead of the weak
+            # hysteresis, which only bridges pauses inside an unfinished
+            # utterance. Ambient noise that could never start a turn must not
+            # resurrect one that just ended.
+            override_ms = int(getattr(self, "reopen_complete_min_speech_ms", 0) or 0)
+            if override_ms > 0:
+                return max(_SHORT_SEGMENT_MIN_FRAGMENT_MS, override_ms)
         playing = getattr(self, "response_playing", None)
         # Tests that omit response_playing keep the historical min_speech_ms bar.
         # Production always passes the Event: idle greetings use a lower floor;
@@ -258,6 +286,82 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         if playing is None or playing.is_set():
             return self.min_speech_ms
         return min(int(self.min_speech_ms), _IDLE_TURN_MIN_SPEECH_MS)
+
+    def _smart_turn_records(self) -> dict[tuple[str, int], tuple[bool, float]]:
+        records = getattr(self, "_smart_turn_complete", None)
+        if records is None:
+            records = {}
+            self._smart_turn_complete = records
+        return records
+
+    def _reopening_completed_turn(self) -> bool:
+        """Whether the turn a reopen would extend has a Smart Turn complete endpoint.
+
+        Walks back past suppressed noise revisions: once a turn scores
+        complete, later audio stays trailing audio until some revision scores
+        complete again, so one noise blip cannot launder the next one back
+        onto the weak hysteresis path.
+        """
+        return self._latest_complete_endpoint(self._current_turn_id, self._current_turn_revision) is not None
+
+    def _latest_complete_endpoint(
+        self,
+        turn_id: str | None,
+        at_or_below_rev: int | None,
+    ) -> tuple[int, float] | None:
+        if turn_id is None or at_or_below_rev is None:
+            return None
+        best: tuple[int, float] | None = None
+        for (recorded_turn, recorded_rev), (complete, probability) in self._smart_turn_records().items():
+            if recorded_turn != turn_id or recorded_rev > at_or_below_rev or not complete:
+                continue
+            if best is None or recorded_rev > best[0]:
+                best = (recorded_rev, probability)
+        return best
+
+    def _post_complete_reopen_window_ms(self) -> int:
+        configured = int(getattr(self, "reopen_complete_window_ms", -1))
+        if configured < 0:
+            return int(self.speculative_reopen_ms)
+        return configured
+
+    def _should_suppress_reopen_emission(
+        self,
+        turn_id: str | None,
+        turn_revision: int | None,
+    ) -> bool:
+        """Whether a reopened revision must not supersede a complete turn.
+
+        When the soft-ended base turn scored Smart Turn complete and the
+        reopened audio scores incomplete, emitting it would re-transcribe the
+        whole turn over noise and replace the committed transcript with a
+        worse one. The audio stays in the turn prefix (so a genuine
+        continuation that completes later still carries it) but nothing is
+        sent to STT. Fail-open: without Smart Turn, or when it errors, emit
+        exactly as before.
+        """
+        if not getattr(self, "reopen_require_complete", True):
+            return False
+        if turn_id is None or turn_revision is None or turn_revision <= 0:
+            return False
+        base = self._latest_complete_endpoint(turn_id, turn_revision - 1)
+        if base is None:
+            return False
+        reopened = self._smart_turn_records().get((turn_id, turn_revision))
+        if reopened is None or reopened[0]:
+            return False
+        base_rev, base_p = base
+        logger.info(
+            "VAD: suppressing reopen emission for turn=%s rev=%s "
+            "(turn scored complete at rev=%s p=%.3f; reopened audio scores incomplete p=%.3f); "
+            "audio retained, nothing sent to STT",
+            turn_id,
+            turn_revision,
+            base_rev,
+            base_p,
+            reopened[1],
+        )
+        return True
 
     def _should_reopen_current_turn(self, audio_start_ms: int) -> bool:
         if self._current_turn_id is None or self._current_turn_revision is None or self._last_final_audio_ms is None:
@@ -282,6 +386,15 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         # the assistant has not replied to. The cap also bounds the
         # empty-transcript case, where no request is queued and the turn would
         # otherwise never commit.
+        if self._reopening_completed_turn():
+            # A Smart-Turn-complete turn is semantically closed: only the
+            # short speculative grace covers its acoustic tail, so late noise
+            # cannot resurrect it. Anything later is a new turn. Incomplete
+            # turns keep the long unanswered window above.
+            window_ms = self._post_complete_reopen_window_ms()
+            if window_ms <= 0:
+                return False
+            return elapsed_ms <= window_ms
         return elapsed_ms <= self.unanswered_reopen_ms
 
     def _begin_pending_reopen_if_needed(self, audio_start_ms: int) -> None:
@@ -526,8 +639,19 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             queued_item.turn_revision,
         )
 
-    def _smart_turn_timing_ms(self, audio: np.ndarray) -> tuple[int, int]:
-        """Return the response grace and pre-processing delay for this endpoint."""
+    def _smart_turn_timing_ms(
+        self,
+        audio: np.ndarray,
+        *,
+        turn_id: str | None = None,
+        turn_revision: int | None = None,
+    ) -> tuple[int, int]:
+        """Return the response grace and pre-processing delay for this endpoint.
+
+        When the soft-ended turn identity is given, the verdict is also
+        recorded for the post-complete noise gate. Failures record nothing,
+        so the gate fails open toward emitting (historical behavior).
+        """
         analyzer = getattr(self, "smart_turn_analyzer", None)
         if analyzer is None:
             return self.speculative_reopen_ms, 0
@@ -548,6 +672,9 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             # speculative window instead of delaying the response for seconds.
             logger.exception("Smart Turn inference failed; using the default speculative reopen grace")
             return self.speculative_reopen_ms, 0
+
+        if turn_id is not None and turn_revision is not None:
+            self._smart_turn_records()[(turn_id, turn_revision)] = (result.complete, result.probability)
 
         if result.complete:
             logger.info(
@@ -612,10 +739,12 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                     turn_revision,
                 )
                 if self.text_output_queue:
-                    # Continuation hysteresis (192ms) may reopen a soft-ended
-                    # turn for STT, but must not cancel TTS. A real barge-in
-                    # needs a full min_speech_ms of active speech (echo / "um"
-                    # was cutting replies mid-sentence).
+                    # Continuation hysteresis may reopen a soft-ended turn for
+                    # STT, but must not cancel TTS. A real barge-in needs a
+                    # full min_speech_ms of active speech (echo / "um" was
+                    # cutting replies mid-sentence). Reopens of a
+                    # Smart-Turn-complete turn already cleared the fresh-turn
+                    # bar instead of the hysteresis (see _active_speech_min_ms).
                     self.text_output_queue.put(
                         SpeechStartedEvent(
                             audio_start_ms=effective_start_ms,
@@ -756,7 +885,11 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                     turn_id,
                     turn_revision,
                 )
-                reopen_grace_ms, processing_delay_ms = self._smart_turn_timing_ms(analysis_audio)
+                reopen_grace_ms, processing_delay_ms = self._smart_turn_timing_ms(
+                    analysis_audio,
+                    turn_id=turn_id,
+                    turn_revision=turn_revision,
+                )
                 if self.text_output_queue:
                     self.text_output_queue.put(
                         SpeechStoppedEvent(
@@ -771,6 +904,12 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                 self._speculative_active_speech_ms = turn_active_ms
                 self._last_final_wall_time = time.time()
                 self._last_final_audio_ms = end_ms
+                if self._should_suppress_reopen_emission(turn_id, turn_revision):
+                    # SpeechStopped above still closes the client-side pair;
+                    # only the STT trigger is withheld. No reopen grace is
+                    # started: nothing downstream waits on this revision.
+                    self._speech_started_emitted = False
+                    return
                 # The grace only delays response commits. Resumed speech
                 # follows the existing candidate/revision flow and makes
                 # this revision stale before assistant output is released.
@@ -804,6 +943,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self._last_final_wall_time = None
         self._last_final_audio_ms = None
         self._pending_reopen_candidate = None
+        self._smart_turn_records().clear()
         self.speculative_turns.reset()
         self.should_listen.set()
         logger.debug("VAD session state reset")
