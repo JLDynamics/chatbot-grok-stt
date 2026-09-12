@@ -179,6 +179,60 @@ class Chat:
         with self._lock:
             self.init_chat_message = message
 
+    def _store_system_locked(self, item: RealtimeConversationItemSystemMessage) -> None:
+        """Body of :meth:`add_item` for system messages. Caller must hold ``_lock``."""
+        item.id = _ensure_id(item.id, "sys")
+        self.init_chat_message = item
+        logger.debug("Set system message via conversation item")
+
+    def _store_user_locked(self, item: RealtimeConversationItemUserMessage) -> None:
+        """Body of :meth:`add_item` for user messages. Caller must hold ``_lock``."""
+        item.id = _ensure_id(item.id, "msg")
+        item.content = [
+            p
+            for p in item.content
+            if (p.type == "input_text" and p.text)
+            or (p.type == "input_image" and p.image_url)
+            or (p.type == "input_audio" and p.audio)
+        ]
+        if not item.content:
+            raise ChatItemError(
+                "Message has no supported content. Supported modalities: input_text, input_image, input_audio."
+            )
+        self.buffer.append(item)
+        self._user_turn_count += 1
+        logger.debug("Added user message to chat (%d parts)", len(item.content))
+
+    def _store_assistant_locked(self, item: RealtimeConversationItemAssistantMessage) -> bool:
+        """Body of :meth:`add_item` for assistant messages. Caller must hold ``_lock``.
+
+        Returns False when the message carries no speakable text and was dropped."""
+        item.id = _ensure_id(item.id, "msg")
+        item.content = [p for p in item.content if p.type == "output_text" and p.text]
+        if not item.content:
+            return False
+        self.buffer.append(item)
+        logger.debug("Added assistant message to chat (%d parts)", len(item.content))
+        return True
+
+    def _store_function_call_locked(self, item: RealtimeConversationItemFunctionCall) -> None:
+        """Body of :meth:`add_item` for function calls. Caller must hold ``_lock``."""
+        item.id = _ensure_id(item.id, "fc")
+        item.call_id = _ensure_id(item.call_id, "call")
+        self._pending_tool_calls[item.call_id] = item
+        logger.debug("Added function_call to chat (call_id=%s)", item.call_id)
+
+    def _enforce_hard_cap_locked(self) -> None:
+        """Evict oldest turns past ``2 * size`` (runaway-client safety net). Caller must hold ``_lock``."""
+        if self.size > 0 and self._user_turn_count > 2 * self.size:
+            logger.warning(
+                "Chat buffer exceeded hard cap (%d > 2 * size=%d); evicting oldest turn",
+                self._user_turn_count,
+                self.size,
+            )
+            while self._user_turn_count > 2 * self.size:
+                self._evict_oldest_turn()
+
     def add_item(self, item: SupportedItem) -> SupportedItem:
         """Validate and route a conversation item into the chat buffer.
 
@@ -192,58 +246,21 @@ class Chat:
         """
         with self._lock:
             if isinstance(item, RealtimeConversationItemSystemMessage):
-                item.id = _ensure_id(item.id, "sys")
-                self.init_chat_message = item
-                logger.debug("Set system message via conversation item")
-
+                self._store_system_locked(item)
             elif isinstance(item, RealtimeConversationItemUserMessage):
-                item.id = _ensure_id(item.id, "msg")
-                item.content = [
-                    p
-                    for p in item.content
-                    if (p.type == "input_text" and p.text)
-                    or (p.type == "input_image" and p.image_url)
-                    or (p.type == "input_audio" and p.audio)
-                ]
-                if not item.content:
-                    raise ChatItemError(
-                        "Message has no supported content. Supported modalities: input_text, input_image, input_audio."
-                    )
-                self.buffer.append(item)
-                self._user_turn_count += 1
-                logger.debug("Added user message to chat (%d parts)", len(item.content))
-
+                self._store_user_locked(item)
             elif isinstance(item, RealtimeConversationItemAssistantMessage):
-                item.id = _ensure_id(item.id, "msg")
-                item.content = [p for p in item.content if p.type == "output_text" and p.text]
-                if not item.content:
+                if not self._store_assistant_locked(item):
                     return item
-                self.buffer.append(item)
-                logger.debug("Added assistant message to chat (%d parts)", len(item.content))
-
             elif isinstance(item, RealtimeConversationItemFunctionCall):
-                item.id = _ensure_id(item.id, "fc")
-                item.call_id = _ensure_id(item.call_id, "call")
-                self._pending_tool_calls[item.call_id] = item
-                logger.debug("Added function_call to chat (call_id=%s)", item.call_id)
-
+                self._store_function_call_locked(item)
             elif isinstance(item, RealtimeConversationItemFunctionCallOutput):
                 item.id = _ensure_id(item.id, "fco")
                 self._append_tool_output_locked(item.call_id, item)
                 logger.debug("Added function_call_output to chat (call_id=%s)", item.call_id)
-
             else:
                 raise ChatItemError(f"Unsupported item type: {getattr(item, 'type', None)}")
-
-            if self.size > 0 and self._user_turn_count > 2 * self.size:
-                logger.warning(
-                    "Chat buffer exceeded hard cap (%d > 2 * size=%d); evicting oldest turn",
-                    self._user_turn_count,
-                    self.size,
-                )
-                while self._user_turn_count > 2 * self.size:
-                    self._evict_oldest_turn()
-
+            self._enforce_hard_cap_locked()
             return item
 
     def trim_if_needed(self, compactor: CompactFn | None = None) -> None:
@@ -331,89 +348,128 @@ class Chat:
         with self._lock:
             return self._to_responses_api_chat_locked(items if items is not None else self.buffer)
 
+    @staticmethod
+    def _recent_output_indices(items: list[SupportedItem]) -> set[int]:
+        """Indices of tool outputs recent enough to send in full (older ones are abridged)."""
+        output_indices = [
+            index for index, item in enumerate(items) if isinstance(item, RealtimeConversationItemFunctionCallOutput)
+        ]
+        return set(output_indices[-TOOL_OUTPUT_KEEP_RECENT:]) if TOOL_OUTPUT_KEEP_RECENT else set()
+
+    def _serialize_system_message(self) -> ResponseInputItemParam | None:
+        """The stored system prompt as a Responses API item (None when unset)."""
+        if not self.init_chat_message:
+            return None
+        return ResponseMessage(
+            content=[
+                ResponseInputTextParam(text=p.text or "A helpful AI assistant.", type="input_text")
+                for p in self.init_chat_message.content
+            ],
+            role="system",
+            type="message",
+        )
+
+    @staticmethod
+    def _serialize_user_message(item: RealtimeConversationItemUserMessage) -> ResponseInputItemParam | None:
+        """A user message as a Responses API item (None when nothing serializable remains)."""
+        content: ResponseInputMessageContentListParam = []
+        audio_placeholder_added = False
+        for user_part in item.content:
+            if user_part.type == "input_text" and user_part.text is not None:
+                content.append(ResponseInputTextParam(text=user_part.text or "", type="input_text"))
+            elif user_part.type == "input_image" and user_part.image_url is not None:
+                img = ResponseInputImageParam(type="input_image", detail=user_part.detail or "auto")
+                if user_part.image_url is not None:
+                    img["image_url"] = user_part.image_url
+                content.append(img)
+            elif user_part.type == "input_audio" and not audio_placeholder_added:
+                content.append(ResponseInputTextParam(text=AUDIO_INPUT_HISTORY_PLACEHOLDER, type="input_text"))
+                audio_placeholder_added = True
+        if not content:
+            return None
+        return ResponseMessage(content=content, role="user", type="message")
+
+    @staticmethod
+    def _serialize_assistant_message(item: RealtimeConversationItemAssistantMessage) -> ResponseInputItemParam | None:
+        """An assistant message as a Responses API item (None when no text remains)."""
+        assistant_content: list[ResponseOutputTextParam] = []
+        for assistant_part in item.content:
+            if assistant_part.type == "output_text" and assistant_part.text is not None:
+                assistant_content.append(
+                    ResponseOutputTextParam(text=assistant_part.text, type="output_text", annotations=[])
+                )
+        if not assistant_content:
+            return None
+        item_id = item.id
+        assert item_id is not None and item_id != ""
+        return ResponseOutputMessageParam(
+            id=item_id,
+            content=assistant_content,
+            role="assistant",
+            status=item.status or "completed",
+            type="message",
+        )
+
+    @staticmethod
+    def _serialize_function_call(item: RealtimeConversationItemFunctionCall) -> ResponseInputItemParam:
+        """A function call as a Responses API item."""
+        item_id = item.id
+        call_id = item.call_id
+        assert item_id is not None and item_id != ""
+        assert call_id is not None and call_id != ""
+        function_call = ResponseFunctionToolCallParam(
+            arguments=item.arguments,
+            call_id=call_id,
+            name=item.name,
+            type="function_call",
+            id=item_id,
+        )
+        if item.id is not None:
+            function_call["id"] = item.id
+        if item.status is not None:
+            function_call["status"] = item.status
+        return function_call
+
+    @staticmethod
+    def _serialize_function_call_output(
+        item: RealtimeConversationItemFunctionCallOutput, *, full: bool
+    ) -> ResponseInputItemParam:
+        """A function call output as a Responses API item (abridged unless recent)."""
+        item_id = item.id
+        assert item_id is not None and item_id != ""
+        function_call_output = FunctionCallOutput(
+            call_id=item.call_id,
+            output=item.output if full else abridge_tool_output(item.output),
+            type="function_call_output",
+        )
+        if item.id is not None:
+            function_call_output["id"] = item.id
+        if item.status is not None:
+            function_call_output["status"] = item.status
+        return function_call_output
+
     def _to_responses_api_chat_locked(self, items: list[SupportedItem]) -> ResponseInputParam:
         """Body of :meth:`to_responses_api_chat`. Caller must hold ``_lock``."""
         buffer_items = list(items)
         result: list[ResponseInputItemParam] = []
-        # Which tool outputs are recent enough to send in full.
-        output_indices = [
-            index
-            for index, item in enumerate(buffer_items)
-            if isinstance(item, RealtimeConversationItemFunctionCallOutput)
-        ]
-        full_output_indices = set(output_indices[-TOOL_OUTPUT_KEEP_RECENT:]) if TOOL_OUTPUT_KEEP_RECENT else set()
-        if self.init_chat_message:
-            result.append(
-                ResponseMessage(
-                    content=[
-                        ResponseInputTextParam(text=p.text or "A helpful AI assistant.", type="input_text")
-                        for p in self.init_chat_message.content
-                    ],
-                    role="system",
-                    type="message",
-                )
-            )
+        full_output_indices = self._recent_output_indices(buffer_items)
+        system = self._serialize_system_message()
+        if system is not None:
+            result.append(system)
         for index, item in enumerate(buffer_items):
             assert item.id is not None and item.id != "", f"item.id is {item.id}"
             if isinstance(item, RealtimeConversationItemUserMessage):
-                content: ResponseInputMessageContentListParam = []
-                audio_placeholder_added = False
-                for user_part in item.content:
-                    if user_part.type == "input_text" and user_part.text is not None:
-                        content.append(ResponseInputTextParam(text=user_part.text or "", type="input_text"))
-                    elif user_part.type == "input_image" and user_part.image_url is not None:
-                        img = ResponseInputImageParam(type="input_image", detail=user_part.detail or "auto")
-                        if user_part.image_url is not None:
-                            img["image_url"] = user_part.image_url
-                        content.append(img)
-                    elif user_part.type == "input_audio" and not audio_placeholder_added:
-                        content.append(ResponseInputTextParam(text=AUDIO_INPUT_HISTORY_PLACEHOLDER, type="input_text"))
-                        audio_placeholder_added = True
-                if content:
-                    result.append(ResponseMessage(content=content, role="user", type="message"))
+                serialized = self._serialize_user_message(item)
             elif isinstance(item, RealtimeConversationItemAssistantMessage):
-                assistant_content: list[ResponseOutputTextParam] = []
-                for assistant_part in item.content:
-                    if assistant_part.type == "output_text" and assistant_part.text is not None:
-                        assistant_content.append(
-                            ResponseOutputTextParam(text=assistant_part.text, type="output_text", annotations=[])
-                        )
-                if assistant_content:
-                    result.append(
-                        ResponseOutputMessageParam(
-                            id=item.id,
-                            content=assistant_content,
-                            role="assistant",
-                            status=item.status or "completed",
-                            type="message",
-                        )
-                    )
+                serialized = self._serialize_assistant_message(item)
             elif isinstance(item, RealtimeConversationItemFunctionCall) and item.call_id is not None:
-                assert item.call_id is not None and item.call_id != ""
-                function_call = ResponseFunctionToolCallParam(
-                    arguments=item.arguments,
-                    call_id=item.call_id,
-                    name=item.name,
-                    type="function_call",
-                    id=item.id,
-                )
-                if item.id is not None:
-                    function_call["id"] = item.id
-                if item.status is not None:
-                    function_call["status"] = item.status
-                result.append(function_call)
+                serialized = self._serialize_function_call(item)
             elif isinstance(item, RealtimeConversationItemFunctionCallOutput):
-                output_text = item.output if index in full_output_indices else abridge_tool_output(item.output)
-                function_call_output = FunctionCallOutput(
-                    call_id=item.call_id,
-                    output=output_text,
-                    type="function_call_output",
-                )
-                if item.id is not None:
-                    function_call_output["id"] = item.id
-                if item.status is not None:
-                    function_call_output["status"] = item.status
-                result.append(function_call_output)
+                serialized = self._serialize_function_call_output(item, full=index in full_output_indices)
+            else:
+                serialized = None
+            if serialized is not None:
+                result.append(serialized)
         return result
 
     def copy(self) -> Chat:
@@ -477,6 +533,64 @@ class Chat:
 
     # ── Compaction internals ──────────────────────────────────
 
+    def _compactable_prefix_locked(self) -> tuple[list[SupportedItem], set[str], int]:
+        """Buffer items eligible for compaction: everything before the latest user turn.
+
+        Caller must hold ``_lock``. The most recent turn stays untouched (it
+        may be in-flight). ``marker_ids`` identifies the items the splice may
+        drop. Returns an empty prefix when fewer than 2 turns are compactable.
+        """
+        n_turns = max(0, self._user_turn_count - 1)
+        if n_turns < 2:
+            return [], set(), n_turns
+        # Slice up to (but not including) the (n_turns + 1)-th user message.
+        user_seen = 0
+        end_idx = len(self.buffer)
+        for i, entry in enumerate(self.buffer):
+            if isinstance(entry, RealtimeConversationItemUserMessage):
+                user_seen += 1
+                if user_seen == n_turns + 1:
+                    end_idx = i
+                    break
+        items_to_compact = self.buffer[:end_idx]
+        marker_ids = {entry.id for entry in items_to_compact if entry.id is not None}
+        return items_to_compact, marker_ids, n_turns
+
+    @staticmethod
+    def _strip_media_from_snapshot(snapshot: ResponseInputParam) -> None:
+        """Remove image/audio parts so the summarizer only reads text."""
+        for raw in snapshot:
+            if not isinstance(raw, dict) or raw.get("role") != "user":
+                continue
+            msg: dict[str, Any] = raw  # type: ignore[assignment]
+            content = msg.get("content")
+            if isinstance(content, list):
+                msg["content"] = [
+                    c for c in content if not (isinstance(c, dict) and c.get("type") in {"input_image", "input_audio"})
+                ]
+
+    def _compaction_stale(self, gen: int) -> bool:
+        """True when the worker's snapshot was superseded by reset/close or shut down."""
+        return self._shutdown.is_set() or self._gen_counter != gen
+
+    def _compaction_drop_ids_locked(self, marker_ids: set[str]) -> set[str]:
+        """IDs the splice may drop. Keeps an FC whose FCO sits outside the
+        compacted range -- otherwise the FCO left behind would be orphaned.
+        Caller must hold ``_lock``."""
+        fco_call_ids_in_range = {
+            x.call_id
+            for x in self.buffer
+            if isinstance(x, RealtimeConversationItemFunctionCallOutput) and x.id in marker_ids
+        }
+        fc_ids_to_keep = {
+            x.id
+            for x in self.buffer
+            if x.id in marker_ids
+            and isinstance(x, RealtimeConversationItemFunctionCall)
+            and x.call_id not in fco_call_ids_in_range
+        }
+        return marker_ids - fc_ids_to_keep
+
     def _snapshot_for_compaction(
         self,
     ) -> tuple[ResponseInputParam, set[str], int]:
@@ -488,33 +602,11 @@ class Chat:
         Always leaves the most recent user turn untouched (it may be in-flight).
         Returns an empty result if there are fewer than 2 compactable turns.
         """
-        n_turns = max(0, self._user_turn_count - 1)
+        items_to_compact, marker_ids, n_turns = self._compactable_prefix_locked()
         if n_turns < 2:
             return [], set(), n_turns
-
-        # Slice up to (but not including) the (n_turns + 1)-th user message.
-        user_seen = 0
-        end_idx = len(self.buffer)
-        for i, entry in enumerate(self.buffer):
-            if isinstance(entry, RealtimeConversationItemUserMessage):
-                user_seen += 1
-                if user_seen == n_turns + 1:
-                    end_idx = i
-                    break
-
-        items_to_compact = self.buffer[:end_idx]
-        marker_ids = {entry.id for entry in items_to_compact if entry.id is not None}
         snapshot = self._to_responses_api_chat_locked(items=items_to_compact)
-        # Strip media parts so the summarizer doesn't have to handle them.
-        for raw in snapshot:
-            if not isinstance(raw, dict) or raw.get("role") != "user":
-                continue
-            msg: dict[str, Any] = raw  # type: ignore[assignment]
-            content = msg.get("content")
-            if isinstance(content, list):
-                msg["content"] = [
-                    c for c in content if not (isinstance(c, dict) and c.get("type") in {"input_image", "input_audio"})
-                ]
+        self._strip_media_from_snapshot(snapshot)
         return snapshot, marker_ids, n_turns
 
     def _maybe_trigger_compaction(self, compactor: CompactFn) -> None:
@@ -553,7 +645,7 @@ class Chat:
     ) -> None:
         """Worker thread entry point."""
         try:
-            if self._shutdown.is_set() or self._gen_counter != gen:
+            if self._compaction_stale(gen):
                 return
             try:
                 result = compactor(snapshot)
@@ -563,7 +655,7 @@ class Chat:
             if not isinstance(result, CompactionResult):
                 logger.error("Compactor must return a CompactionResult, got %r", type(result).__name__)
                 return
-            if self._shutdown.is_set() or self._gen_counter != gen:
+            if self._compaction_stale(gen):
                 return
             self._apply_compaction(result, marker_ids, gen)
         finally:
@@ -586,24 +678,9 @@ class Chat:
         appended adjacent to their FCO when it arrives.
         """
         with self._lock:
-            if self._shutdown.is_set() or self._gen_counter != gen:
+            if self._compaction_stale(gen):
                 return
-            # Keep FC if its FCO is outside the compacted range -- otherwise
-            # the FCO in `remaining` would be orphaned.
-            fco_call_ids_in_range = {
-                x.call_id
-                for x in self.buffer
-                if isinstance(x, RealtimeConversationItemFunctionCallOutput) and x.id in marker_ids
-            }
-            fc_ids_to_keep = {
-                x.id
-                for x in self.buffer
-                if x.id in marker_ids
-                and isinstance(x, RealtimeConversationItemFunctionCall)
-                and x.call_id not in fco_call_ids_in_range
-            }
-            drop_ids = marker_ids - fc_ids_to_keep
-            remaining = [x for x in self.buffer if x.id not in drop_ids]
+            remaining = [x for x in self.buffer if x.id not in self._compaction_drop_ids_locked(marker_ids)]
             # Deferred to avoid a chat <-> chat_factories import cycle.
             from chatbot.LLM.chat_factories import make_assistant_message, make_user_message
 
@@ -619,8 +696,3 @@ class Chat:
                 len(self.buffer),
                 self._user_turn_count,
             )
-
-
-# ---------------------------------------------------------------------------
-# Factory helpers -- hide verbose constructors behind simple calls
-# ---------------------------------------------------------------------------
