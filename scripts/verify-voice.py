@@ -10,7 +10,7 @@ Usage (from the repo root):
     python3 scripts/verify-voice.py
     python3 scripts/verify-voice.py --app macos/Voice/build/Voice.app
     python3 scripts/verify-voice.py --skip-ui
-    python3 scripts/verify-voice.py --skip-ui --research   # bash/curl + verify-first + dated news RSS + Chinese TTS
+    python3 scripts/verify-voice.py --skip-ui --research   # bash/curl + verify-first + dated news RSS
     python3 scripts/verify-voice.py --cold     # quit Voice, restart local services
 
 Also confirms both local services run this checkout's current code (their
@@ -941,43 +941,39 @@ def server_log_size() -> int:
         return 0
 
 
-def verify_chinese_tts(report: Report) -> None:
-    """A Chinese name inside an English reply is synthesized by the Mandarin pipeline."""
+def verify_han_is_dropped(report: Report) -> None:
+    """Chinese support was removed; a stray Han character must be dropped.
+
+    espeak-ng, the English front end's fallback, pronounces one as the words
+    "Chinese letter", so the run splitter drops Han rather than speaking it.
+    """
     try:
         import websockets  # noqa: F401
     except ImportError:
-        report.add("chinese tts turn", False, "websockets package missing")
+        report.add("han dropped, not spoken", False, "websockets package missing")
         return
-    sentence = "Huawei, or 华为, is a Chinese company."
+    sentence = "Huawei, or \u534e\u4e3a, is a company."
     offset = server_log_size()
     try:
         turn = run_turn(
             f"Reply with exactly this sentence and nothing else: {sentence}", "Say the test sentence.", timeout=45
         )
     except Exception as exc:
-        report.add("chinese tts turn", False, str(exc))
+        report.add("han dropped, not spoken", False, str(exc))
         return
     report.add(
-        "chinese tts turn",
-        "华为" in turn.transcript and turn.audio_seconds > 1.0 and not turn.error,
+        "han dropped, not spoken",
+        turn.audio_seconds > 1.0 and not turn.error,
         f"{turn.audio_seconds:.1f}s audio: {turn.transcript[:120]}" + (f"; error: {turn.error}" if turn.error else ""),
     )
     time.sleep(0.5)
     log = server_log_since(offset)
-    spliced = "Kokoro mixed-script reply" in log and "[z]" in log
     report.add(
-        "chinese run used the mandarin pipeline",
-        spliced,
-        "server log shows the reply spliced across the English and Mandarin pipelines"
-        if spliced
-        else "server log has no mixed-script splice for this turn (old backend, or log not at $SERVER_LOG)",
-    )
-    report.add(
-        "no espeak fallback on chinese characters",
+        "no espeak fallback on han characters",
         "words count mismatch" not in log,
-        "phonemizer never saw the Chinese characters"
+        "phonemizer never saw the Han characters"
         if "words count mismatch" not in log
-        else "phonemizer fallback fired: the English pipeline received Chinese characters",
+        else "phonemizer fallback fired: the English pipeline received Han characters",
     )
 
 
@@ -1283,7 +1279,7 @@ end tell
         if args.research:
             verify_research(report)
             verify_research_initiative(report)
-            verify_chinese_tts(report)
+            verify_han_is_dropped(report)
     if not args.skip_ui:
         verify_ui(report, args.app)
 

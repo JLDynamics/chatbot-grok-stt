@@ -23,7 +23,7 @@ uv sync
 ./run-browser.sh
 ```
 
-`uv sync` installs the app, the Mandarin Kokoro extra (`misaki[zh]`), and the English spaCy model Kokoro needs at startup.
+`uv sync` installs the app and the English spaCy model Kokoro needs at startup.
 
 ```bash
 ./macos/Voice/scripts/install.sh
@@ -32,7 +32,7 @@ open /Applications/Voice.app
 
 Use the copy in **Applications**. The tree under `macos/Voice/build/` is only the compiler output; Launchpad should not list it. `run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`). Opening Voice starts those services when the default local ports are used, and **replaces a stale process** whose code no longer matches this checkout (that is how an old backend could sit on the ports without search). The first launch may download the TTS model files.
 
-The default model path is `openai/gpt-5.6-luna` through OpenRouter. Speech-to-text runs **on this Mac** through Apple's on-device engine, so there is no key, no metering, and nothing that expires: a turn transcribes punctuated in ~170ms, including the helper process launch, and a live 33s turn with four pauses took 370ms. It covers 45 locales, Mandarin, Cantonese and Taiwanese among them; `STT_LOCALE` picks one, because the engine has no auto-detect. `macos/SpeechHelper/build/speech-helper --locales` lists what this Mac supports and which models are already installed, and a locale's model downloads itself the first time the backend starts with it. It transcribes fillers literally and does not know proper nouns it has no context for, which a hosted service tidied.
+The default model path is `openai/gpt-5.6-luna` through OpenRouter. Speech-to-text runs **on this Mac** through Apple's on-device engine, so there is no key, no metering, and nothing that expires: a turn transcribes punctuated in ~170ms, including the helper process launch, and a live 33s turn with four pauses took 370ms. It covers 45 locales; `STT_LOCALE` picks one, because the engine has no auto-detect. `macos/SpeechHelper/build/speech-helper --locales` lists what this Mac supports and which models are already installed, and a locale's model downloads itself the first time the backend starts with it. It transcribes fillers literally and does not know proper nouns it has no context for, which a hosted service tidied.
 
 Text-to-speech uses **Apple's Siri voices** (`en-US-F` by default) through
 [siri-tts](https://github.com/maximilianromer/siri-tts-cli), which reaches the neural voices Apple
@@ -41,7 +41,9 @@ Measured against Kokoro on the same sentence, it is 84ms to first audio versus 2
 dlopens private frameworks, so a macOS update can break it; `TTS=kokoro` is the supported fallback
 and needs no extra binary. Siri ships no Chinese voice.
 
-Kokoro and VibeVoice still run locally with MLX. The default TTS is **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language). A Chinese name inside an English reply is spoken by the Mandarin pipeline, not spelled out as “Chinese letter.” Set `TTS=vibevoice` to use VibeVoice (`en-Emma_woman`).
+Kokoro and VibeVoice still run locally with MLX. `TTS=kokoro` uses **Kokoro-82M** (voice `bm_fable`, auto-switching language/voice from the detected language); `TTS=vibevoice` uses VibeVoice (`en-Emma_woman`).
+
+This build does not speak Chinese. No backend here has a Chinese voice, so a Han character in a reply is dropped rather than read aloud — espeak-ng, which the English front end falls back to, pronounces one as the words “Chinese letter.”
 
 ## Configuration
 
@@ -49,7 +51,7 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `STT_LOCALE` | `en-US` | Transcription locale, e.g. `en-GB`, `zh-CN`, `yue-CN`, `ja-JP`. The engine has no auto-detect, so this fixes the spoken language |
+| `STT_LOCALE` | `en-US` | Transcription locale, e.g. `en-GB`, `en-AU`, `ja-JP`, `fr-FR`. The engine has no auto-detect, so this fixes the spoken language |
 | `TTS` | `siri` | TTS backend: `siri` (Apple's Siri voices), `kokoro` (Kokoro-82M), or `vibevoice` (Microsoft VibeVoice) |
 | `SIRI_VOICE` | `en-US-F` | Siri voice name; `siri-tts voices --available` lists what this Mac has installed |
 | `SIRI_TTS_BIN` | `~/.local/bin/siri-tts` | Path to the siri-tts binary |
@@ -121,7 +123,7 @@ uv run ruff check src tests
 uv run mypy src
 uv run pytest -q
 bash macos/Voice/scripts/test.sh
-python3 scripts/verify-voice.py --skip-ui --research   # live search/read_page + Chinese TTS, services must be up
+python3 scripts/verify-voice.py --skip-ui --research   # live search/read_page, services must be up
 ```
 
 CI runs on macOS (lint, types, tests), builds the Python package, and performs an installation smoke test. Publishing is handled by `.github/workflows/publish.yml` for `v*` tags.

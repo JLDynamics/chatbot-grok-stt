@@ -62,7 +62,7 @@ def test_english_reply_uses_one_pipeline_and_the_configured_voice():
 
 def test_joins_between_runs_keep_only_a_short_gap():
     tts = handler()
-    chunks = [np.asarray(c.audio) for c in tts._generate("Huawei, or 华为, is a company.", {})]
+    chunks = [np.asarray(c.audio) for c in tts._generate("Tokyo is トウキョウ in Japanese.", {})]
     assert len(chunks) == 3
     first, middle, last = chunks
     # The reply keeps its natural silence at the very start and very end...
@@ -83,32 +83,28 @@ def test_trim_edge_silence_leaves_all_silent_or_empty_audio_alone():
     assert len(trim_edge_silence(audio, SR, keep_lead_s=1.0, keep_trail_s=1.0)) == len(audio)
 
 
-def test_chinese_run_in_an_english_reply_goes_to_mandarin_with_a_matching_male_voice():
+def test_han_is_dropped_rather_than_read_as_chinese_letter(caplog):
+    """Chinese support was removed, so the run splitter now guards instead.
+
+    espeak-ng, which the English front end falls back to, pronounces a Han
+    character as the words "Chinese letter". Dropping the run is the whole
+    reason this module survived the removal.
+    """
     tts = handler()
     list(tts._generate("Huawei, or 华为, is a company.", {"speed": 1.1}))
-    assert [(c["lang_code"], c["voice"], c["text"]) for c in tts.model.calls] == [
-        ("b", "bm_fable", "Huawei, or "),
-        ("z", "zm_yunyang", "华为, "),
-        ("b", "bm_fable", "is a company."),
+
+    assert [(c["lang_code"], c["text"]) for c in tts.model.calls] == [
+        ("b", "Huawei, or "),
+        ("b", "is a company."),
     ]
     assert all(c["speed"] == 1.1 for c in tts.model.calls)
 
 
-def test_female_speaker_gets_a_female_mandarin_voice():
-    tts = handler(voice="af_heart", lang_code="a")
-    list(tts._generate("小墨同学 is a robot.", {}))
-    assert tts.model.calls[0]["voice"] == "zf_xiaoxiao"
-    assert tts.model.calls[1]["voice"] == "af_heart"
+def test_a_reply_that_is_only_han_yields_no_audio():
+    tts = handler()
 
-
-def test_mandarin_turn_hands_latin_words_to_the_english_pipeline():
-    tts = handler(voice="zf_xiaobei", lang_code="z")
-    list(tts._generate("我用 OpenAI 的模型。", {}))
-    assert [(c["lang_code"], c["voice"], c["text"]) for c in tts.model.calls] == [
-        ("z", "zf_xiaobei", "我用 "),
-        ("b", "bf_emma", "OpenAI "),
-        ("z", "zf_xiaobei", "的模型。"),
-    ]
+    assert list(tts._generate("小墨同学", {})) == []
+    assert tts.model.calls == []
 
 
 def test_spanish_turn_keeps_its_own_pipeline_for_latin_text():
@@ -153,12 +149,10 @@ def test_explicit_lang_code_kwarg_overrides_the_turn_language():
 @pytest.mark.parametrize(
     ("lang_code", "base_voice", "expected"),
     [
-        ("z", "bm_fable", "zm_yunyang"),
-        ("z", "bf_emma", "zf_xiaoxiao"),
-        ("z", "af_heart", "zf_xiaoxiao"),
         ("j", "am_michael", "jm_kumo"),
+        ("j", "bf_emma", "jf_alpha"),
         ("f", "bm_fable", "ff_siwis"),  # French has no male voice
-        ("b", "zf_xiaobei", "bf_emma"),
+        ("b", "jf_alpha", "bf_emma"),
         ("q", "bm_fable", "bm_fable"),  # unknown pipeline: keep the speaker
     ],
 )

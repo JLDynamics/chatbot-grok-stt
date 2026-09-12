@@ -174,14 +174,13 @@ def test_registry_config_matches_the_setup_signature():
     assert set(config) <= accepted, f"setup() cannot accept {sorted(set(config) - accepted)}"
 
 
-def test_chinese_and_cantonese_are_nameable_for_the_prompt():
-    """The engine reports Cantonese separately, and xAI never offered it at all."""
+def test_chinese_is_not_advertised_as_a_language_this_build_handles():
+    """The engine can transcribe it; no TTS backend here can speak it back."""
     from chatbot.LLM.utils import WHISPER_LANGUAGE_TO_LLM_LANGUAGE
     from chatbot.STT.native_stt_handler import SUPPORTED_LANGUAGES
 
-    assert {"zh", "yue"} <= set(SUPPORTED_LANGUAGES)
-    assert WHISPER_LANGUAGE_TO_LLM_LANGUAGE["zh"] == "chinese"
-    assert WHISPER_LANGUAGE_TO_LLM_LANGUAGE["yue"] == "cantonese"
+    assert not {"zh", "yue"} & set(SUPPORTED_LANGUAGES)
+    assert "zh" not in WHISPER_LANGUAGE_TO_LLM_LANGUAGE
 
 
 # --- the real binary, when it has been built -----------------------------------------

@@ -50,7 +50,7 @@ dependencies = [
     "mlx-audio==0.5.0",
     "mlx-lm==0.31.1",
     "mlx-metal==0.31.1",
-    "misaki[zh]>=0.9.4",
+    "misaki>=0.9.4",
     "espeakng-loader>=0.2.4",
     "num2words>=0.5.14",
     "spacy>=3.8.4,<4.0",

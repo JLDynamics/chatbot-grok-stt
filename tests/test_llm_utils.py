@@ -15,21 +15,10 @@ def test_split_sentences_matches_nltk_for_english() -> None:
     assert split_sentences(text) == ["First one.", "Second one?", "Third"]
 
 
-def test_split_sentences_ends_sentences_at_cjk_full_stops() -> None:
-    # punkt alone would return this as a single sentence and TTS would wait
-    # for the whole reply.
-    assert split_sentences("华为是一家中国公司。它成立于1987年！你知道吗？还没完") == [
-        "华为是一家中国公司。",
-        "它成立于1987年！",
-        "你知道吗？",
-        "还没完",
-    ]
-
-
-def test_split_sentences_handles_mixed_punctuation_and_keeps_substrings() -> None:
-    text = "Huawei is 华为。 It is big. 对吧？"
+def test_split_sentences_keeps_substrings_for_the_streaming_loop() -> None:
+    text = "Huawei is big. It was founded in 1987. Did you know?"
     sentences = split_sentences(text)
-    assert sentences == ["Huawei is 华为。", "It is big.", "对吧？"]
+    assert sentences == ["Huawei is big.", "It was founded in 1987.", "Did you know?"]
     # The streaming loop finds the tail by substring search.
     assert all(sentence in text for sentence in sentences)
     assert split_sentences("") == []

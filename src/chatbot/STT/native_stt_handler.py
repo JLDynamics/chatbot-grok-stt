@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
 # The language codes behind the locales this engine transcribes, which is what
 # the reply-language prompt is keyed on. `speech-helper --locales` prints the
 # live list for a given Mac; this is the macOS 27 set, minus `mul` (the
-# multilingual Indian locale, not a language anyone replies in).
+# multilingual Indian locale, not a language anyone replies in) and minus the
+# Chinese locales (zh, yue), which the engine transcribes but no TTS backend
+# here can speak back.
 #
 # Checked against chatbot.LLM.utils by tests/test_llm_utils.py: a code without a
 # name there would make --enable_lang_prompt silently emit nothing.
@@ -68,8 +70,6 @@ SUPPORTED_LANGUAGES = [
     "ta",
     "te",
     "ur",
-    "yue",  # Cantonese, which the xAI endpoint never offered
-    "zh",
 ]
 
 # macos/SpeechHelper/build/speech-helper, relative to this file's checkout.

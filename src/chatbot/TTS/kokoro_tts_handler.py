@@ -35,7 +35,6 @@ BLOCK_SIZE = 512
 WHISPER_LANGUAGE_TO_KOKORO_LANG = {
     "en": "b",
     "ja": "j",
-    "zh": "z",
     "fr": "f",
     "es": "e",
     "it": "i",
@@ -57,7 +56,6 @@ KOKORO_LANG_DEFAULT_VOICES = {
     "i": "if_sara",
     "j": "jf_alpha",
     "p": "pf_dora",
-    "z": "zf_xiaobei",
 }
 # (male, female) voices used when a run of another script appears inside a
 # reply, so the inserted voice at least matches the speaker's gender. Kokoro
@@ -71,14 +69,13 @@ KOKORO_LANG_GENDERED_VOICES: dict[str, tuple[str, str]] = {
     "i": ("im_nicola", "if_sara"),
     "j": ("jm_kumo", "jf_alpha"),
     "p": ("pm_alex", "pf_dora"),
-    "z": ("zm_yunyang", "zf_xiaoxiao"),
 }
-# Pipelines whose own script is alphabetic. Any other base pipeline (Mandarin,
-# Japanese, Hindi) hands Latin runs such as "OpenAI" to an English one.
+# Pipelines whose own script is alphabetic. Any other base pipeline (Japanese,
+# Hindi) hands Latin runs such as "OpenAI" to an English one.
 ALPHABETIC_PIPELINES = frozenset({"a", "b", "e", "f", "i", "p"})
 ENGLISH_PIPELINES = frozenset({"a", "b"})
-# Mixed-script warmup: loads the Mandarin front end (jieba's dictionary build
-# takes a moment) and its voice before the first conversation needs them.
+# Mixed-script warmup: exercises the run splitter, which now drops Han rather
+# than speaking it, so a stray character never reaches espeak-ng.
 MIXED_WARMUP_TEXT = "Huawei, or 华为, is a company."
 # Silence kept on each side of a join between two runs. Kokoro leaves
 # 0.2-0.7 s at every edge; together these give a short inter-word gap instead.

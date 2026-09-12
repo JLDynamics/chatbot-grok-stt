@@ -7,7 +7,7 @@ Click-through and API checks for the native panel and local services.
 python3 scripts/verify-voice.py
 ./macos/Voice/scripts/verify.sh
 
-# Live server-side search/read_page and a Chinese-name TTS turn (no UI tour):
+# Live server-side search/read_page and a stray-Han TTS turn (no UI tour):
 python3 scripts/verify-voice.py --skip-ui --research
 
 # Quit Voice, restart sidecar + voice from this tree, then click through:
@@ -24,6 +24,6 @@ What it covers:
 - A short live model reply over the realtime WebSocket (`ping` → `pong`)
 - With `--research`: dated news RSS checks, a turn that must `bash`/`curl` a
   page on the server, a verify-first turn that must research without being
-  told the command, and a mixed-script TTS turn (`华为` on the Mandarin pipeline)
+  told the command, and a TTS turn checking `华为` is dropped rather than read
 
 Screenshots land in `/tmp/voice-verify-<timestamp>/`. The tool does not overwrite personal memory or delete saved chats.

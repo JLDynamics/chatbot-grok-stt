@@ -1,13 +1,13 @@
 """Split reply text into runs that one Kokoro pipeline can pronounce.
 
 Kokoro keeps one grapheme-to-phoneme front end per language. The English one
-hands anything outside its lexicon to espeak-ng, and espeak-ng reads a Chinese
+hands anything outside its lexicon to espeak-ng, and espeak-ng reads a Han
 character as the words "Chinese letter", so a name like 华为 in an otherwise
-English sentence came out as "Chinese letter Chinese letter". The fix is to
-never show the English front end a Han character: text is cut into runs by
-script, each run goes to the pipeline for that script, and the audio is
-concatenated. Neutral characters (spaces, digits, ASCII punctuation) stay
-with the run they follow so a run keeps its own phrasing.
+English sentence came out as "Chinese letter Chinese letter". Text is cut into
+runs by script so the English front end never sees one: a run this build has no
+pipeline for is dropped, and the rest is spoken. Neutral characters (spaces,
+digits, ASCII punctuation) stay with the run they follow so a run keeps its own
+phrasing.
 """
 
 from __future__ import annotations
@@ -16,9 +16,12 @@ import unicodedata
 from dataclasses import dataclass
 
 # Kokoro lang codes for scripts the model has voices for.
-CHINESE = "z"
 JAPANESE = "j"
-# Kokoro-82M has no Korean voice; Hangul is dropped rather than spelled out.
+# Scripts this build does not speak are dropped rather than spelled out.
+# Han was Mandarin (CHINESE = "z") until Chinese support was removed; it stays
+# listed here because the English front end hands anything outside its lexicon
+# to espeak-ng, which reads a Han character aloud as the words "Chinese
+# letter". Dropping it is the whole reason this module still exists.
 UNSUPPORTED = ""
 
 _HAN_RANGES = (
@@ -132,14 +135,14 @@ def segment_by_script(text: str, base_lang_code: str, letters_lang_code: str | N
     Alphabetic runs (Latin, Cyrillic, ...) keep *base_lang_code*, or take
     *letters_lang_code* when given: a Mandarin turn that mentions "OpenAI"
     needs an English pipeline for that word, since the Mandarin front end
-    would pass the raw letters through as phonemes. Han runs get the Mandarin
-    pipeline (or Japanese when they sit beside kana); Hangul gets
-    ``UNSUPPORTED``. Adjacent runs that resolve to the same pipeline are
-    merged so a sentence is not needlessly split.
+    would pass the raw letters through as phonemes. Han runs get ``UNSUPPORTED``
+    and are dropped, as does Hangul; Han beside kana goes to Japanese. Adjacent
+    runs that resolve to the same pipeline are merged so a sentence is not
+    needlessly split.
     """
     lang_for_class = {
         _BASE: letters_lang_code or base_lang_code,
-        _HAN: CHINESE,
+        _HAN: UNSUPPORTED,
         _KANA: JAPANESE,
         _HANGUL: UNSUPPORTED,
     }
