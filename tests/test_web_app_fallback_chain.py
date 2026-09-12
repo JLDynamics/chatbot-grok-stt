@@ -5,16 +5,22 @@ page is involved, *which* page. These cover the sidecar half of that contract.
 """
 
 import importlib.util
+import socket
+import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from web_app import browser as browser_module
+from web_app import common as common_module
+from web_app import desktop as desktop_module
 
 WEB_APP_DIR = Path(__file__).resolve().parents[1] / "web_app"
 spec = importlib.util.spec_from_file_location("chatbot_web_app_server_fallback", WEB_APP_DIR / "server.py")
 assert spec and spec.loader
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
+
 
 client = TestClient(server.app)
 BRIDGE_HEADERS = {"X-Chatbot-Bridge": "page-v1"}
@@ -23,12 +29,12 @@ BRIDGE_HEADERS = {"X-Chatbot-Bridge": "page-v1"}
 @pytest.fixture(autouse=True)
 def _clean_bridge_state(monkeypatch):
     # Exercise validation without relying on external DNS in a unit test.
-    monkeypatch.setattr(server.socket, "getaddrinfo", lambda *_: [(None, None, None, None, ("93.184.216.34", 0))])
-    server.browser_pages.clear()
-    server.last_seen_pages.clear()
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_: [(None, None, None, None, ("93.184.216.34", 0))])
+    browser_module.browser_pages.clear()
+    browser_module.last_seen_pages.clear()
     yield
-    server.browser_pages.clear()
-    server.last_seen_pages.clear()
+    browser_module.browser_pages.clear()
+    browser_module.last_seen_pages.clear()
 
 
 def _publish(tab_id: str = "1", url: str = "https://example.com/story", title: str = "Story") -> None:
@@ -61,8 +67,8 @@ def test_bridge_read_still_names_the_page_after_its_text_expires(monkeypatch):
     _publish(url="https://example.com/expired-story", title="Expired Story")
 
     # Age past the text TTL but inside the address TTL.
-    aged = server.time.monotonic() + server.BROWSER_PAGE_TTL_S + 1
-    monkeypatch.setattr(server.time, "monotonic", lambda: aged)
+    aged = time.monotonic() + browser_module.BROWSER_PAGE_TTL_S + 1
+    monkeypatch.setattr(time, "monotonic", lambda: aged)
 
     response = client.post("/api/browser/read")
     assert response.status_code == 503
@@ -74,8 +80,8 @@ def test_bridge_read_still_names_the_page_after_its_text_expires(monkeypatch):
 
 def test_address_is_forgotten_once_it_too_expires(monkeypatch):
     _publish()
-    aged = server.time.monotonic() + server.BROWSER_URL_TTL_S + 1
-    monkeypatch.setattr(server.time, "monotonic", lambda: aged)
+    aged = time.monotonic() + browser_module.BROWSER_URL_TTL_S + 1
+    monkeypatch.setattr(time, "monotonic", lambda: aged)
 
     detail = client.post("/api/browser/read").json()["detail"]
     assert detail["reason"] == "bridge_never_enabled"
@@ -86,19 +92,19 @@ def test_address_is_forgotten_once_it_too_expires(monkeypatch):
 
 def test_retained_entry_never_holds_page_text():
     _publish(url="https://example.com/secret", title="Secret")
-    assert list(server.last_seen_pages.values()) == [
-        (pytest.approx(server.last_seen_pages["1"][0]), "https://example.com/secret", "Secret")
+    assert list(browser_module.last_seen_pages.values()) == [
+        (pytest.approx(browser_module.last_seen_pages["1"][0]), "https://example.com/secret", "Secret")
     ]
-    assert "word" not in repr(server.last_seen_pages)
+    assert "word" not in repr(browser_module.last_seen_pages)
 
 
 def test_hiding_a_tab_forgets_its_address_too():
     _publish(tab_id="7")
-    assert "7" in server.last_seen_pages
+    assert "7" in browser_module.last_seen_pages
 
     response = client.post("/api/browser/hide", json={"tab_id": "7"}, headers=BRIDGE_HEADERS)
     assert response.status_code == 200
-    assert "7" not in server.last_seen_pages
+    assert "7" not in browser_module.last_seen_pages
     assert client.post("/api/browser/read").json()["detail"]["reason"] == "bridge_never_enabled"
 
 
@@ -107,37 +113,37 @@ def test_clearing_the_session_forgets_every_address():
     _publish(tab_id="2", url="https://example.com/other")
 
     assert client.post("/api/browser/clear", headers=BRIDGE_HEADERS).status_code == 200
-    assert server.last_seen_pages == {}
+    assert browser_module.last_seen_pages == {}
 
 
 def test_retained_addresses_stay_bounded():
-    for tab in range(1, server.BROWSER_PAGE_MAX_ENTRIES + 12):
+    for tab in range(1, browser_module.BROWSER_PAGE_MAX_ENTRIES + 12):
         _publish(tab_id=str(tab), url=f"https://example.com/{tab}")
-    assert len(server.last_seen_pages) <= server.BROWSER_PAGE_MAX_ENTRIES
+    assert len(browser_module.last_seen_pages) <= browser_module.BROWSER_PAGE_MAX_ENTRIES
 
 
 # ── gated pages are distinguishable from real ones ────────────────────────
 
 
-@pytest.mark.parametrize("status", sorted(server.GATED_STATUS_CODES))
+@pytest.mark.parametrize("status", sorted(common_module.GATED_STATUS_CODES))
 def test_refusal_status_codes_are_reported_as_gated(status):
-    assert server._looks_gated(status, "Some page body") == f"http_{status}"
+    assert common_module._looks_gated(status, "Some page body") == f"http_{status}"
 
 
 def test_short_interstitial_text_is_reported_as_gated():
-    assert server._looks_gated(200, "Subscribe to continue reading this article.") == "paywall_or_interstitial"
+    assert common_module._looks_gated(200, "Subscribe to continue reading this article.") == "paywall_or_interstitial"
 
 
 def test_a_real_article_is_not_reported_as_gated():
     # Long body: the marker heuristic must not fire on an article that merely
     # mentions subscribing, or every fetch would escalate for nothing.
     article = "Subscribe to continue reading is a phrase this article discusses. " * 40
-    assert server._looks_gated(200, article) is None
-    assert server._looks_gated(200, "word " * 500) is None
+    assert common_module._looks_gated(200, article) is None
+    assert common_module._looks_gated(200, "word " * 500) is None
 
 
 def test_gating_needs_a_marker_not_merely_brevity():
-    assert server._looks_gated(200, "Short but genuine answer.") is None
+    assert common_module._looks_gated(200, "Short but genuine answer.") is None
 
 
 # ── the panel must not race its own response ──────────────────────────────
@@ -152,13 +158,13 @@ def _allow_desktop(monkeypatch, tmp_path):
     harness = tmp_path / "desktop-harness"
     harness.write_text("#!/bin/sh\n")
     harness.chmod(0o700)
-    monkeypatch.setattr(server, "DESKTOP_HARNESS_BIN", harness)
-    monkeypatch.setattr(server, "DESKTOP_CONTROL_ENABLED", True)
+    monkeypatch.setattr(desktop_module, "DESKTOP_HARNESS_BIN", harness)
+    monkeypatch.setattr(desktop_module, "DESKTOP_CONTROL_ENABLED", True)
 
     async def safe_scope(_app=None):
         return None
 
-    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", safe_scope)
+    monkeypatch.setattr(desktop_module, "_screen_scope_looks_sensitive", safe_scope)
 
 
 def test_scroll_focuses_and_points_at_the_named_app(monkeypatch, tmp_path):
@@ -175,7 +181,7 @@ def test_scroll_focuses_and_points_at_the_named_app(monkeypatch, tmp_path):
         seen["script"] = script
         return 0, '{"ok": true}'
 
-    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    monkeypatch.setattr(desktop_module, "_run_harness", fake_harness)
     response = client.post("/api/desktop/act", json={"action": "scroll", "app": "Google Chrome", "amount": 8})
     assert response.status_code == 200
 
@@ -196,7 +202,7 @@ def test_scroll_without_a_target_does_not_steal_focus(monkeypatch, tmp_path):
         seen["script"] = script
         return 0, '{"ok": true}'
 
-    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    monkeypatch.setattr(desktop_module, "_run_harness", fake_harness)
     assert client.post("/api/desktop/act", json={"action": "scroll", "amount": 3}).status_code == 200
     assert "open_app(app)" not in seen["script"]
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from web_app import sessions as sessions_module
 
 WEB_APP_DIR = Path(__file__).resolve().parents[1] / "web_app"
 spec = importlib.util.spec_from_file_location("chatbot_web_app_server_sessions", WEB_APP_DIR / "server.py")
@@ -12,15 +13,16 @@ server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 
 
+
 @pytest.fixture()
 def isolated_client(monkeypatch, tmp_path):
     data = tmp_path / "data"
     sessions = data / "sessions"
     sessions.mkdir(parents=True)
-    monkeypatch.setattr(server, "CHATBOT_DATA", data)
-    monkeypatch.setattr(server, "SESSIONS_DIR", sessions)
-    monkeypatch.setattr(server, "PERSONAL_MEMORY_PATH", data / "personal-memory.md")
-    monkeypatch.setattr(server, "SESSION_RETENTION_COUNT", 3)
+    monkeypatch.setattr(sessions_module, "CHATBOT_DATA", data)
+    monkeypatch.setattr(sessions_module, "SESSIONS_DIR", sessions)
+    monkeypatch.setattr(sessions_module, "PERSONAL_MEMORY_PATH", data / "personal-memory.md")
+    monkeypatch.setattr(sessions_module, "SESSION_RETENTION_COUNT", 3)
     return TestClient(server.app)
 
 
@@ -53,7 +55,7 @@ def test_legacy_migration_skips_rename_when_profile_too_long(isolated_client, tm
     data = tmp_path / "data"
     legacy = data / "memories.json"
     legacy.write_text(json.dumps([{"id": 1, "text": "This legacy fact cannot fit.", "created": "2026-08-12"}]))
-    monkeypatch.setattr(server, "PERSONAL_MEMORY_MAX_CHARS", 20)
+    monkeypatch.setattr(sessions_module, "PERSONAL_MEMORY_MAX_CHARS", 20)
     isolated_client.get("/api/personal-memory")
     assert legacy.exists()
     assert not legacy.with_name("memories.json.migrated").exists()
@@ -127,7 +129,7 @@ def test_remember_appends_a_fact_once(isolated_client):
 
 
 def test_remember_refuses_when_the_profile_is_full(isolated_client, monkeypatch):
-    monkeypatch.setattr(server, "PERSONAL_MEMORY_MAX_CHARS", 30)
+    monkeypatch.setattr(sessions_module, "PERSONAL_MEMORY_MAX_CHARS", 30)
     isolated_client.put("/api/personal-memory", json={"content": "- Jack likes strong black tea"})
     response = isolated_client.post("/api/personal-memory/remember", json={"fact": "Jack has a dog named Biscuit"})
     assert response.status_code == 400
