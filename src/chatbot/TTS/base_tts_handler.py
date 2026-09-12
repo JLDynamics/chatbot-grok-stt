@@ -1,11 +1,13 @@
-"""Shared skeleton for the streaming TTS backends (Siri, VibeVoice).
+"""Shared skeleton for the streaming TTS backend.
 
-Both backends run the same streaming pipeline under the MLX lock: generate
-audio -> per-backend mapping -> shared spectral denoise + noise gate ->
-fixed-size block chunking with leftover carry. Backends only differ in how
-they generate (`_generate`), map native-rate chunks (`_map_chunk`), flush
-tail audio (`_model_tail`), and pick voices (`_apply_voice`). Siri generates
-outside MLX; it takes the lock anyway so one backend cannot starve another.
+A backend runs this streaming pipeline: generate audio -> per-backend mapping
+-> shared spectral denoise + noise gate -> fixed-size block chunking with
+leftover carry. Backends differ only in how they generate (`_generate`), map
+native-rate chunks (`_map_chunk`), flush tail audio (`_model_tail`), and pick
+voices (`_apply_voice`).
+
+Siri is the only backend now. The MLX lock this used to hold went with the MLX
+backends: nothing here loads a model into GPU memory any more.
 """
 
 from __future__ import annotations
@@ -29,7 +31,6 @@ from chatbot.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, EndOfRe
 from chatbot.pipeline.queue_types import TextEventItem
 from chatbot.pipeline.speculative_turns import SpeculativeTurnTracker
 from chatbot.TTS.tts_common import build_denoise_chain, drop_queued_tts_inputs
-from chatbot.utils.mlx_lock import MLXLockContext
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -64,16 +65,6 @@ class BaseTTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.model_name = model_name
         self.blocksize = int(blocksize)
 
-    def _load_mlx_model(self, missing_hint: str) -> Any:
-        logger.info("Loading %s model %s with mlx-audio", self.backend_name, self.model_name)
-        try:
-            from mlx_audio.tts.utils import load_model
-
-            with MLXLockContext(handler_name=f"{self.backend_name}Load"):
-                return load_model(self.model_name)
-        except ImportError as exc:
-            raise ImportError(missing_hint) from exc
-
     def warmup(self) -> None:
         logger.info("Warming up %s", self.backend_name)
         try:
@@ -104,57 +95,49 @@ class BaseTTSHandler(BaseHandler[TTSIn, TTSOut]):
     def _process(self, text: str) -> Iterator[np.ndarray]:
         name = self.backend_name
         blocksize = self.blocksize
-        with MLXLockContext(handler_name=f"{name}TTS", timeout=10.0) as acquired:
-            if not acquired:
-                raise TimeoutError("Timed out waiting for MLX lock")
-
-            gen_kwargs = dict(self.gen_kwargs)
-            denoiser, gate, gen_kwargs = build_denoise_chain(gen_kwargs)
-            generation = self._generate(text, gen_kwargs)
-            cancel_generation = self.cancel_scope.generation if self.cancel_scope else None
-            leftover = np.array([], dtype=np.int16)
-            total_samples = 0
-            start = perf_counter()
-            first = True
-            for item in generation:
-                if (
-                    cancel_generation is not None
-                    and self.cancel_scope
-                    and self.cancel_scope.is_stale(cancel_generation)
-                ):
-                    logger.info("%s generation cancelled", name)
-                    return
-                audio = np.asarray(item.audio, dtype=np.float32)
-                if first:
-                    logger.info("%s TTFA %.2fs", name, perf_counter() - start)
-                    first = False
-                if not audio.size:
-                    continue
-                pcm = self._map_chunk(audio)
-                pcm = denoiser.process(pcm)
-                pcm = gate.process(pcm)
-                pcm = np.clip(pcm * 32768, -32768, 32767).astype(np.int16)
-                pcm = np.concatenate((leftover, pcm))
-                complete = len(pcm) // blocksize * blocksize
-                for offset in range(0, complete, blocksize):
-                    yield pcm[offset : offset + blocksize]
-                    total_samples += blocksize
-                leftover = pcm[complete:]
-            tail_float = gate.process(np.concatenate([denoiser.process(self._model_tail()), denoiser.flush()]))
-            tail = np.clip(tail_float * 32768, -32768, 32767).astype(np.int16)
-            pcm = np.concatenate((leftover, tail))
+        gen_kwargs = dict(self.gen_kwargs)
+        denoiser, gate, gen_kwargs = build_denoise_chain(gen_kwargs)
+        generation = self._generate(text, gen_kwargs)
+        cancel_generation = self.cancel_scope.generation if self.cancel_scope else None
+        leftover = np.array([], dtype=np.int16)
+        total_samples = 0
+        start = perf_counter()
+        first = True
+        for item in generation:
+            if cancel_generation is not None and self.cancel_scope and self.cancel_scope.is_stale(cancel_generation):
+                logger.info("%s generation cancelled", name)
+                return
+            audio = np.asarray(item.audio, dtype=np.float32)
+            if first:
+                logger.info("%s TTFA %.2fs", name, perf_counter() - start)
+                first = False
+            if not audio.size:
+                continue
+            pcm = self._map_chunk(audio)
+            pcm = denoiser.process(pcm)
+            pcm = gate.process(pcm)
+            pcm = np.clip(pcm * 32768, -32768, 32767).astype(np.int16)
+            pcm = np.concatenate((leftover, pcm))
             complete = len(pcm) // blocksize * blocksize
             for offset in range(0, complete, blocksize):
                 yield pcm[offset : offset + blocksize]
                 total_samples += blocksize
             leftover = pcm[complete:]
-            if leftover.size:
-                yield np.pad(leftover, (0, blocksize - len(leftover)))
-                total_samples += len(leftover)
-            audio_s = total_samples / self.PIPELINE_SR
-            elapsed = perf_counter() - start
-            rtf = elapsed / audio_s if audio_s > 0 else 0.0
-            logger.info("%s generated %.2fs of audio in %.2fs (RTF %.2f)", name, audio_s, elapsed, rtf)
+        tail_float = gate.process(np.concatenate([denoiser.process(self._model_tail()), denoiser.flush()]))
+        tail = np.clip(tail_float * 32768, -32768, 32767).astype(np.int16)
+        pcm = np.concatenate((leftover, tail))
+        complete = len(pcm) // blocksize * blocksize
+        for offset in range(0, complete, blocksize):
+            yield pcm[offset : offset + blocksize]
+            total_samples += blocksize
+        leftover = pcm[complete:]
+        if leftover.size:
+            yield np.pad(leftover, (0, blocksize - len(leftover)))
+            total_samples += len(leftover)
+        audio_s = total_samples / self.PIPELINE_SR
+        elapsed = perf_counter() - start
+        rtf = elapsed / audio_s if audio_s > 0 else 0.0
+        logger.info("%s generated %.2fs of audio in %.2fs (RTF %.2f)", name, audio_s, elapsed, rtf)
 
     def _coalesce(self, current: TTSInput) -> str:
         parts = [current.text.strip()] if current.text.strip() else []
@@ -227,10 +210,4 @@ class BaseTTSHandler(BaseHandler[TTSIn, TTSOut]):
                 )
 
     def cleanup(self) -> None:
-        try:
-            del self.model
-            import mlx.core as mx
-
-            mx.clear_cache()
-        except Exception as exc:
-            logger.warning("%s cleanup failed: %s", self.backend_name, exc)
+        """Nothing resident to release; backends that hold something override this."""

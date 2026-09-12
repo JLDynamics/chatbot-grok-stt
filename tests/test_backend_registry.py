@@ -27,7 +27,7 @@ def test_registry_matches_the_only_supported_cli_choices():
 
     assert tuple(STT_BACKENDS) == module_fields["stt"].metadata["choices"] == ("native-stt",)
     assert tuple(LLM_BACKENDS) == module_fields["llm_backend"].metadata["choices"] == ("responses-api",)
-    assert tuple(TTS_BACKENDS) == module_fields["tts"].metadata["choices"] == ("siri", "vibevoice")
+    assert tuple(TTS_BACKENDS) == module_fields["tts"].metadata["choices"] == ("siri",)
 
 
 def test_registry_rejects_duplicates_and_normalizes_prefixed_config():

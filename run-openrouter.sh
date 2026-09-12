@@ -62,18 +62,9 @@ if [[ -n "$occupant" ]]; then
   exit 1
 fi
 
-# Siri is the default voice. Voice.app launches run-browser.sh with no
-# environment of its own, so this default is what the panel actually gets --
-# exporting TTS in a shell only affects a launcher you started yourself.
-# TTS=vibevoice switches to the local MLX fallback.
+# Siri is the only voice. Kept as a variable so --tts still reads from one
+# place if another backend is ever added.
 TTS="${TTS:-siri}"
-
-# VibeVoice (local MLX fallback)
-VIBEVOICE_MODEL="${VIBEVOICE_MODEL:-mlx-community/VibeVoice-Realtime-0.5B-8bit}"
-VIBEVOICE_VOICE="${VIBEVOICE_VOICE:-en-Emma_woman}"
-VIBEVOICE_MAX_TOKENS="${VIBEVOICE_MAX_TOKENS:-1024}"
-VIBEVOICE_CFG_SCALE="${VIBEVOICE_CFG_SCALE:-1.5}"
-VIBEVOICE_DENOISE_FLOOR="${VIBEVOICE_DENOISE_FLOOR:-0.04}"
 
 args=(
   serve
@@ -87,20 +78,10 @@ args=(
 SIRI_VOICE="${SIRI_VOICE:-en-US-F}"
 SIRI_TTS_BIN="${SIRI_TTS_BIN:-$HOME/.local/bin/siri-tts}"
 
-if [[ "$TTS" == "siri" ]]; then
-  args+=(
-    --siri_tts_voice "$SIRI_VOICE"
-    --siri_tts_binary "$SIRI_TTS_BIN"
-  )
-else
-  args+=(
-    --vibevoice_tts_model_name "$VIBEVOICE_MODEL"
-    --vibevoice_tts_voice "$VIBEVOICE_VOICE"
-    --vibevoice_tts_max_tokens "$VIBEVOICE_MAX_TOKENS"
-    --vibevoice_tts_cfg_scale "$VIBEVOICE_CFG_SCALE"
-    --vibevoice_tts_gen_spectral_denoise_floor "$VIBEVOICE_DENOISE_FLOOR"
-  )
-fi
+args+=(
+  --siri_tts_voice "$SIRI_VOICE"
+  --siri_tts_binary "$SIRI_TTS_BIN"
+)
 
 args+=(
   --model_name "$MODEL"

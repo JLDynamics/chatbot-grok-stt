@@ -20,7 +20,6 @@ from chatbot.arguments_classes.responses_api_language_model_arguments import (
 )
 from chatbot.arguments_classes.siri_tts_arguments import SiriTTSHandlerArguments
 from chatbot.arguments_classes.vad_arguments import VADHandlerArguments
-from chatbot.arguments_classes.vibevoice_tts_arguments import VibeVoiceTTSHandlerArguments
 from chatbot.backend_registry import (
     LLM_BACKENDS,
     STT_BACKENDS,
@@ -74,13 +73,11 @@ def parse_arguments(
         NativeSTTHandlerArguments,
         ResponsesApiLanguageModelHandlerArguments,
         SiriTTSHandlerArguments,
-        VibeVoiceTTSHandlerArguments,
     )
     parser = HfArgumentParser(argument_types, prog=f"chatbot {command}")
     parsed = parser.parse_args_into_dataclasses(args=list(argv) if argv is not None else None)
-    module, server, vad, stt_config, llm_config, siri_config, vibevoice_config = parsed
+    module, server, vad, stt_config, llm_config, tts_config = parsed
     stt_backend = BackendSelection(STT_BACKENDS[module.stt], STT_BACKENDS[module.stt].normalize(stt_config))
-    tts_config = {"siri": siri_config, "vibevoice": vibevoice_config}[module.tts]
     tts_backend = BackendSelection(TTS_BACKENDS[module.tts], TTS_BACKENDS[module.tts].normalize(tts_config))
     return ParsedArguments(
         module_kwargs=module,

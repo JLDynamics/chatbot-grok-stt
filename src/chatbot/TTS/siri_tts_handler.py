@@ -13,10 +13,9 @@ audio versus 208ms, and the whole utterance rendered in 92ms.
 
 The cost is honest: private frameworks are not API, so a macOS update can
 rename or remove what this depends on. That failure is loud -- the binary
-exits non-zero and the turn degrades -- and `--tts vibevoice` is the local
-fallback, which runs entirely on MLX with nothing private underneath. It is
-far slower (roughly real time against Siri's 0.014 RTF), so it is a way to
-keep talking after a macOS update breaks this, not a daily driver.
+exits non-zero and the turn degrades. There is no second backend to fall back
+to: the MLX voices were removed deliberately, so restoring one means reverting
+that removal and running `uv sync`, not flipping a flag.
 """
 
 from __future__ import annotations
@@ -197,7 +196,6 @@ class SiriTTSHandler(BaseTTSHandler):
         return np.asarray(self._resampler.resample_chunk(np.zeros(0, dtype=np.float32), last=True), dtype=np.float32)
 
     def cleanup(self) -> None:
-        """No MLX cache and no resident model, so the base teardown does not apply."""
         self._resampler = None
 
     def _apply_voice(self, tts_input: TTSInput) -> None:

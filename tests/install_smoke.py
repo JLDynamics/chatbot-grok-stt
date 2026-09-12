@@ -11,8 +11,6 @@ def main() -> None:
         "fastapi",
         "huggingface_hub",
         "lingua",
-        "mlx",
-        "mlx_audio",
         "nltk",
         "numpy",
         "onnxruntime",

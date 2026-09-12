@@ -36,3 +36,5 @@ def test_removed_commands_and_backends_are_rejected():
         parse_arguments(["--stt", "grok-stt"])
     with pytest.raises(SystemExit):
         parse_arguments(["--tts", "kokoro"])
+    with pytest.raises(SystemExit):
+        parse_arguments(["--tts", "vibevoice"])
