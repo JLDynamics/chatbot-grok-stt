@@ -51,6 +51,24 @@ class VADHandlerArguments:
             "help": "Keep a soft-ended Realtime turn reopenable for this many milliseconds unless a response commits it. Default is 800 ms."
         },
     )
+    reopen_complete_window_ms: int = field(
+        default=-1,
+        metadata={
+            "help": "How long (ms) a soft-ended turn that Smart Turn scored complete stays reopenable by resumed speech. -1 (default) follows speculative_reopen_ms. 0 disables post-complete reopen entirely so later audio starts a new turn. Positive values override the grace. Turns Smart Turn scored incomplete always keep unanswered_reopen_ms so a mid-thought pause never orphans them. Shrink (or zero) this in a noisy room where late noise resurrects finished turns; widen it if quick afterthoughts get split into separate turns."
+        },
+    )
+    reopen_complete_min_speech_ms: int = field(
+        default=0,
+        metadata={
+            "help": "Active-speech floor (ms) for reopening a Smart-Turn-complete turn. 0 (default) reuses the fresh-turn bar (idle greeting floor / barge-in min_speech_ms): trailing audio after a finished utterance must qualify as a new utterance instead of riding the min_speech_continuation_ms hysteresis, which only bridges pauses inside an unfinished utterance. Set higher (e.g. 600) to tighten a noisy room without touching the hysteresis that incomplete turns rely on. Clamped to a 100 ms fragment floor."
+        },
+    )
+    reopen_require_complete: bool = field(
+        default=True,
+        metadata={
+            "help": "Only let a reopened revision supersede a Smart-Turn-complete turn when the reopened audio itself scores Smart Turn complete. A confident-incomplete reopen (e.g. noise scoring p=0.005 appended to a p=0.982 turn) is retained in the turn audio but not sent to STT, so noise cannot corrupt the committed transcript or trigger a speculative re-generation. Pass --no_reopen_require_complete to restore legacy emit-always behavior. Requires Smart Turn; with --no_smart_turn this has no effect."
+        },
+    )
     unanswered_reopen_ms: int = field(
         default=7000,
         metadata={
