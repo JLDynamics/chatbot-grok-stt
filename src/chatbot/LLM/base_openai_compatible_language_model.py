@@ -97,6 +97,19 @@ class _Turn(BaseModel):
     speech_stopped_at_s: float | None
     wants_audio: bool
 
+    def interrupted(
+        self,
+        cancel_scope: CancelScope | None,
+        speculative_turns: SpeculativeTurnTracker | None,
+    ) -> bool:
+        """True when this turn must no longer emit: superseded generation or stale speculative turn."""
+        stale_gen = cancel_scope is not None and self.gen is not None and cancel_scope.is_stale(self.gen)
+        stale_turn = (
+            speculative_turns is not None
+            and not speculative_turns.is_latest(self.turn_id, self.turn_revision)
+        )
+        return bool(stale_gen or stale_turn)
+
 
 class _GenState(BaseModel):
     """Mutable accumulators collected while consuming a turn's events."""
@@ -114,6 +127,81 @@ class _GenState(BaseModel):
     clean_text: str = ""  # filtered text, kept only for the debug log
     input_tokens: int = 0  # summed over every model call in the response
     output_tokens: int = 0
+
+    def note_usage(self, event: Usage) -> None:
+        """Accumulate token accounting from one model call."""
+        self.input_tokens += event.input_tokens
+        self.output_tokens += event.output_tokens
+
+    def buffer_assistant(self, content: list[AssistantContent]) -> None:
+        """Queue a complete assistant message for the end-of-turn write-back."""
+        self.pending.append(
+            RealtimeConversationItemAssistantMessage(type="message", role="assistant", content=content)
+        )
+
+
+class _SentenceBatcher:
+    """Batches spoken sentences for TTS from a stream of filtered text deltas.
+
+    The first complete sentence is released on its own so speech starts as
+    early as possible; later sentences are grouped up to ``batch_size`` for
+    better prosody once audio is already playing.
+    """
+
+    def __init__(self, batch_size: int) -> None:
+        self._batch_size = max(1, batch_size)
+        self._tail = ""
+        self._batch: list[str] = []
+        self._first_flush_pending = True
+
+    def add(self, text: str) -> list[list[str]]:
+        """Fold filtered text in; return batches that reached the flush threshold."""
+        self._tail += text
+        ready: list[list[str]] = []
+        sentences = split_sentences(self._tail)
+        if len(sentences) > 1:
+            for sentence in sentences[:-1]:
+                self._batch.append(sentence)
+                threshold = 1 if self._first_flush_pending else self._batch_size
+                if len(self._batch) >= threshold:
+                    ready.append(list(self._batch))
+                    self._batch.clear()
+                    self._first_flush_pending = False
+            # Keep the raw tail (the tokenizer strips its trailing space)
+            # so the next delta cannot glue onto it as "one.Here" and
+            # hide a sentence boundary from the tokenizer.
+            tail_start = self._tail.rfind(sentences[-1])
+            self._tail = self._tail[tail_start:] if tail_start >= 0 else sentences[-1]
+        return ready
+
+    def drain(self) -> list[str]:
+        """Move any trailing text into the batch and hand the remainder over."""
+        if self._tail.strip():
+            self._batch.append(self._tail.strip())
+            self._tail = ""
+        batch, self._batch = self._batch, []
+        return batch
+
+
+class _GenerationTx:
+    """Tracks whether a transactional generation wrote history it must roll back."""
+
+    def __init__(self, original_chat: Chat, user_message_id: str | None) -> None:
+        self._original_chat = original_chat
+        self._user_message_id = user_message_id
+        self.committed = False
+        self._rolled_back = False
+
+    def rollback(self, state: _GenState) -> None:
+        """Remove this generation's provisional writes unless it committed. Idempotent."""
+        if self._user_message_id is None or self.committed or self._rolled_back:
+            return
+        self._original_chat.rollback_generation(
+            self._user_message_id,
+            item_ids=state.recorded_item_ids,
+            call_ids=state.recorded_call_ids,
+        )
+        self._rolled_back = True
 
 
 class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
@@ -259,6 +347,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return True
         return self.speculative_turns.is_latest(turn_id, turn_revision)
 
+    def _is_interrupted(self, turn: _Turn) -> bool:
+        """Single staleness predicate: superseded generation or stale speculative turn."""
+        return turn.interrupted(self.cancel_scope, self.speculative_turns)
+
     def _memory_profile(self) -> str:
         """Personal memory to fold into the system prompt; empty when unavailable."""
         return self.server_tools.memory_profile() if self.server_tools is not None else ""
@@ -284,6 +376,31 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             chat.add_item(make_system_message(full_instructions))
 
     # ── output helpers ──────────────────────────────────────────────────────--
+
+    @staticmethod
+    def _spoken_text(turn: _Turn, raw: str) -> str:
+        """Text the client should speak: verbatim for text-only turns, TTS-filtered for audio."""
+        return raw if not turn.wants_audio else remove_unspeechable(raw)
+
+    @staticmethod
+    def _fold_bookkeeping_event(event: ProviderEvent, state: _GenState) -> bool:
+        """Fold Usage/AssistantMessage events into the state. Returns True if handled."""
+        if isinstance(event, Usage):
+            state.note_usage(event)
+            return True
+        if isinstance(event, AssistantMessage):
+            state.buffer_assistant(event.content)
+            return True
+        return False
+
+    def _flush_batch(self, turn: _Turn, batch: list[str]) -> Iterator[LLMOut]:
+        """Emit one sentence batch unless the turn went stale while it was filling."""
+        if not batch:
+            return
+        if not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
+            logger.info("LLM generation cancelled (stale speculative turn)")
+            return
+        yield self._chunk(turn, text=" ".join(batch))
 
     def _chunk(
         self,
@@ -348,7 +465,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             id=item.id,
             status=item.status,
         )
-        if self._generation_is_stale(turn.gen) or not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
+        if self._is_interrupted(turn):
             logger.info("LLM generation cancelled (stale speculative turn)")
             return
         # Flush assistant text accumulated before this call first (so history
@@ -383,9 +500,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         assert self.server_tools is not None
 
         def interrupted() -> bool:
-            return self._generation_is_stale(turn.gen) or not self._turn_output_allowed(
-                turn.turn_id, turn.turn_revision
-            )
+            return self._is_interrupted(turn)
 
         outputs = self.server_tools.run_many(calls, is_cancelled=interrupted)
         if any(output is None for output in outputs) or interrupted():
@@ -421,46 +536,25 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         turn: _Turn,
     ) -> Generator[LLMOut, None, bool]:
         cancelled = False
-        printable_text = ""
-        sentence_batch: list[str] = []
-        # The first complete sentence goes to TTS on its own so speech starts as
-        # early as possible; later sentences are batched (stream_batch_sentences)
-        # for better prosody once audio is already playing.
-        first_flush_pending = True
-
-        def _flush(batch: list[str]) -> Iterator[LLMOut]:
-            if not batch:
-                return
-            if not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
-                logger.info("LLM generation cancelled (stale speculative turn)")
-                return
-            yield self._chunk(turn, text=" ".join(batch))
+        batcher = _SentenceBatcher(self.stream_batch_sentences)
 
         for event in events:
-            if self._generation_is_stale(turn.gen) or not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
+            if self._is_interrupted(turn):
                 logger.info("LLM generation cancelled (interruption)")
                 cancelled = True
                 break
 
-            if isinstance(event, Usage):
-                state.input_tokens += event.input_tokens
-                state.output_tokens += event.output_tokens
-            elif isinstance(event, AssistantMessage):
-                state.pending.append(
-                    RealtimeConversationItemAssistantMessage(type="message", role="assistant", content=event.content)
-                )
-            elif isinstance(event, ToolCall):
+            if self._fold_bookkeeping_event(event, state):
+                continue
+            if isinstance(event, ToolCall):
                 # Flush any pending spoken text before emitting the tool call.
-                if printable_text.strip():
-                    sentence_batch.append(printable_text.strip())
-                    printable_text = ""
-                if sentence_batch:
+                pending = batcher.drain()
+                if pending:
                     if not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
                         logger.info("LLM generation cancelled (stale speculative turn)")
                         cancelled = True
                         break
-                    yield from _flush(sentence_batch)
-                    sentence_batch = []
+                    yield from self._flush_batch(turn, pending)
                 yield from self._record_tool_call(state, turn, event.item)
             elif isinstance(event, TextDelta):
                 if not turn.wants_audio:
@@ -475,45 +569,27 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                             break
                         yield self._chunk(turn, text=event.text)
                     continue
-                new_text = remove_unspeechable(event.text)
-                state.clean_text += new_text
-                printable_text += new_text
-                sentences = split_sentences(printable_text)
-                if len(sentences) > 1:
-                    for s in sentences[:-1]:
-                        sentence_batch.append(s)
-                        threshold = 1 if first_flush_pending else self.stream_batch_sentences
-                        if len(sentence_batch) >= threshold:
-                            if not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
-                                logger.info("LLM generation cancelled (stale speculative turn)")
-                                cancelled = True
-                                break
-                            yield from _flush(sentence_batch)
-                            sentence_batch = []
-                            first_flush_pending = False
-                    if cancelled:
+                filtered = self._spoken_text(turn, event.text)
+                state.clean_text += filtered
+                for ready in batcher.add(filtered):
+                    if not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
+                        logger.info("LLM generation cancelled (stale speculative turn)")
+                        cancelled = True
                         break
-                    # Keep the raw tail (the tokenizer strips its trailing space)
-                    # so the next delta cannot glue onto it as "one.Here" and
-                    # hide a sentence boundary from the tokenizer.
-                    tail_start = printable_text.rfind(sentences[-1])
-                    printable_text = printable_text[tail_start:] if tail_start >= 0 else sentences[-1]
+                    yield from self._flush_batch(turn, ready)
+                if cancelled:
+                    break
 
         if not cancelled:
-            if printable_text.strip():
-                sentence_batch.append(printable_text.strip())
-            if sentence_batch:
+            pending = batcher.drain()
+            if pending:
                 if self._generation_is_stale(turn.gen):
                     logger.info("LLM generation cancelled (interruption)")
                 else:
                     logger.debug(f"Clean text: {state.clean_text}")
-                    yield from _flush(sentence_batch)
+                    yield from self._flush_batch(turn, pending)
             logger.info(f"Tools: {state.tools}")
-        return (
-            not cancelled
-            and not self._generation_is_stale(turn.gen)
-            and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
-        )
+        return not cancelled and not self._is_interrupted(turn)
 
     def _consume_nonstreaming(
         self,
@@ -521,34 +597,177 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         state: _GenState,
         turn: _Turn,
     ) -> Generator[LLMOut, None, bool]:
-        if self._generation_is_stale(turn.gen) or not self._turn_output_allowed(turn.turn_id, turn.turn_revision):
+        if self._is_interrupted(turn):
             logger.info("LLM generation cancelled (interruption)")
             return False
         for event in events:
-            if isinstance(event, Usage):
-                state.input_tokens += event.input_tokens
-                state.output_tokens += event.output_tokens
-            elif isinstance(event, AssistantMessage):
-                state.pending.append(
-                    RealtimeConversationItemAssistantMessage(type="message", role="assistant", content=event.content)
-                )
-            elif isinstance(event, ToolCall):
+            if self._fold_bookkeeping_event(event, state):
+                continue
+            if isinstance(event, ToolCall):
                 yield from self._record_tool_call(state, turn, event.item)
             elif isinstance(event, TextDelta):
-                # Text-only keeps every character verbatim; audio strips
-                # TTS-unfriendly symbols via remove_unspeechable.
-                spoken = event.text if not turn.wants_audio else remove_unspeechable(event.text)
+                spoken = self._spoken_text(turn, event.text)
                 state.clean_text += spoken
                 out = spoken if not turn.wants_audio else spoken.strip()
-                if (
-                    out
-                    and not self._generation_is_stale(turn.gen)
-                    and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
-                ):
+                if out and not self._is_interrupted(turn):
                     yield self._chunk(turn, text=out)
         logger.debug(f"Clean text: {state.clean_text}")
         logger.info(f"Tools: {state.tools}")
-        return not self._generation_is_stale(turn.gen) and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
+        return not self._is_interrupted(turn)
+
+    def _round_kwargs(
+        self,
+        tool_round: int,
+        research_started: float,
+        optional_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Per-round request kwargs: force a final answer once the research budget is spent."""
+        research_s = time.monotonic() - research_started
+        out_of_rounds = tool_round == MAX_TOOL_ROUNDS
+        out_of_time = tool_round > 0 and research_s > TOOL_TIME_BUDGET_S
+        if (out_of_rounds or out_of_time) and "tools" in optional_kwargs:
+            logger.warning(
+                "Research budget reached (round %d, %.1fs); forcing a final answer", tool_round, research_s
+            )
+            return {**optional_kwargs, "tool_choice": "none"}
+        return optional_kwargs
+
+    def _split_tool_calls(
+        self, calls: list[ResponseFunctionToolCall]
+    ) -> tuple[list[ResponseFunctionToolCall], list[ResponseFunctionToolCall]]:
+        """Partition one round's tool calls into (server-side, client-side)."""
+        server_calls = [call for call in calls if self._runs_server_side(call.name)]
+        client_calls = [call for call in calls if not self._runs_server_side(call.name)]
+        return server_calls, client_calls
+
+    def _pump_tool_rounds(
+        self,
+        active_chat: Chat,
+        turn: _Turn,
+        optional_kwargs: dict[str, Any],
+        state: _GenState,
+        consumed_image_ids: set[str],
+        serialize_fn: SerializeFn | None,
+        request_fn: RequestFn | None,
+        event_iterator_fn: EventIteratorFn | None,
+    ) -> Generator[LLMOut, None, tuple[bool, str | None]]:
+        """Run model call → consume → server-tool rounds until the turn ends.
+
+        Returns ``(generation_completed, error_message)``. Each round streams
+        text (spoken as it arrives) and may end in tool calls. Tools the server
+        runs itself are executed here and the loop continues with their outputs
+        in context; a tool the client must run ends the loop (the client posts
+        its output and asks for a new response).
+        """
+        error_message: str | None = None
+        generation_completed = False
+        research_started = time.monotonic()
+        api_response: Any = None
+        try:
+            for tool_round in range(MAX_TOOL_ROUNDS + 1):
+                api_input = (serialize_fn or self._serialize)(active_chat)
+                # Images the model actually sees this turn; only these are stripped on
+                # write-back, so an image a fast client injects mid-generation for the
+                # next turn survives (it is not in this serialized snapshot).
+                consumed_image_ids |= active_chat.image_message_ids()
+                if not api_input:
+                    # Nothing to send: empty `instructions` and no `input` (in the response,
+                    # the default conversation, or the out-of-band context). The provider
+                    # would reject this; fail with a clear message instead of an opaque error.
+                    error_message = "Cannot generate a response: no instructions and no input were provided."
+                    break
+                round_kwargs = self._round_kwargs(tool_round, research_started, optional_kwargs)
+                api_response = (request_fn or self._request)(api_input, round_kwargs)
+                if api_response is None:
+                    break
+                events = (event_iterator_fn or self._iter_events)(api_response)
+                first_new_tool = len(state.tools)
+                if self.stream:
+                    generation_completed = yield from self._consume_streaming(events, state, turn)
+                else:
+                    generation_completed = yield from self._consume_nonstreaming(events, state, turn)
+                self._close_response(api_response)
+                api_response = None
+                if not generation_completed:
+                    break
+                server_calls, client_calls = self._split_tool_calls(state.tools[first_new_tool:])
+                if server_calls:
+                    logger.info(
+                        "Tool round %d: running %s server-side",
+                        tool_round + 1,
+                        ", ".join(call.name for call in server_calls),
+                    )
+                    generation_completed = yield from self._run_server_tools(server_calls, state, turn)
+                    if not generation_completed:
+                        break
+                # A client-side tool in the same round still has to
+                # finish on the client before the model can continue.
+                if client_calls or not server_calls:
+                    break
+        finally:
+            self._close_response(api_response)
+        return generation_completed, error_message
+
+    def _timeout_apology(self, turn: _Turn) -> Iterator[LLMOut]:
+        """Canned fallback when the provider read times out (skipped when stale)."""
+        if self._is_interrupted(turn):
+            return
+        # Canned apology carries no language_code (mirrors the prior handlers).
+        yield LLMResponseChunk(
+            text="Wow I'm a bit slow today, could you repeat that?",
+            runtime_config=turn.runtime_config,
+            response=turn.response,
+            turn_id=turn.turn_id,
+            turn_revision=turn.turn_revision,
+            speech_stopped_at_s=turn.speech_stopped_at_s,
+            cancel_generation=turn.gen,
+        )
+
+    def _commit_history(
+        self,
+        original_chat: Chat,
+        state: _GenState,
+        turn: _Turn,
+        consumed_image_ids: set[str],
+        history_commit_fn: Callable[[], None] | None,
+    ) -> None:
+        """Write trailing items back to the default conversation (raises on failure)."""
+        # Out-of-band responses emit output and usage but never write back to the
+        # default conversation (their context was a throwaway chat).
+        if is_out_of_band(turn.response):
+            return
+        # Tool calls (and any assistant text preceding them) were already
+        # written eagerly in _record_tool_call; only trailing items remain.
+        for item in state.pending:
+            recorded = original_chat.add_item(item)
+            if recorded.id is not None:
+                state.recorded_item_ids.add(recorded.id)
+        original_chat.strip_images(consumed_image_ids)
+        if history_commit_fn is not None:
+            history_commit_fn()
+        original_chat.trim_if_needed(self.compactor)
+
+    def _finish_turn(
+        self,
+        state: _GenState,
+        turn: _Turn,
+        history_committed: bool,
+        error_message: str | None,
+    ) -> Iterator[LLMOut]:
+        """Emit token usage (when anything was committed) and the terminal response."""
+        if history_committed and (state.input_tokens or state.output_tokens):
+            yield TokenUsage(
+                input_tokens=state.input_tokens,
+                output_tokens=state.output_tokens,
+                turn_id=turn.turn_id,
+                turn_revision=turn.turn_revision,
+            )
+        yield EndOfResponse(
+            turn_id=turn.turn_id,
+            turn_revision=turn.turn_revision,
+            cancel_generation=turn.gen,
+            error=error_message,
+        )
 
     # ── orchestration ─────────────────────────────────────────────────────────
 
@@ -565,102 +784,30 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         transactional_user_message_id: str | None = None,
         history_commit_fn: Callable[[], None] | None = None,
     ) -> Generator[LLMOut, None, bool]:
-        api_response: Any = None
         state = _GenState(active_chat=active_chat)
+        tx = _GenerationTx(original_chat, transactional_user_message_id)
+        consumed_image_ids: set[str] = set()
         error_message: str | None = None
         generation_completed = False
-        history_committed = False
-        transaction_rolled_back = False
-        consumed_image_ids: set[str] = set()
-
-        def rollback_transaction() -> None:
-            nonlocal transaction_rolled_back
-            if transactional_user_message_id is None or history_committed or transaction_rolled_back:
-                return
-            original_chat.rollback_generation(
-                transactional_user_message_id,
-                item_ids=state.recorded_item_ids,
-                call_ids=state.recorded_call_ids,
-            )
-            transaction_rolled_back = True
 
         try:
             try:
-                # One response may take several model calls: each round streams text
-                # (spoken as it arrives) and may end in tool calls. Tools the server
-                # runs itself are executed here and the loop continues with their
-                # outputs in context; a tool the client must run ends the loop (the
-                # client posts its output and asks for a new response).
-                research_started = time.monotonic()
-                for tool_round in range(MAX_TOOL_ROUNDS + 1):
-                    api_input = (serialize_fn or self._serialize)(active_chat)
-                    # Images the model actually sees this turn; only these are stripped on
-                    # write-back, so an image a fast client injects mid-generation for the
-                    # next turn survives (it is not in this serialized snapshot).
-                    consumed_image_ids |= active_chat.image_message_ids()
-                    if not api_input:
-                        # Nothing to send: empty `instructions` and no `input` (in the response,
-                        # the default conversation, or the out-of-band context). The provider
-                        # would reject this; fail with a clear message instead of an opaque error.
-                        error_message = "Cannot generate a response: no instructions and no input were provided."
-                        break
-                    round_kwargs = optional_kwargs
-                    research_s = time.monotonic() - research_started
-                    out_of_rounds = tool_round == MAX_TOOL_ROUNDS
-                    out_of_time = tool_round > 0 and research_s > TOOL_TIME_BUDGET_S
-                    if (out_of_rounds or out_of_time) and "tools" in optional_kwargs:
-                        # Out of rounds or time: the model must answer with what it has.
-                        logger.warning(
-                            "Research budget reached (round %d, %.1fs); forcing a final answer", tool_round, research_s
-                        )
-                        round_kwargs = {**optional_kwargs, "tool_choice": "none"}
-                    api_response = (request_fn or self._request)(api_input, round_kwargs)
-                    if api_response is None:
-                        break
-                    events = (event_iterator_fn or self._iter_events)(api_response)
-                    first_new_tool = len(state.tools)
-                    if self.stream:
-                        generation_completed = yield from self._consume_streaming(events, state, turn)
-                    else:
-                        generation_completed = yield from self._consume_nonstreaming(events, state, turn)
-                    self._close_response(api_response)
-                    api_response = None
-                    if not generation_completed:
-                        break
-                    new_tools = state.tools[first_new_tool:]
-                    server_calls = [call for call in new_tools if self._runs_server_side(call.name)]
-                    client_calls = [call for call in new_tools if not self._runs_server_side(call.name)]
-                    if server_calls:
-                        logger.info(
-                            "Tool round %d: running %s server-side",
-                            tool_round + 1,
-                            ", ".join(call.name for call in server_calls),
-                        )
-                        generation_completed = yield from self._run_server_tools(server_calls, state, turn)
-                        if not generation_completed:
-                            break
-                    # A client-side tool in the same round still has to
-                    # finish on the client before the model can continue.
-                    if client_calls or not server_calls:
-                        break
+                generation_completed, error_message = yield from self._pump_tool_rounds(
+                    active_chat,
+                    turn,
+                    optional_kwargs,
+                    state,
+                    consumed_image_ids,
+                    serialize_fn,
+                    request_fn,
+                    event_iterator_fn,
+                )
             except httpx.ReadTimeout:
                 logger.warning(
                     "OpenAI API read timed out after %.1fs; ending the current response",
                     self.request_timeout_s,
                 )
-                if not self._generation_is_stale(turn.gen) and self._turn_output_allowed(
-                    turn.turn_id, turn.turn_revision
-                ):
-                    # Canned apology carries no language_code (mirrors the prior handlers).
-                    yield LLMResponseChunk(
-                        text="Wow I'm a bit slow today, could you repeat that?",
-                        runtime_config=turn.runtime_config,
-                        response=turn.response,
-                        turn_id=turn.turn_id,
-                        turn_revision=turn.turn_revision,
-                        speech_stopped_at_s=turn.speech_stopped_at_s,
-                        cancel_generation=turn.gen,
-                    )
+                yield from self._timeout_apology(turn)
             except Exception as exc:
                 # Any other generation failure must still terminate the response: record
                 # the error and fall through to the EndOfResponse below. Without this the
@@ -670,50 +817,19 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 if error_message is None:
                     error_message = f"Language model generation failed: {exc}"
 
-            can_commit = (
-                error_message is None
-                and generation_completed
-                and not self._generation_is_stale(turn.gen)
-                and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
-            )
-            if can_commit:
+            if error_message is None and generation_completed and not self._is_interrupted(turn):
                 try:
-                    # Out-of-band responses emit output and usage but never write back to the
-                    # default conversation (their context was a throwaway chat).
-                    if not is_out_of_band(turn.response):
-                        # Tool calls (and any assistant text preceding them) were already
-                        # written eagerly in _record_tool_call; only trailing items remain.
-                        for item in state.pending:
-                            recorded = original_chat.add_item(item)
-                            if recorded.id is not None:
-                                state.recorded_item_ids.add(recorded.id)
-                        original_chat.strip_images(consumed_image_ids)
-                        if history_commit_fn is not None:
-                            history_commit_fn()
-                        original_chat.trim_if_needed(self.compactor)
-                    history_committed = True
+                    self._commit_history(original_chat, state, turn, consumed_image_ids, history_commit_fn)
+                    tx.committed = True
                 except Exception as exc:
                     logger.exception("LLM history commit failed; rolling back the current response")
                     error_message = f"Language model history commit failed: {exc}"
 
-            rollback_transaction()
-            if history_committed and (state.input_tokens or state.output_tokens):
-                yield TokenUsage(
-                    input_tokens=state.input_tokens,
-                    output_tokens=state.output_tokens,
-                    turn_id=turn.turn_id,
-                    turn_revision=turn.turn_revision,
-                )
-            yield EndOfResponse(
-                turn_id=turn.turn_id,
-                turn_revision=turn.turn_revision,
-                cancel_generation=turn.gen,
-                error=error_message,
-            )
-            return history_committed
+            tx.rollback(state)
+            yield from self._finish_turn(state, turn, tx.committed, error_message)
+            return tx.committed
         finally:
-            self._close_response(api_response)
-            rollback_transaction()
+            tx.rollback(state)
 
     @staticmethod
     def _close_response(api_response: Any) -> None:
