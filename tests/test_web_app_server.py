@@ -2,12 +2,18 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from web_app import browser as browser_module
+from web_app import common as common_module
+from web_app import desktop as desktop_module
+from web_app import fetch as fetch_module
 
 WEB_APP_DIR = Path(__file__).resolve().parents[1] / "web_app"
 ROOT = WEB_APP_DIR.parent
@@ -18,12 +24,13 @@ spec.loader.exec_module(server)
 client = TestClient(server.app)
 
 
+
 def test_config_exposes_retained_sidecar_capabilities(monkeypatch, tmp_path):
     harness = tmp_path / "desktop-harness"
     harness.write_text("#!/bin/sh\n")
     harness.chmod(0o700)
-    monkeypatch.setattr(server, "DESKTOP_HARNESS_BIN", harness)
-    monkeypatch.setattr(server, "DESKTOP_CONTROL_ENABLED", True)
+    monkeypatch.setattr(desktop_module, "DESKTOP_HARNESS_BIN", harness)
+    monkeypatch.setattr(desktop_module, "DESKTOP_CONTROL_ENABLED", True)
     data = client.get("/api/config").json()
     assert data["chatbotUrl"].endswith("/v1/realtime")
     assert data["allowDirect"] is False
@@ -34,12 +41,12 @@ def test_config_exposes_retained_sidecar_capabilities(monkeypatch, tmp_path):
     assert Path(data["source"]) == ROOT
     assert data["pid"] > 0
     assert "codeAgent" not in data, "the coding agent was removed"
-    assert data["webPort"] == server.WEB_PORT
+    assert data["webPort"] == common_module.WEB_PORT
 
-    monkeypatch.setattr(server, "DESKTOP_CONTROL_ENABLED", False)
+    monkeypatch.setattr(desktop_module, "DESKTOP_CONTROL_ENABLED", False)
     assert client.get("/api/config").json()["desktopControl"] is False
 
-    monkeypatch.setattr(server, "DESKTOP_CONTROL_ENABLED", True)
+    monkeypatch.setattr(desktop_module, "DESKTOP_CONTROL_ENABLED", True)
     harness.unlink()
     assert client.get("/api/config").json()["desktopControl"] is False
 
@@ -48,8 +55,8 @@ def _enable_desktop_control(monkeypatch, tmp_path):
     harness = tmp_path / "desktop-harness"
     harness.write_text("#!/bin/sh\n")
     harness.chmod(0o700)
-    monkeypatch.setattr(server, "DESKTOP_HARNESS_BIN", harness)
-    monkeypatch.setattr(server, "DESKTOP_CONTROL_ENABLED", True)
+    monkeypatch.setattr(desktop_module, "DESKTOP_HARNESS_BIN", harness)
+    monkeypatch.setattr(desktop_module, "DESKTOP_CONTROL_ENABLED", True)
 
 
 def test_desktop_screenshot_returns_bounded_png_for_visible_target(monkeypatch, tmp_path):
@@ -58,7 +65,7 @@ def test_desktop_screenshot_returns_bounded_png_for_visible_target(monkeypatch, 
     capture_dir.mkdir()
     capture = capture_dir / "capture.png"
     capture.write_bytes(b"\x89PNG\r\n\x1a\n" + os.urandom(1_200))
-    monkeypatch.setattr(server, "DESKTOP_CAPTURE_DIR", capture_dir)
+    monkeypatch.setattr(desktop_module, "DESKTOP_CAPTURE_DIR", capture_dir)
 
     async def safe_scope(_app=None):
         return None
@@ -67,8 +74,8 @@ def test_desktop_screenshot_returns_bounded_png_for_visible_target(monkeypatch, 
         assert "screenshot(app='Safari')" in script
         return 0, json.dumps({"path": str(capture)})
 
-    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", safe_scope)
-    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    monkeypatch.setattr(desktop_module, "_screen_scope_looks_sensitive", safe_scope)
+    monkeypatch.setattr(desktop_module, "_run_harness", fake_harness)
     response = client.post("/api/desktop/act", json={"action": "screenshot", "app": "Safari"})
     assert response.status_code == 200
     body = response.json()
@@ -87,8 +94,8 @@ def test_desktop_screenshot_reports_permission_and_sensitive_scope(monkeypatch, 
     async def denied_harness(_script, _timeout):
         return 1, "capture returned no image — grant Screen Recording"
 
-    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", safe_scope)
-    monkeypatch.setattr(server, "_run_harness", denied_harness)
+    monkeypatch.setattr(desktop_module, "_screen_scope_looks_sensitive", safe_scope)
+    monkeypatch.setattr(desktop_module, "_run_harness", denied_harness)
     response = client.post("/api/desktop/act", json={"action": "screenshot"})
     assert response.status_code == 403
     assert "Screen Recording" in response.json()["detail"]
@@ -96,7 +103,7 @@ def test_desktop_screenshot_reports_permission_and_sensitive_scope(monkeypatch, 
     async def sensitive_scope(_app=None):
         return "payment"
 
-    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", sensitive_scope)
+    monkeypatch.setattr(desktop_module, "_screen_scope_looks_sensitive", sensitive_scope)
     response = client.post("/api/desktop/act", json={"action": "screenshot", "app": "Checkout"})
     assert response.status_code == 451
 
@@ -107,7 +114,7 @@ def test_desktop_screenshot_ignores_sign_in_labels_on_normal_apps(monkeypatch, t
     capture_dir.mkdir(parents=True)
     capture = capture_dir / "capture.png"
     capture.write_bytes(b"\x89PNG\r\n\x1a\n" + os.urandom(1_200))
-    monkeypatch.setattr(server, "DESKTOP_CAPTURE_DIR", capture_dir)
+    monkeypatch.setattr(desktop_module, "DESKTOP_CAPTURE_DIR", capture_dir)
 
     async def login_labels(_app=None):
         return "sign in"
@@ -115,8 +122,8 @@ def test_desktop_screenshot_ignores_sign_in_labels_on_normal_apps(monkeypatch, t
     async def fake_harness(script, _timeout):
         return 0, json.dumps({"path": str(capture), "bright_frac": 0.4, "samples": 64})
 
-    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", login_labels)
-    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    monkeypatch.setattr(desktop_module, "_screen_scope_looks_sensitive", login_labels)
+    monkeypatch.setattr(desktop_module, "_run_harness", fake_harness)
     response = client.post("/api/desktop/act", json={"action": "screenshot", "app": "Safari"})
     assert response.status_code == 200
     assert response.json()["image"].startswith("data:image/png;base64,")
@@ -142,17 +149,17 @@ async def test_denied_screen_permission_never_invokes_capture(monkeypatch):
             return 1, str(exc)
         raise AssertionError("Denied permission must stop the capture script")
 
-    monkeypatch.setattr(server, "_run_harness", execute_script)
+    monkeypatch.setattr(desktop_module, "_run_harness", execute_script)
     for _ in range(2):
-        with pytest.raises(server.HTTPException) as error:
-            await server._capture_desktop_screenshot(None)
+        with pytest.raises(HTTPException) as error:
+            await desktop_module._capture_desktop_screenshot(None)
         assert error.value.status_code == 403
         assert "Do not retry" in error.value.detail
     assert called == [], "Repeated requests must never reach the prompting capture API"
 
 
 def test_fetch_rejects_local_addresses(monkeypatch):
-    monkeypatch.setattr(server.socket, "getaddrinfo", lambda *_: [(None, None, None, None, ("127.0.0.1", 0))])
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_: [(None, None, None, None, ("127.0.0.1", 0))])
     response = client.post("/api/fetch", json={"url": "http://example.test/private"})
     assert response.status_code == 400
     assert "private or loopback" in response.json()["detail"]
@@ -181,12 +188,12 @@ async def test_fetch_extracts_main_text_and_reports_truncation(monkeypatch):
         async def get(self, _url, **_kwargs):
             return response
 
-    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
-    monkeypatch.setattr(server, "_client", lambda: FakeClient())
+    monkeypatch.setattr(common_module, "_is_public_url", lambda _url: (True, ""))
+    monkeypatch.setattr(common_module, "_client", lambda: FakeClient())
     # This exercises the direct fetch path; a TinyFish key in the developer's
     # shell must not reroute it through the hosted fetch API.
-    monkeypatch.setattr(server, "TINYFISH_KEY", "")
-    result = await server.fetch_page(server.FetchRequest(url="https://example.com/article"))
+    monkeypatch.setattr(common_module, "TINYFISH_KEY", "")
+    result = await fetch_module.fetch_page(fetch_module.FetchRequest(url="https://example.com/article"))
     body = json.loads(result.body)
     assert body["title"] == "Example"
     assert body["text"].startswith("Natural chatbot comparison text.")
@@ -195,8 +202,8 @@ async def test_fetch_extracts_main_text_and_reports_truncation(monkeypatch):
 
 
 def test_chrome_bridge_requires_header_and_returns_fresh_page(monkeypatch):
-    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
-    server.browser_pages.clear()
+    monkeypatch.setattr(common_module, "_is_public_url", lambda _url: (True, ""))
+    browser_module.browser_pages.clear()
     payload = {
         "url": "https://example.com/article",
         "title": "Example",
@@ -215,8 +222,8 @@ def test_chrome_bridge_requires_header_and_returns_fresh_page(monkeypatch):
 
 
 def test_chrome_bridge_hides_tab_scoped_cache(monkeypatch):
-    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
-    server.browser_pages.clear()
+    monkeypatch.setattr(common_module, "_is_public_url", lambda _url: (True, ""))
+    browser_module.browser_pages.clear()
     payload = {
         "tab_id": "321",
         "url": "https://example.com/article",
@@ -238,8 +245,8 @@ def test_chrome_bridge_hides_tab_scoped_cache(monkeypatch):
 
 
 def test_chrome_bridge_clear_ends_session_and_discards_all_cached_pages(monkeypatch):
-    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
-    server.browser_pages.clear()
+    monkeypatch.setattr(common_module, "_is_public_url", lambda _url: (True, ""))
+    browser_module.browser_pages.clear()
     headers = {"X-Chatbot-Bridge": "page-v1"}
     for tab_id in ("321", "654"):
         payload = {
@@ -600,8 +607,8 @@ if (!stored.chatbotPageBridgeSession?.enabled) {
 
 
 def test_chrome_bridge_validates_generic_and_x_page_boundaries(monkeypatch):
-    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
-    server.browser_pages.clear()
+    monkeypatch.setattr(common_module, "_is_public_url", lambda _url: (True, ""))
+    browser_module.browser_pages.clear()
     generic = {
         "url": "https://example.com/article",
         "title": "Example",
@@ -691,7 +698,7 @@ def test_chrome_bridge_validates_generic_and_x_page_boundaries(monkeypatch):
 
 
 def test_chrome_bridge_rejects_private_network_pages():
-    server.browser_pages.clear()
+    browser_module.browser_pages.clear()
     payload = {
         "url": "http://127.0.0.2/internal",
         "title": "Internal",
@@ -712,12 +719,12 @@ def test_chrome_bridge_rejects_private_network_pages():
 
 @pytest.mark.asyncio
 async def test_search_requires_key_and_returns_serper_results(monkeypatch):
-    monkeypatch.setattr(server, "SERPER_KEY", "")
-    monkeypatch.setattr(server, "TAVILY_KEY", "")
-    monkeypatch.setattr(server, "TINYFISH_KEY", "")
+    monkeypatch.setattr(common_module, "SERPER_KEY", "")
+    monkeypatch.setattr(common_module, "TAVILY_KEY", "")
+    monkeypatch.setattr(common_module, "TINYFISH_KEY", "")
     assert client.post("/api/search", json={"query": "chatbot"}).status_code == 503
 
-    monkeypatch.setattr(server, "SERPER_KEY", "serper-test")
+    monkeypatch.setattr(common_module, "SERPER_KEY", "serper-test")
     response = httpx.Response(
         200,
         json={
@@ -726,7 +733,7 @@ async def test_search_requires_key_and_returns_serper_results(monkeypatch):
             ],
             "answerBox": {"answer": "42"},
         },
-        request=httpx.Request("POST", server.SERPER_URL),
+        request=httpx.Request("POST", common_module.SERPER_URL),
     )
 
     class FakeClient:
@@ -740,12 +747,12 @@ async def test_search_requires_key_and_returns_serper_results(monkeypatch):
             pass
 
         async def post(self, url, headers=None, json=None, **_kwargs):
-            assert url == server.SERPER_URL
+            assert url == common_module.SERPER_URL
             assert headers["X-API-KEY"] == "serper-test"
             assert json["q"] == "latest news"
             return response
 
-    monkeypatch.setattr(server, "_client", lambda: FakeClient())
+    monkeypatch.setattr(common_module, "_client", lambda: FakeClient())
     body = client.post("/api/search", json={"query": "latest news"}).json()
     assert body["answer"] == "42"
     assert body["results"][0]["url"] == "https://example.com"
@@ -753,9 +760,9 @@ async def test_search_requires_key_and_returns_serper_results(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_search_prefers_tinyfish_when_configured(monkeypatch):
-    monkeypatch.setattr(server, "TINYFISH_KEY", "sk-tinyfish-test")
-    monkeypatch.setattr(server, "SERPER_KEY", "server-serper")
-    monkeypatch.setattr(server, "TAVILY_KEY", "")
+    monkeypatch.setattr(common_module, "TINYFISH_KEY", "sk-tinyfish-test")
+    monkeypatch.setattr(common_module, "SERPER_KEY", "server-serper")
+    monkeypatch.setattr(common_module, "TAVILY_KEY", "")
     response = httpx.Response(
         200,
         json={
@@ -772,7 +779,7 @@ async def test_search_prefers_tinyfish_when_configured(monkeypatch):
             "total_results": 1,
             "page": 0,
         },
-        request=httpx.Request("GET", server.TINYFISH_SEARCH_URL),
+        request=httpx.Request("GET", common_module.TINYFISH_SEARCH_URL),
     )
 
     class FakeClient:
@@ -786,12 +793,12 @@ async def test_search_prefers_tinyfish_when_configured(monkeypatch):
             pass
 
         async def get(self, url, params=None, headers=None, **_kwargs):
-            assert url == server.TINYFISH_SEARCH_URL
+            assert url == common_module.TINYFISH_SEARCH_URL
             assert headers["X-API-Key"] == "sk-tinyfish-test"
             assert params["query"] == "weather"
             return response
 
-    monkeypatch.setattr(server, "_client", lambda: FakeClient())
+    monkeypatch.setattr(common_module, "_client", lambda: FakeClient())
     body = client.post("/api/search", json={"query": "weather"}).json()
     assert body["results"][0]["url"] == "https://example.com"
     assert body["answer"] is None
@@ -799,8 +806,8 @@ async def test_search_prefers_tinyfish_when_configured(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_uses_tinyfish_when_configured(monkeypatch):
-    monkeypatch.setattr(server, "TINYFISH_KEY", "sk-tinyfish-test")
-    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
+    monkeypatch.setattr(common_module, "TINYFISH_KEY", "sk-tinyfish-test")
+    monkeypatch.setattr(common_module, "_is_public_url", lambda _url: (True, ""))
     response = httpx.Response(
         200,
         json={
@@ -815,7 +822,7 @@ async def test_fetch_uses_tinyfish_when_configured(monkeypatch):
             ],
             "errors": [],
         },
-        request=httpx.Request("POST", server.TINYFISH_FETCH_URL),
+        request=httpx.Request("POST", common_module.TINYFISH_FETCH_URL),
     )
 
     class FakeClient:
@@ -829,12 +836,12 @@ async def test_fetch_uses_tinyfish_when_configured(monkeypatch):
             pass
 
         async def post(self, url, headers=None, json=None, **_kwargs):
-            assert url == server.TINYFISH_FETCH_URL
+            assert url == common_module.TINYFISH_FETCH_URL
             assert headers["X-API-Key"] == "sk-tinyfish-test"
             assert json == {"urls": ["https://example.com"], "format": "markdown"}
             return response
 
-    monkeypatch.setattr(server, "_client", lambda: FakeClient())
+    monkeypatch.setattr(common_module, "_client", lambda: FakeClient())
     body = client.post("/api/fetch", json={"url": "https://example.com"}).json()
     assert body["title"] == "Example Domain"
     assert body["text"] == "Example readable text."
@@ -842,12 +849,12 @@ async def test_fetch_uses_tinyfish_when_configured(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_falls_back_to_direct_http_when_tinyfish_fails(monkeypatch):
-    monkeypatch.setattr(server, "TINYFISH_KEY", "sk-tinyfish-test")
-    monkeypatch.setattr(server, "_is_public_url", lambda _url: (True, ""))
+    monkeypatch.setattr(common_module, "TINYFISH_KEY", "sk-tinyfish-test")
+    monkeypatch.setattr(common_module, "_is_public_url", lambda _url: (True, ""))
     failed = httpx.Response(
         502,
         json={"errors": [{"message": "provider down"}]},
-        request=httpx.Request("POST", server.TINYFISH_FETCH_URL),
+        request=httpx.Request("POST", common_module.TINYFISH_FETCH_URL),
     )
     html = httpx.Response(
         200,
@@ -869,14 +876,14 @@ async def test_fetch_falls_back_to_direct_http_when_tinyfish_fails(monkeypatch):
             pass
 
         async def post(self, url, headers=None, json=None, **_kwargs):
-            assert url == server.TINYFISH_FETCH_URL
+            assert url == common_module.TINYFISH_FETCH_URL
             return failed
 
         async def get(self, url, **_kwargs):
             assert url == "https://example.com"
             return html
 
-    monkeypatch.setattr(server, "_client", lambda: FakeClient())
+    monkeypatch.setattr(common_module, "_client", lambda: FakeClient())
     body = client.post("/api/fetch", json={"url": "https://example.com"}).json()
     assert body["title"] == "Local"
     assert "Readable sentence" in body["text"]
@@ -885,12 +892,12 @@ async def test_fetch_falls_back_to_direct_http_when_tinyfish_fails(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_search_prefers_user_tavily_key(monkeypatch):
-    monkeypatch.setattr(server, "SERPER_KEY", "server-serper")
-    monkeypatch.setattr(server, "TAVILY_KEY", "")
+    monkeypatch.setattr(common_module, "SERPER_KEY", "server-serper")
+    monkeypatch.setattr(common_module, "TAVILY_KEY", "")
     response = httpx.Response(
         200,
         json={"answer": "from tavily", "results": [{"title": "T", "content": "C", "url": "https://t.test"}]},
-        request=httpx.Request("POST", server.TAVILY_URL),
+        request=httpx.Request("POST", common_module.TAVILY_URL),
     )
 
     class FakeClient:
@@ -904,11 +911,11 @@ async def test_search_prefers_user_tavily_key(monkeypatch):
             pass
 
         async def post(self, url, headers=None, json=None, **_kwargs):
-            assert url == server.TAVILY_URL
+            assert url == common_module.TAVILY_URL
             assert headers["Authorization"] == "Bearer tvly-user"
             return response
 
-    monkeypatch.setattr(server, "_client", lambda: FakeClient())
+    monkeypatch.setattr(common_module, "_client", lambda: FakeClient())
     body = client.post("/api/search", json={"query": "weather", "key": "tvly-user"}).json()
     assert body["answer"] == "from tavily"
     assert body["results"][0]["snippet"].startswith("C")
@@ -926,7 +933,7 @@ def test_desktop_scroll_blocks_sensitive_scope(monkeypatch, tmp_path):
     async def sensitive_scope(_app=None):
         return "password"
 
-    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", sensitive_scope)
+    monkeypatch.setattr(desktop_module, "_screen_scope_looks_sensitive", sensitive_scope)
     response = client.post("/api/desktop/act", json={"action": "scroll", "amount": 5})
     assert response.status_code == 451
 
@@ -952,9 +959,9 @@ def test_desktop_scroll_defaults_to_five_lines(monkeypatch, tmp_path):
         captured.append(script)
         return 0, json.dumps({"ok": True, "result": "ok", "changed": [], "verified": False})
 
-    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", safe_scope)
-    monkeypatch.setattr(server, "_desktop_frontmost_context", frontmost_chrome)
-    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    monkeypatch.setattr(desktop_module, "_screen_scope_looks_sensitive", safe_scope)
+    monkeypatch.setattr(desktop_module, "_desktop_frontmost_context", frontmost_chrome)
+    monkeypatch.setattr(desktop_module, "_run_harness", fake_harness)
     response = client.post("/api/desktop/act", json={"action": "scroll"})
     assert response.status_code == 200
     # Default amount 5 is scaled to full strides (lines x6).
@@ -976,8 +983,8 @@ def test_desktop_scroll_without_app_stays_safe_on_login_window(monkeypatch, tmp_
     async def fake_harness(script, _timeout):
         raise AssertionError("harness must not run for blocked scopes")
 
-    monkeypatch.setattr(server, "_desktop_frontmost_context", frontmost_login)
-    monkeypatch.setattr(server, "_screen_scope_looks_sensitive", login_scope)
-    monkeypatch.setattr(server, "_run_harness", fake_harness)
+    monkeypatch.setattr(desktop_module, "_desktop_frontmost_context", frontmost_login)
+    monkeypatch.setattr(desktop_module, "_screen_scope_looks_sensitive", login_scope)
+    monkeypatch.setattr(desktop_module, "_run_harness", fake_harness)
     response = client.post("/api/desktop/act", json={"action": "scroll"})
     assert response.status_code == 451
