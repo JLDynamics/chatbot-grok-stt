@@ -6,7 +6,7 @@ A Mac-first live voice chatbot that runs its ears and voice locally, while a Res
 
 It keeps realtime WebSocket turn-taking, interruption/cancellation, long-term memory, in-response web search and page reading (including the Chrome page bridge for logged-in or paywalled tabs), in-app screenshots, and optional coding-agent delegation.
 
-In the default **Speakers (echo cancellation)** mode, the mic stays open while the assistant speaks. The panel uses matched mono capture/render formats for Apple's voice processing, with Silero VAD detecting interruptions. If voice processing cannot start, the panel visibly reports compatibility mode, which suppresses microphone capture during playback. **Headphones** mode keeps capture open without echo cancellation. **Stop reply** stops playback and pending tools without ending the conversation. Saved conversations are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions. VibeVoice runs locally without an AI watermark.
+In the default **Speakers (echo cancellation)** mode, the mic stays open while the assistant speaks. The panel uses matched mono capture/render formats for Apple's voice processing, with Silero VAD detecting interruptions. If voice processing cannot start, the panel visibly reports compatibility mode, which suppresses microphone capture during playback. **Headphones** mode keeps capture open without echo cancellation. **Stop reply** stops playback and pending tools without ending the conversation. Saved conversations are replayed into the backend on connect (last 20 text turns). Personal memory is injected via instructions.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ uv sync
 open /Applications/Voice.app
 ```
 
-Use the copy in **Applications**. The tree under `macos/Voice/build/` is only the compiler output; Launchpad should not list it. `run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`). Opening Voice starts those services when the default local ports are used, and **replaces a stale process** whose code no longer matches this checkout (that is how an old backend could sit on the ports without search). The first launch may download the TTS model files.
+Use the copy in **Applications**. The tree under `macos/Voice/build/` is only the compiler output; Launchpad should not list it. `run-browser.sh` starts the realtime backend (`:8766`) and the API sidecar (`:7860`). Opening Voice starts those services when the default local ports are used, and **replaces a stale process** whose code no longer matches this checkout (that is how an old backend could sit on the ports without search).
 
 The default model path is `openai/gpt-5.6-luna` through OpenRouter. Speech-to-text runs **on this Mac** through Apple's on-device engine, so there is no key, no metering, and nothing that expires: a turn transcribes punctuated in ~170ms, including the helper process launch, and a live 33s turn with four pauses took 370ms. It covers 45 locales; `STT_LOCALE` picks one, because the engine has no auto-detect. `macos/SpeechHelper/build/speech-helper --locales` lists what this Mac supports and which models are already installed, and a locale's model downloads itself the first time the backend starts with it. It transcribes fillers literally and does not know proper nouns it has no context for, which a hosted service tidied.
 
@@ -38,13 +38,11 @@ Text-to-speech uses **Apple's Siri voices** (`en-US-F` by default) through
 [siri-tts](https://github.com/maximilianromer/siri-tts-cli), which reaches the neural voices Apple
 publishes to no API: `AVSpeechSynthesisVoice` never lists them and `say -v` ignores their names.
 Measured against the Kokoro backend it replaced, on the same sentence, it is 84ms to first audio
-versus 208ms. That binary dlopens private frameworks, so a macOS update can break it; `TTS=vibevoice`
-is the fallback, running entirely on MLX with nothing private underneath. VibeVoice is far slower
-(roughly real time), so it is a way to keep talking after a break, not a daily driver.
+versus 208ms. That binary dlopens private frameworks, so a macOS update can break it; there is no
+fallback backend. Siri is the only voice, so until that is fixed the app has no voice at all.
 
-`TTS=vibevoice` runs **VibeVoice** (`en-Emma_woman`) locally with MLX.
-
-This build does not speak Chinese. No backend here has a Chinese voice, so a Han character in a reply is dropped rather than read aloud — espeak-ng, which the English front end falls back to, pronounces one as the words “Chinese letter.”
+This build does not speak Chinese. There is no Chinese voice and no Chinese transcription locale,
+so Han characters in a reply reach the English Siri voice exactly as written.
 
 ## Configuration
 
@@ -53,15 +51,10 @@ The launch scripts read secrets from `~/.config/chatbot/env`, written with owner
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `STT_LOCALE` | `en-US` | Transcription locale, e.g. `en-GB`, `en-AU`, `ja-JP`, `fr-FR`. The engine has no auto-detect, so this fixes the spoken language |
-| `TTS` | `siri` | TTS backend: `siri` (Apple's Siri voices) or `vibevoice` (Microsoft VibeVoice, the local fallback) |
+| `TTS` | `siri` | TTS backend: `siri` (Apple's Siri voices, the only voice) |
 | `SIRI_VOICE` | `en-US-F` | Siri voice name; `siri-tts voices --available` lists what this Mac has installed |
 | `SIRI_TTS_BIN` | `~/.local/bin/siri-tts` | Path to the siri-tts binary |
 | `MODEL` | `openai/gpt-5.6-luna` | OpenRouter Responses API model ID |
-| `VIBEVOICE_MODEL` | `mlx-community/VibeVoice-Realtime-0.5B-8bit` | VibeVoice MLX model repo (alternative backend) |
-| `VIBEVOICE_VOICE` | `en-Emma_woman` | VibeVoice voice from the repo (`*_voices/*.safetensors`) |
-| `VIBEVOICE_MAX_TOKENS` | `1024` | Safety ceiling on generated tokens (model stops on EOS) |
-| `VIBEVOICE_CFG_SCALE` | `1.5` | Classifier-free guidance; higher is more distinct but harsher |
-| `VIBEVOICE_DENOISE_FLOOR` | `0.04` | Spectral-denoiser suppression floor; lower removes more hiss (slight risk of a processed texture) |
 | `PORT` / `WEB_PORT` | `8766` / `7860` | Realtime and browser ports |
 | `VAD_MIN_SILENCE_MS` | `1200` | Silence (ms) before a spoken turn is considered finished. Higher keeps ~1 s thinking pauses inside one turn instead of splitting it; lower answers faster after you truly stop |
 | `VAD_THRESH` | `0.65` | VAD confidence threshold; higher = fewer false voice triggers |

@@ -923,57 +923,31 @@ def verify_news_research(report: Report) -> None:
     report.add("live news rss returned headlines", usable, output[:220].replace("\n", " "))
 
 
-def server_log_since(marker_offset: int) -> str:
-    log = Path(os.environ.get("SERVER_LOG", "/tmp/chatbot-server.log"))
-    try:
-        with log.open("rb") as handle:
-            handle.seek(marker_offset)
-            return handle.read().decode("utf-8", "replace")
-    except OSError:
-        return ""
+def verify_han_turn(report: Report) -> None:
+    """No Chinese voice exists, but a stray Han character must not break the turn.
 
-
-def server_log_size() -> int:
-    log = Path(os.environ.get("SERVER_LOG", "/tmp/chatbot-server.log"))
-    try:
-        return log.stat().st_size
-    except OSError:
-        return 0
-
-
-def verify_han_is_dropped(report: Report) -> None:
-    """Chinese support was removed; a stray Han character must be dropped.
-
-    espeak-ng, the English front end's fallback, pronounces one as the words
-    "Chinese letter", so the run splitter drops Han rather than speaking it.
+    The Kokoro-era run splitter that used to drop Han is gone with that backend
+    (there is no espeak-ng fallback left to guard against), so Han now reaches
+    the English Siri voice as written. This check only confirms the turn still
+    completes with audio and no error.
     """
     try:
         import websockets  # noqa: F401
     except ImportError:
-        report.add("han dropped, not spoken", False, "websockets package missing")
+        report.add("han turn completes", False, "websockets package missing")
         return
     sentence = "Huawei, or \u534e\u4e3a, is a company."
-    offset = server_log_size()
     try:
         turn = run_turn(
             f"Reply with exactly this sentence and nothing else: {sentence}", "Say the test sentence.", timeout=45
         )
     except Exception as exc:
-        report.add("han dropped, not spoken", False, str(exc))
+        report.add("han turn completes", False, str(exc))
         return
     report.add(
-        "han dropped, not spoken",
+        "han turn completes",
         turn.audio_seconds > 1.0 and not turn.error,
         f"{turn.audio_seconds:.1f}s audio: {turn.transcript[:120]}" + (f"; error: {turn.error}" if turn.error else ""),
-    )
-    time.sleep(0.5)
-    log = server_log_since(offset)
-    report.add(
-        "no espeak fallback on han characters",
-        "words count mismatch" not in log,
-        "phonemizer never saw the Han characters"
-        if "words count mismatch" not in log
-        else "phonemizer fallback fired: the English pipeline received Han characters",
     )
 
 
@@ -1279,7 +1253,7 @@ end tell
         if args.research:
             verify_research(report)
             verify_research_initiative(report)
-            verify_han_is_dropped(report)
+            verify_han_turn(report)
     if not args.skip_ui:
         verify_ui(report, args.app)
 
