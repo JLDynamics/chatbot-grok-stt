@@ -7,6 +7,7 @@ struct TurnRow: View {
     let agentInitial: String
 
     @Environment(\.theme) private var theme
+    @Environment(\.isLiveResizing) private var isLiveResizing
 
     private var isAgent: Bool { speaker == .agent }
 
@@ -22,7 +23,11 @@ struct TurnRow: View {
                     .lineSpacing(4)
                     .foregroundStyle(isAgent ? theme.text : theme.text2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                    // Selectable text carries per-Text selection machinery, and
+                    // the transcript stack is not lazy — every row pays it on
+                    // every resize frame. Nothing can be selected mid-drag
+                    // anyway, so turn it off for the length of the drag.
+                    .modifier(SelectableText(enabled: !isLiveResizing))
             }
             .padding(.horizontal, isAgent ? 0 : 8)
             .padding(.vertical, isAgent ? 0 : 6)
@@ -105,5 +110,21 @@ struct SpeakingRow: View {
     private func barHeight(at index: Int) -> CGFloat {
         let level = CGFloat(min(max(levels.input, 0), 1))
         return minHeight + (maxHeight - minHeight) * level * response[index]
+    }
+}
+
+
+/// `.textSelection(.enabled)` and `.disabled` are different types, so the
+/// choice needs a branch rather than a ternary.
+private struct SelectableText: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.textSelection(.enabled)
+        } else {
+            content.textSelection(.disabled)
+        }
     }
 }

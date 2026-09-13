@@ -10,6 +10,9 @@ final class FloatingPanel: NSPanel {
     static let defaultSize = NSSize(width: 360, height: 460)
     static let minimumSize = NSSize(width: 320, height: 380)
 
+    /// Key under which position and size persist across launches.
+    private static let frameKey = "VoicePanel"
+
     init(contentRect: NSRect = NSRect(origin: .zero, size: FloatingPanel.defaultSize)) {
         super.init(
             contentRect: contentRect,
@@ -36,8 +39,18 @@ final class FloatingPanel: NSPanel {
         standardWindowButton(.zoomButton)?.isHidden = true
 
         contentMinSize = FloatingPanel.minimumSize
-        setFrameAutosaveName("VoicePanel")  // position and size persist across launches
+        // Deliberately not setFrameAutosaveName: AppKit's autosave writes the
+        // frame to UserDefaults on every frame change, which during a resize
+        // drag is a synchronous write per mouse-moved event. The controller
+        // saves once, when the drag ends.
+        setFrameUsingName(FloatingPanel.frameKey)
         isReleasedWhenClosed = false
+    }
+
+    /// Persist the current frame. Called at the end of a resize drag and when
+    /// the panel is hidden — never mid-drag.
+    func savePersistedFrame() {
+        saveFrame(usingName: FloatingPanel.frameKey)
     }
 
     // A panel is not key by default; without this the keyboard shortcuts in

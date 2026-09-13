@@ -9,6 +9,7 @@ struct ConversationView: View {
     var onClose: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject private var liveResize = LiveResizeMonitor.shared
     @State private var showJumpToLatest = false
     @State private var stickToBottom = true
 
@@ -63,8 +64,12 @@ struct ConversationView: View {
             ControlBar(session: session, onOrbTap: { session.toggleSession() })
         }
         .environment(\.theme, resolvedTheme)
+        .environment(\.isLiveResizing, liveResize.isResizing)
         .background(panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
+        // No clipShape here: the hosting view's layer rounds the corners, so
+        // the tree is not re-masked offscreen on every resize frame. The border
+        // below is a single stroked outline and stays in SwiftUI, because its
+        // colour follows the theme.
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radius)
                 .strokeBorder(resolvedTheme.border, lineWidth: 0.5)
@@ -147,11 +152,18 @@ struct ConversationView: View {
         }
     }
 
+    /// Behind-window blending samples whatever is under the panel and reblurs
+    /// it every frame — the single most expensive thing in the tree while a
+    /// resize edge is being dragged. The opaque fill underneath already carries
+    /// most of the panel's colour, so dropping the blur for the length of the
+    /// drag is close to invisible and buys back the frame budget.
     @ViewBuilder
     private var panelBackground: some View {
         ZStack {
-            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
-            resolvedTheme.bg.opacity(0.92)
+            if !liveResize.isResizing {
+                VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+            }
+            resolvedTheme.bg.opacity(liveResize.isResizing ? 1 : 0.92)
         }
     }
 }

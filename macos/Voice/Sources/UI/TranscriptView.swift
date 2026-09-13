@@ -14,33 +14,13 @@ struct TranscriptView: View {
         ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
                 ScrollView {
-                    // A regular stack, not LazyVStack: token-by-token height
-                    // changes plus lazy recycling were bouncing the scroller
-                    // up and then snapping it back to the bottom.
-                    VStack(alignment: .leading, spacing: 12) {
-                        if session.turns.isEmpty && !session.userSpeaking && !session.isLive {
-                            emptyState
-                        }
-                        ForEach(session.turns) { turn in
-                            TurnRow(
-                                speaker: turn.speaker,
-                                text: turn.text,
-                                userInitial: userInitial,
-                                agentInitial: agentInitial
-                            )
-                            .id(turn.id)
-                        }
-                        if session.userSpeaking {
-                            SpeakingRow(levels: session.levels, userInitial: userInitial)
-                                .id("speaking")
-                        }
-                        Color.clear.frame(height: 1).id("bottom")
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    transcriptStack
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .defaultScrollAnchor(.bottom)
+                .modifier(BottomAnchoredThroughSizeChanges())
                 .scrollIndicators(.never)
                 .onChange(of: session.turns.count) { _, _ in
                     pinToBottomIfNeeded(proxy)
@@ -71,6 +51,44 @@ struct TranscriptView: View {
             }
         }
         .accessibilityLabel("Conversation transcript")
+    }
+
+    /// Only the rows on screen are built and measured.
+    ///
+    /// This used to be a plain VStack, because lazy recycling plus token-by-token
+    /// height changes bounced the scroller up and then snapped it back. A plain
+    /// stack measures *every* turn on every layout pass, so a long conversation
+    /// made resizing the window progressively slower — the cost grew with the
+    /// transcript. The bounce is handled directly now, by the bottom anchor in
+    /// `BottomAnchoredThroughSizeChanges`, so the stack can be lazy again.
+    @ViewBuilder
+    private var transcriptStack: some View {
+        if #available(macOS 15.0, *) {
+            LazyVStack(alignment: .leading, spacing: 12) { rows }
+        } else {
+            VStack(alignment: .leading, spacing: 12) { rows }
+        }
+    }
+
+    @ViewBuilder
+    private var rows: some View {
+        if session.turns.isEmpty && !session.userSpeaking && !session.isLive {
+            emptyState
+        }
+        ForEach(session.turns) { turn in
+            TurnRow(
+                speaker: turn.speaker,
+                text: turn.text,
+                userInitial: userInitial,
+                agentInitial: agentInitial
+            )
+            .id(turn.id)
+        }
+        if session.userSpeaking {
+            SpeakingRow(levels: session.levels, userInitial: userInitial)
+                .id("speaking")
+        }
+        Color.clear.frame(height: 1).id("bottom")
     }
 
     private var emptyState: some View {
@@ -107,6 +125,21 @@ private struct TranscriptScrollPin: ViewModifier {
                     stickToBottom = !away
                 }
             }
+        } else {
+            content
+        }
+    }
+}
+
+
+/// Holds the transcript against the bottom of the scroll view while the content
+/// size changes underneath it — a streamed token growing a row, or a lazy row
+/// being measured for the first time. Without this, a lazy stack slides.
+private struct BottomAnchoredThroughSizeChanges: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.defaultScrollAnchor(.bottom, for: .sizeChanges)
         } else {
             content
         }
