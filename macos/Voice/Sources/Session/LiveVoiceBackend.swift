@@ -98,6 +98,11 @@ final class LiveVoiceBackend: VoiceBackend {
         mic.arm(generation: generation)
         onState?(.connecting)
 
+        // Snapshot the mic gain once per session so the ~50 Hz tap never
+        // touches UserDefaults (see PCMBridge.micGain).
+        let configuredGain = UserDefaults.standard.object(forKey: "voice.micGain") as? Double ?? 0
+        pcm.micGain = configuredGain > 0 ? Float(configuredGain) : 3.0
+
         onAudioStatus?("Starting local services…")
         do {
             try await LocalServiceStarter.shared.ensureReady(voice: wsURL, sidecar: LocalService.sidecarAPI)
@@ -762,6 +767,24 @@ private final class PCMBridge: @unchecked Sendable {
     private var playOutRate: Double = 0
     private let micRate: Double = 16_000
     private let ttsRate: Double = 24_000
+    private let gainLock = NSLock()
+    private var _micGain: Float = 3.0
+
+    /// Mic input gain, read from defaults once per session (see start()).
+    /// It used to be read inside micPCM16, i.e. a synchronized UserDefaults
+    /// lookup on every mic-tap buffer (~50 Hz on the audio thread).
+    var micGain: Float {
+        get {
+            gainLock.lock()
+            defer { gainLock.unlock() }
+            return _micGain
+        }
+        set {
+            gainLock.lock()
+            defer { gainLock.unlock() }
+            _micGain = newValue
+        }
+    }
 
     func reset() {
         playLock.lock()
@@ -783,8 +806,8 @@ private final class PCMBridge: @unchecked Sendable {
         // browsers compensate with AGC; we get the raw tap, so apply a
         // modest software boost (with hard clamping below). Override with:
         //   defaults write com.jack.Voice voice.micGain -float 4.0
-        let configured = UserDefaults.standard.object(forKey: "voice.micGain") as? Double ?? 0
-        let gain: Float = configured > 0 ? Float(configured) : 3.0
+        // Cached per session — never read UserDefaults in this hot path.
+        let gain = micGain
         let ratio = micRate / inFormat.sampleRate
         let outFrames = max(1, Int((Double(inFrames) * ratio).rounded()))
         var pcm = [Int16](repeating: 0, count: outFrames)
