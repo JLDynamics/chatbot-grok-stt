@@ -67,6 +67,7 @@ struct SpeakingRow: View {
     let userInitial: String
 
     @Environment(\.theme) private var theme
+    @Environment(\.isLiveResizing) private var isLiveResizing
 
     /// Fixed per-bar response, so the row reads as one voice envelope rather
     /// than five copies of the same bar.
@@ -95,8 +96,9 @@ struct SpeakingRow: View {
                     }
                 }
                 .frame(height: maxHeight, alignment: .center)
-                // Matches the orb's meter smoothing so the two agree.
-                .animation(.linear(duration: 0.09), value: levels.input)
+                // Matches the orb's meter smoothing so the two agree —
+                // including standing down during a resize drag.
+                .animation(isLiveResizing ? nil : .linear(duration: 0.09), value: levels.input)
                 .accessibilityLabel("Listening")
             }
             .padding(.horizontal, 8)

@@ -9,6 +9,7 @@ struct OrbView: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isLiveResizing) private var isLiveResizing
 
     private let diameter: CGFloat = 64
 
@@ -67,7 +68,12 @@ struct OrbView: View {
             Circle()
                 .strokeBorder(theme.orbRing, lineWidth: 2)
                 .padding(-ringSpread(for: levels.input))
-                .animation(.linear(duration: 0.09), value: levels.input)
+                // Levels arrive every 33ms but the smoothing runs for 90ms, so
+                // roughly three of these overlap at any moment. That is what
+                // makes the meter look fluid, and it is also main-thread work
+                // competing with a resize drag. Levels still flow during a
+                // drag; they just land without smoothing until it ends.
+                .animation(isLiveResizing ? nil : .linear(duration: 0.09), value: levels.input)
         case .thinking:
             if reduceMotion {
                 Circle().strokeBorder(theme.orbRing, lineWidth: 2).padding(-4)
