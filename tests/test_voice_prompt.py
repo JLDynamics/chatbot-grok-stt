@@ -30,7 +30,9 @@ def test_voice_prompt_tells_the_model_the_date_and_when_to_search():
     assert "Do not wait for the user to tell you that you were wrong" in prompt
     assert "Stable facts" in prompt
     assert "curl Wikipedia or an official page" in prompt
-    assert "There is no web_search or read_page tool." in prompt
+    assert "There is no web_search tool." in prompt
+    assert "call read_page" in prompt
+    assert "bash cannot reach the Chrome bridge" in prompt
     assert "when:1d" in prompt
     assert "keep only the last 24 hours" in prompt
     assert "a new article about an old event is not happening today" in prompt

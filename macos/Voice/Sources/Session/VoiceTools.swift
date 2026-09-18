@@ -88,7 +88,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
                     + "fact, curl Wikipedia or a primary page — not a news feed. For latest news, use Google "
                     + "News RSS with when:1d and today's date, print pubDate, keep the last 24 hours. Search "
                     + "HTML often blocks curl; retry a primary page. "
-                    + "No web_search or read_page tool exists.",
+                    + "No web_search tool. For the page open in Chrome, use read_page.",
                 properties: [
                     "command": Self.string("A curl-based command. Pipes to python3/head/rg are fine."),
                     "timeout": ["type": "number", "description": "Seconds to wait. Default 15, max 30."],
@@ -96,11 +96,25 @@ public final class VoiceToolExecutor: @unchecked Sendable {
                 required: ["command"]
             ))
         }
+        if chromeBridgeEnabled {
+            defs.append(Self.tool(
+                "read_page",
+                "Read the article, documentation, news story, or webpage currently open in Chrome via the "
+                    + "page bridge. Use this for the tab on screen, X/Twitter, and logged-in or paywalled "
+                    + "pages bash/curl cannot open. Omit url to read the live Chrome tab. If url is set and "
+                    + "Chrome is on a different page, this reports that instead of substituting.",
+                properties: [
+                    "url": Self.string("Optional. The page to read. Omit to use the live Chrome tab."),
+                    "prefer_browser": Self.bool("Prefer the Chrome bridge first. Default false except for X/Twitter."),
+                ]
+            ))
+        }
         if screenshotEnabled {
             defs.append(Self.tool(
                 "screenshot",
                 "Capture what is visible on the Mac screen. For visual questions about the screen, a layout, an "
-                    + "image or a chart. Not for reading an article: use bash with curl for page text."
+                    + "image or a chart. Not for reading an article: use read_page for the Chrome tab, or bash "
+                    + "with curl for a public URL."
             ))
         }
         defs.append(Self.tool(

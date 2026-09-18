@@ -30,9 +30,9 @@ from chatbot.LLM.curl_bash import run_research_command
 logger = logging.getLogger(__name__)
 
 # Tools executed here. Anything else the model calls is forwarded to the client.
-# ``web_search`` / ``read_page`` (and aliases) stay executable so replayed
-# history still works. This experiment branch publishes ``bash`` instead:
-# the model writes curl, like Pi, instead of calling those named tools.
+# ``web_search`` / ``read_article`` stay executable so replayed history still
+# works. This branch publishes ``bash`` for public research (curl, like Pi)
+# and ``read_page`` for the live Chrome tab via the page bridge.
 SERVER_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "bash",

@@ -108,18 +108,23 @@ struct RuntimeTests {
         let names = VoiceToolExecutor.shared.activeToolDefinitions().compactMap { $0["name"] as? String }
         assert(Set(names).count == names.count, "Tool names must be unique")
         assert(names.contains("remember") && names.contains("forget") && names.contains("search_chat_history"))
-        assert(names.contains("bash"), "This branch publishes bash instead of web_search/read_page")
-        assert(!names.contains("web_search") && !names.contains("read_page"))
+        assert(names.contains("bash"), "This branch publishes bash for public research")
+        assert(!names.contains("web_search"))
+        assert(names.contains("read_page"), "The Chrome page bridge is exposed as read_page")
         let bash = VoiceToolExecutor.shared.activeToolDefinitions().first { $0["name"] as? String == "bash" }
         let bashDesc = bash?["description"] as? String ?? ""
         assert(bashDesc.contains("when:1d"), "bash tool must tell the model to date-filter news")
         assert(bashDesc.contains("Wikipedia"), "office-holder facts should fetch Wikipedia, not a news feed")
         assert(bashDesc.contains("voice model") || bashDesc.contains("Research the voice model"),
                "bash is the voice model's research tool")
+        assert(bashDesc.contains("read_page"), "bash description must point article reading at read_page")
+        let readPage = VoiceToolExecutor.shared.activeToolDefinitions().first { $0["name"] as? String == "read_page" }
+        let readPageDesc = readPage?["description"] as? String ?? ""
+        assert(readPageDesc.contains("Chrome"), "read_page is the live Chrome tab")
         assert(!names.contains("code_agent"), "The coding agent was removed; Claude Code covers that job")
         assert(!names.contains("web_fetch") && !names.contains("read_article"), "Legacy page tools are gone")
         for name in names where VoiceToolExecutor.serverSideTools.contains(name) {
-            assert(["bash", "remember", "forget", "search_chat_history"].contains(name))
+            assert(["bash", "read_page", "remember", "forget", "search_chat_history"].contains(name))
         }
         let unavailable = await VoiceToolExecutor.shared.run(name: "web_search", argsJson: "{\"query\":\"x\"}")
         assert(unavailable.output.contains("runs on the server"), "Research tools never execute in the app")

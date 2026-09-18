@@ -66,7 +66,7 @@ struct SettingsView: View {
                     toolRow(
                         icon: "camera.viewfinder",
                         title: "Screenshot",
-                        desc: "Capture what is on screen so the assistant can see a layout, image, or chart. Articles use bash + curl.",
+                        desc: "Capture what is on screen so the assistant can see a layout, image, or chart. Articles use the Chrome page bridge.",
                         isOn: $screenshot
                     ) { val in
                         VoiceToolExecutor.shared.screenshotEnabled = val
