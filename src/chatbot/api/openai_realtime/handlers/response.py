@@ -32,7 +32,12 @@ from chatbot.pipeline.messages import GenerateResponseRequest
 from chatbot.utils.utils import _generate_id, is_out_of_band, response_wants_audio
 
 if TYPE_CHECKING:
-    from chatbot.api.openai_realtime.service import ServerEvent, _ResponseStatus, _StatusReason
+    from chatbot.api.openai_realtime.service import (
+        ResponseSpeakEvent,
+        ServerEvent,
+        _ResponseStatus,
+        _StatusReason,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +250,11 @@ class ResponseHandler(RealtimeBaseHandler):
                 message="Cannot create response while another response is in progress.",
                 _type="conversation_already_has_active_response",
             )
+        if not st.runtime_config.allows_think:
+            return self.make_error(
+                message="This session does not think. Send response.speak.",
+                _type="thinker_does_not_think",
+            )
 
         out_of_band = is_out_of_band(event.response)
 
@@ -281,6 +291,35 @@ class ResponseHandler(RealtimeBaseHandler):
                 )
             )
         logger.debug("response.create received, LLM generation triggered")
+        return ResponseCreatedEvent(
+            type="response.created",
+            event_id=self._next_event_id(),
+            response=self._build_response(conn_id, "in_progress"),
+        )
+
+    def handle_response_speak(self, conn_id: str, event: ResponseSpeakEvent) -> ServerEvent | None:
+        st = self._state(conn_id)
+        if st.in_response:
+            return self.make_error(
+                message="Cannot create response while another response is in progress.",
+                _type="conversation_already_has_active_response",
+            )
+        st.in_response = True
+        st.response_pending = False
+        st.current_response_params = None
+        st.current_response_id = _generate_id("resp")
+        self._start_item(conn_id)
+        queue = self._queue(conn_id)
+        if queue:
+            queue.put(
+                GenerateResponseRequest(
+                    runtime_config=st.runtime_config,
+                    turn_id=st.speculative_user_turn_id,
+                    turn_revision=st.speculative_user_turn_revision,
+                    speech_stopped_at_s=st.speculative_user_speech_stopped_at_s,
+                    speak_text=event.text,
+                )
+            )
         return ResponseCreatedEvent(
             type="response.created",
             event_id=self._next_event_id(),

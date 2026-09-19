@@ -444,9 +444,9 @@ def verify_api(report: Report) -> None:
         current, detail = describe_code(health)
         report.add("voice runs current code", current, detail)
         report.add(
-            "voice runs research itself",
-            health.get("server_tools") is True,
-            "server_tools=true" if health.get("server_tools") is True else f"server_tools={health.get('server_tools')}",
+            "voice health reports tool flag",
+            "server_tools" in health,
+            f"server_tools={health.get('server_tools')}",
         )
     else:
         report.add("voice /health", False, f"status {code} {health}")

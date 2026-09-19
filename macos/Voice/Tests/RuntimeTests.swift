@@ -18,10 +18,9 @@ struct RuntimeTests {
         let voiceHealth: [String: Any] = ["ready": true, "server_tools": true, "fingerprint": "abc", "stale": false, "source": root]
         assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth, root: root) == .ready)
         assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["ready": false]) { $1 }, root: root) == .starting)
-        // Still loading: the LLM handler has not set server_tools yet.
         assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["ready": false, "server_tools": false]) { $1 }, root: root) == .starting)
         assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["stale": true]) { $1 }, root: root) == .stale)
-        assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["server_tools": false]) { $1 }, root: root) == .stale)
+        assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["server_tools": false]) { $1 }, root: root) == .ready)
         assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["source": "/Users/me/chatbot-refactor"]) { $1 }, root: root) == .stale)
         assert(LocalServiceStarter.voiceStatus(code: 200, json: voiceHealth.merging(["source": root + "/"]) { $1 }, root: root) == .ready)
         // Pre-fingerprint servers answer without the contract; they cannot be current.

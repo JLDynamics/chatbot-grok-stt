@@ -505,6 +505,19 @@ def test_voice_persona_is_sent_as_system_message_and_identity_is_last():
     assert "who are you" in captured["input"][-1]["content"][0]["text"]
 
 
+def test_speak_text_skips_the_api():
+    handler = _make_handler()
+    handler._request = MagicMock(side_effect=AssertionError("HTTP must not run"))
+    handler.client = SimpleNamespace(responses=SimpleNamespace(create=handler._request))
+    req = GenerateResponseRequest(runtime_config=_make_runtime_config(), speak_text="hello there")
+    outputs = list(handler.process(req))
+    assert len(outputs) == 2
+    assert isinstance(outputs[0], LLMResponseChunk)
+    assert outputs[0].text == "hello there"
+    assert isinstance(outputs[1], EndOfResponse)
+    handler._request.assert_not_called()
+
+
 def test_disable_thinking_passes_extra_body():
     handler = _make_handler(disable_thinking=True)
     captured = {}

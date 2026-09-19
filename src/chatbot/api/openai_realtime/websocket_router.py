@@ -20,6 +20,7 @@ from openai.types.realtime import (
 
 from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit, SessionState
 from chatbot.api.openai_realtime.service import (
+    ResponseSpeakEvent,
     build_error_event,
 )
 from chatbot.api.openai_realtime.transports import (
@@ -338,6 +339,12 @@ async def _dispatch_client_event(
             await transport.send_events([err])
 
     elif isinstance(event, SessionUpdateEvent):
+        session_raw = raw.get("session")
+        if isinstance(session_raw, dict) and "thinker" in session_raw:
+            err = service.apply_thinker(session_id, session_raw["thinker"])
+            if err:
+                await transport.send_events([err])
+                return
         err = service.handle_session_update(session_id, event)
         if err:
             await transport.send_events([err])
@@ -351,6 +358,13 @@ async def _dispatch_client_event(
 
     elif isinstance(event, ResponseCreateEvent):
         result = service.handle_response_create(session_id, event)
+        if result:
+            if result.type != "error":
+                unit.cancel_scope.new_response()
+            await transport.send_events([result])
+
+    elif isinstance(event, ResponseSpeakEvent):
+        result = service.handle_response_speak(session_id, event)
         if result:
             if result.type != "error":
                 unit.cancel_scope.new_response()

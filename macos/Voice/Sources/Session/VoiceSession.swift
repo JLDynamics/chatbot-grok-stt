@@ -67,6 +67,7 @@ protocol VoiceBackend: AnyObject {
     func stop() async
     func setMuted(_ muted: Bool)
     func interrupt()
+    func speak(_ text: String)
     /// Saved transcript to replay into the live conversation once the server
     /// acknowledges the session (mirrors the web `_replayHistory`, last 20).
     /// Each entry is (role, text) with role in user/assistant/tool.
@@ -78,6 +79,7 @@ protocol VoiceBackend: AnyObject {
 extension VoiceBackend {
     func setHistory(_ messages: [(role: String, text: String, name: String?)]) {}
     func refreshTools() {}
+    func speak(_ text: String) {}
 }
 
 /// What the interface observes. Owns the transcript and the visible state; the
@@ -140,7 +142,7 @@ final class SessionController: ObservableObject {
         }
     }
 
-    private let backend: VoiceBackend
+    let backend: VoiceBackend
     private let maxTurns = 200
 
     init(backend: VoiceBackend, restoreSavedSession: Bool = true) {
@@ -358,6 +360,10 @@ final class SessionController: ObservableObject {
         isMuted.toggle()
         backend.setMuted(isMuted)
         if isMuted { levels.input = 0 }
+    }
+
+    func speak(_ text: String) {
+        backend.speak(text)
     }
 
     func applyToolSettings() {

@@ -185,6 +185,13 @@ class TestParseClientEvent:
         evt = service.parse_client_event(raw)
         assert isinstance(evt, ResponseCreateEvent)
 
+    def test_parse_valid_response_speak(self, service):
+        from chatbot.api.openai_realtime.service import ResponseSpeakEvent
+
+        evt = service.parse_client_event({"type": "response.speak", "text": "pong"})
+        assert isinstance(evt, ResponseSpeakEvent)
+        assert evt.text == "pong"
+
     def test_parse_valid_response_cancel(self, service):
         raw = {"type": "response.cancel"}
         evt = service.parse_client_event(raw)
@@ -2952,3 +2959,82 @@ class TestChatToolCallTracking:
 
         chat.append_tool_output("call_z", self._fco("call_z"))
         assert chat._has_call_id_in_buffer("call_z")
+
+
+class TestPiThinker:
+    def test_transcription_does_not_enqueue_when_thinker_is_pi(
+        self, service, conn_id, runtime_config, text_prompt_queue
+    ):
+        runtime_config.thinker = "pi"
+        service.dispatch_pipeline_event(conn_id, SpeechStartedEvent())
+        service.dispatch_pipeline_event(conn_id, SpeechStoppedEvent(duration_s=1.0))
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript="hello from the mic"),
+        )
+        assert events[0].transcript == "hello from the mic"
+        assert runtime_config.chat.buffer[-1].content[0].text == "hello from the mic"
+        assert text_prompt_queue.empty()
+        assert service._state(conn_id).response_pending is False
+
+    def test_transcription_enqueues_luna_think_request(
+        self, service, conn_id, runtime_config, text_prompt_queue
+    ):
+        runtime_config.thinker = "luna"
+        service.dispatch_pipeline_event(conn_id, SpeechStartedEvent())
+        service.dispatch_pipeline_event(conn_id, SpeechStoppedEvent(duration_s=1.0))
+        service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript="hello from the mic"),
+        )
+        req = text_prompt_queue.get_nowait()
+        assert isinstance(req, GenerateResponseRequest)
+        assert req.speak_text is None
+
+    def test_response_speak_enqueues_speak_text(self, service, conn_id, text_prompt_queue):
+        event = service.parse_client_event({"type": "response.speak", "text": "pong"})
+        result = service.handle_response_speak(conn_id, event)
+        assert result.type == "response.created"
+        req = text_prompt_queue.get_nowait()
+        assert isinstance(req, GenerateResponseRequest)
+        assert req.speak_text == "pong"
+
+    def test_audio_input_completed_does_not_enqueue_when_thinker_is_pi(
+        self, service, conn_id, runtime_config, text_prompt_queue
+    ):
+        runtime_config.thinker = "pi"
+        service.dispatch_pipeline_event(
+            conn_id,
+            AudioInputCompletedEvent(
+                audio=np.zeros(1600, dtype=np.float32),
+                audio_sample_rate=16000,
+                audio_duration_s=0.1,
+                turn_id="turn_pi",
+                turn_revision=0,
+            ),
+        )
+        assert text_prompt_queue.empty()
+        assert service._state(conn_id).response_pending is False
+        assert service._state(conn_id).input_audio_duration_s == 0.1
+
+    def test_response_create_rejected_when_thinker_is_pi(
+        self, service, conn_id, runtime_config, text_prompt_queue
+    ):
+        runtime_config.thinker = "pi"
+        err = service.handle_response_create(conn_id, ResponseCreateEvent(type="response.create"))
+        assert isinstance(err, RealtimeErrorEvent)
+        assert err.error.type == "thinker_does_not_think"
+        assert text_prompt_queue.empty()
+        assert service._state(conn_id).in_response is False
+
+    def test_apply_thinker_switches_session(self, service, conn_id, runtime_config):
+        assert runtime_config.thinker == "luna"
+        assert runtime_config.allows_think is True
+        err = service.apply_thinker(conn_id, "pi")
+        assert err is None
+        assert runtime_config.thinker == "pi"
+        assert runtime_config.allows_think is False
+        err = service.apply_thinker(conn_id, "nope")
+        assert isinstance(err, RealtimeErrorEvent)
+        assert err.error.type == "invalid_thinker"
+        assert runtime_config.thinker == "pi"

@@ -205,6 +205,12 @@ final class LiveVoiceBackend: VoiceBackend {
         if !closed { onState?(.listening) }
     }
 
+    func speak(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !closed else { return }
+        send(["type": "response.speak", "text": trimmed])
+    }
+
     private func teardown(emitIdle: Bool) async {
         closed = true
         connectionGeneration = UUID()
@@ -576,7 +582,13 @@ final class LiveVoiceBackend: VoiceBackend {
             "instructions": instructions,
             "audio": ["output": ["voice": voice]],
         ]
-        if !tools.isEmpty {
+        let thinker = ProcessInfo.processInfo.environment["VOICE_THINKER"]?.lowercased()
+        if thinker == "luna" || thinker == "pi" {
+            sess["thinker"] = thinker as Any
+        }
+        // Pi owns tools. Sending Luna's client tools would invite a think
+        // follow-up this session must not start.
+        if thinker != "pi", !tools.isEmpty {
             sess["tools"] = tools
             sess["tool_choice"] = "auto"
         }

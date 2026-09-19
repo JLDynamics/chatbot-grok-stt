@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="luxury">
+<head>
+<meta charset="UTF-8">
+<title>Pi Orchestrator Plan — Review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :where(.grid, .flex) > * { min-width: 0; }
+  :where(p, h1, h2, h3, h4, li, dd, blockquote, figcaption, td, th, .badge, .label) { overflow-wrap: anywhere; }
+  :where(img, svg, video, canvas, iframe) { max-width: 100%; height: auto; }
+  body { background: var(--color-base-200); }
+  .evidence { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78em; }
+  .card-note { border-left: 3px solid var(--color-warning); }
+</style>
+</head>
+<body class="min-h-screen bg-base-200 text-base-content">
+<main class="mx-auto max-w-6xl p-6 lg:p-10 space-y-10">
+
+  <!-- HERO -->
+  <section class="hero bg-base-100 rounded-box border border-base-content/10">
+    <div class="hero-content w-full flex-col items-start text-left py-8">
+      <span class="badge badge-primary badge-soft mb-2">Independent review — verified against source, not the memo</span>
+      <h1 class="text-3xl lg:text-4xl font-bold">ORCHESTRATOR-HANDOFF.md: what checks out, what doesn't</h1>
+      <p class="py-2 max-w-3xl text-base-content/80">
+        I re-derived every claim in the handoff from the actual code in
+        <code class="evidence">chatbot-grok-stt-orchestrator</code> and the live
+        <code class="evidence">~/.pi</code> config, instead of trusting the memo. Verdict: the
+        <strong>Pi-side facts are exactly right</strong>, most of the <strong>chatbot-side facts are exactly right</strong>,
+        but the plan rests on <strong>one wrong assumption</strong> that changes how big T1 actually is, plus a few
+        gaps worth deciding before you build.
+      </p>
+      <div class="stats stats-vertical sm:stats-horizontal shadow bg-base-200 w-full mt-2">
+        <div class="stat">
+          <div class="stat-title">Facts checked</div>
+          <div class="stat-value text-primary">27</div>
+          <div class="stat-desc">line-by-line against source</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Confirmed exact</div>
+          <div class="stat-value text-success">24</div>
+          <div class="stat-desc">including exact timeout constants</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Wrong / needs fixing</div>
+          <div class="stat-value text-error">1</div>
+          <div class="stat-desc">load-bearing — see below</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Undecided gaps</div>
+          <div class="stat-value text-success">0</div>
+          <div class="stat-desc">all 3 decided below</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- THE ONE WRONG ASSUMPTION -->
+  <section class="space-y-4">
+    <div class="flex items-center gap-3">
+      <span class="badge badge-error badge-lg">Load-bearing correction</span>
+      <h2 class="text-2xl font-bold">"No Voice.app panel" isn't the same as "no Voice.app"</h2>
+    </div>
+    <p class="max-w-3xl text-base-content/80">
+      T1 says: replace the GUI client with <em>"a headless Pi client on ws://127.0.0.1:8766/v1/realtime."</em>
+      I checked what's actually on the other end of that socket. Pi is a Node CLI agent — it has no microphone
+      capture and no audio playback. Today, <strong>100% of the audio I/O lives in the Swift app</strong>, not the
+      Python server:
+    </p>
+
+    <figure class="bg-base-100 rounded-box border border-base-content/10 p-6">
+      <svg viewBox="0 0 980 360" width="100%" role="img" aria-labelledby="audio-io-title audio-io-desc">
+        <title id="audio-io-title">Where audio capture and playback actually live today</title>
+        <desc id="audio-io-desc">Voice.app's Swift AudioEngine captures the microphone and streams PCM over a WebSocket to the Python realtime server, which runs STT and the LLM and TTS, then streams audio back for Voice.app to play. Pi has no place in this loop today.</desc>
+
+        <!-- lane backgrounds -->
+        <rect id="lane-client" x="20" y="40" width="380" height="280" rx="14" fill="none" stroke="currentColor" stroke-opacity="0.25"/>
+        <rect id="lane-server" x="580" y="40" width="380" height="280" rx="14" fill="none" stroke="currentColor" stroke-opacity="0.25"/>
+
+        <text x="210" y="28" text-anchor="middle" font-size="15" font-weight="700" fill="currentColor">macos/Voice (Swift, client process)</text>
+        <text x="770" y="28" text-anchor="middle" font-size="15" font-weight="700" fill="currentColor">Python realtime server (:8766)</text>
+
+        <!-- client boxes -->
+        <g id="mic-box"><title>AudioEngine.swift: opens AVAudioEngine, captures the mic</title>
+          <rect x="50" y="70" width="320" height="50" rx="8" fill="var(--color-primary)" fill-opacity="0.15" stroke="var(--color-primary)"/>
+          <text x="210" y="100" text-anchor="middle" font-size="13" fill="currentColor">🎙 AVAudioEngine — mic capture (PCM16)</text>
+        </g>
+        <g id="ws-send-box"><title>LiveVoiceBackend.swift sends input_audio_buffer.append</title>
+          <rect x="50" y="140" width="320" height="50" rx="8" fill="var(--color-secondary)" fill-opacity="0.15" stroke="var(--color-secondary)"/>
+          <text x="210" y="170" text-anchor="middle" font-size="13" fill="currentColor">→ input_audio_buffer.append (base64 PCM)</text>
+        </g>
+        <g id="playback-box"><title>AudioEngine.swift plays back TTS audio deltas</title>
+          <rect x="50" y="260" width="320" height="50" rx="8" fill="var(--color-primary)" fill-opacity="0.15" stroke="var(--color-primary)"/>
+          <text x="210" y="290" text-anchor="middle" font-size="13" fill="currentColor">🔊 AVAudioEngine — plays reply audio</text>
+        </g>
+
+        <!-- server boxes -->
+        <g id="stt-box"><title>native_stt_handler.py pipes PCM to macos/SpeechHelper/build/speech-helper over stdin</title>
+          <rect x="610" y="70" width="320" height="50" rx="8" fill="var(--color-info)" fill-opacity="0.15" stroke="var(--color-info)"/>
+          <text x="770" y="100" text-anchor="middle" font-size="13" fill="currentColor">STT: speech-helper subprocess (stdin PCM)</text>
+        </g>
+        <g id="llm-box"><title>responses_api_language_model.py calls OpenRouter, tool loop runs in server_tools.py</title>
+          <rect x="610" y="140" width="320" height="50" rx="8" fill="var(--color-info)" fill-opacity="0.15" stroke="var(--color-info)"/>
+          <text x="770" y="170" text-anchor="middle" font-size="13" fill="currentColor">LLM: Responses API + server-side tools</text>
+        </g>
+        <g id="tts-box"><title>Siri TTS binary synthesizes reply audio, streamed back over the same socket</title>
+          <rect x="610" y="210" width="320" height="50" rx="8" fill="var(--color-info)" fill-opacity="0.15" stroke="var(--color-info)"/>
+          <text x="770" y="240" text-anchor="middle" font-size="13" fill="currentColor">TTS: siri-tts binary → audio deltas</text>
+        </g>
+
+        <!-- arrows -->
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <path d="M210,120 L210,140" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+        <path d="M370,165 C480,165 500,95 610,95" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+        <path d="M770,120 L770,140" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+        <path d="M770,190 L770,210" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+        <path d="M610,235 C500,235 480,285 370,285" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- Pi callout -->
+        <g id="pi-callout"><title>Pi has no audio capture or playback of its own today</title>
+          <rect x="330" y="150" width="150" height="0" opacity="0"/>
+        </g>
+        <rect x="150" y="330" width="680" height="24" rx="6" fill="var(--color-error)" fill-opacity="0.12" stroke="var(--color-error)" stroke-dasharray="4 3"/>
+        <text x="490" y="346" text-anchor="middle" font-size="12" fill="var(--color-error)">Pi (Node CLI) sits nowhere in this loop today — it cannot open this socket and act as the mic/speaker</text>
+      </svg>
+      <figcaption class="text-sm text-base-content/60 mt-3">
+        Source: <span class="evidence">macos/Voice/Sources/Audio/AudioEngine.swift</span>,
+        <span class="evidence">macos/Voice/Sources/Session/LiveVoiceBackend.swift</span> (sends
+        <span class="evidence">input_audio_buffer.append</span>, plays back deltas) ·
+        <span class="evidence">src/chatbot/STT/native_stt_handler.py</span> ("PCM in on stdin, one JSON object out" —
+        the Python side never touches a microphone) ·
+        <span class="evidence">src/chatbot/LLM/server_tools.py</span>, <span class="evidence">run-openrouter.sh</span>.
+      </figcaption>
+    </figure>
+
+    <div class="alert alert-warning alert-soft">
+      <span><strong>What this means for T1:</strong> you can't point Pi at the WebSocket and call it a headless
+      client — Pi has no way to grab the mic or play audio back. What you actually need is a <strong>headless build
+      of the existing Swift app</strong>: keep <code class="evidence">AudioEngine</code>,
+      <code class="evidence">LiveVoiceBackend</code>, <code class="evidence">VoiceRuntime</code>, and
+      <code class="evidence">LocalServiceStarter</code> exactly as they are, and delete the SwiftUI window layer
+      (<code class="evidence">PanelController</code>, <code class="evidence">FloatingPanel</code>,
+      <code class="evidence">ConversationView</code>, <code class="evidence">SessionsView</code>,
+      <code class="evidence">SettingsView</code>, <code class="evidence">OrbView</code>,
+      <code class="evidence">GlobalHotKey</code>). A Pi skill launches that trimmed binary and talks to it over
+      stdin/stdout or a small local socket — transcript out, reply text in — rather than Pi opening the realtime
+      WebSocket itself. This is real, scoped Swift work, not a config change.</span>
+    </div>
+  </section>
+
+  <!-- FACTS TABLE -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold">Fact check, line by line</h2>
+    <p class="text-base-content/80 max-w-3xl">Every "Verified codebase facts" line from the handoff, checked against the file it names.</p>
+
+    <div class="overflow-x-auto rounded-box border border-base-content/10 bg-base-100">
+      <table class="table table-zebra">
+        <thead>
+          <tr><th>Claim</th><th>Status</th><th>Evidence</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>main checkout clean, branch main @ fdb7fe4</td>
+            <td><span class="badge badge-success badge-soft">Confirmed</span></td>
+            <td class="evidence">git log -1 --oneline → fdb7fe4</td>
+          </tr>
+          <tr>
+            <td>Entry: <span class="evidence">chatbot serve</span> → cli.py → s2s_pipeline.run_pipeline_command</td>
+            <td><span class="badge badge-success badge-soft">Confirmed</span></td>
+            <td class="evidence">src/chatbot/cli.py, s2s_pipeline.py:276</td>
+          </tr>
+          <tr>
+            <td>RealtimeServer, ws://0.0.0.0:8766/v1/realtime via uvicorn; router/config/pipeline paths</td>
+            <td><span class="badge badge-success badge-soft">Confirmed</span></td>
+            <td class="evidence">api/openai_realtime/server.py, websocket_router.py, runtime_config.py</td>
+          </tr>
+          <tr>
+            <td>run-browser.sh: ports 8766+7860, PYTHONPATH=&lt;checkout&gt;/src, --reuse-running/--sidecar-only, health endpoints</td>
+            <td><span class="badge badge-success badge-soft">Confirmed</span></td>
+            <td class="evidence">run-browser.sh (verbatim)</td>
+          </tr>
+          <tr>
+            <td>run-openrouter.sh defaults: MODEL/PORT/WEB_PORT/STT_LOCALE/TTS/SIRI_VOICE/SIRI_TTS_BIN, requires OPENROUTER_API_KEY, builds speech-helper if missing</td>
+            <td><span class="badge badge-success badge-soft">Confirmed</span></td>
+            <td class="evidence">run-openrouter.sh (verbatim)</td>
+          </tr>
+          <tr>
+            <td>Sidecar web_app/ :7860, chrome bridge web_app/chrome_article_bridge</td>
+            <td><span class="badge badge-success badge-soft">Confirmed</span></td>
+            <td class="evidence">manifest.json + background.js (422 ln) + content.js (455 ln) — a full extension, not a stub</td>
+          </tr>
+          <tr>
+            <td>"macos/Voice + macos/SpeechHelper to be dropped in new world"</td>
+            <td><span class="badge badge-error badge-soft">Needs correction</span></td>
+            <td>SpeechHelper is a headless stdin/stdout STT process — nothing to drop. Voice.app is the <em>only</em> audio I/O client — see diagram above.</td>
+          </tr>
+          <tr>
+            <td>Barge-in: SpeechStartedEvent/SpeechStoppedEvent + SESSION_END, drain 10s / quarantine 180s</td>
+            <td><span class="badge badge-success badge-soft">Confirmed exact</span></td>
+            <td class="evidence">SESSION_END_DRAIN_TIMEOUT_S = 10.0, SESSION_END_QUARANTINE_TIMEOUT_S = 180.0 in websocket_router.py</td>
+          </tr>
+          <tr>
+            <td>server_tools.py / curl_bash.py / responses_api_language_model.py / ToolActivityEvent path</td>
+            <td><span class="badge badge-success badge-soft">Confirmed</span></td>
+            <td class="evidence">SERVER_TOOL_NAMES = bash, web_search, web_fetch, read_page, read_article, search_chat_history, remember, forget</td>
+          </tr>
+          <tr>
+            <td>Pi binary, settings.json (zenmux / meta/muse-spark-1.3-contributor / xhigh), packages</td>
+            <td><span class="badge badge-success badge-soft">Confirmed exact</span></td>
+            <td class="evidence">~/.pi/agent/settings.json (verbatim)</td>
+          </tr>
+          <tr>
+            <td>pi-crew.json: worker/scout/planner/oracle/code-reviewer/quality-reviewer, all zenmux/muse-spark-1.3-contributor</td>
+            <td><span class="badge badge-success badge-soft">Confirmed exact</span></td>
+            <td class="evidence">~/.pi/agent/pi-crew.json (verbatim)</td>
+          </tr>
+          <tr>
+            <td>Skills agent-note + browser-control; extension herdr-agent-state.ts; sessions dir</td>
+            <td><span class="badge badge-success badge-soft">Confirmed</span></td>
+            <td class="evidence">~/.pi/agent/skills/, extensions/, sessions/ (all present as named)</td>
+          </tr>
+          <tr>
+            <td>pi CLI flags: --provider --model --skill --extension --mode --print --session/--continue/--resume --tools/-t --exclude-tools/-xt --thinking</td>
+            <td><span class="badge badge-success badge-soft">Confirmed</span></td>
+            <td class="evidence">pi --help (all present)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-sm text-base-content/60">Pi-side research is flawless — every single claim checked out exactly. The chatbot-side research is strong too; the one miss is architectural, not a typo (see above).</p>
+  </section>
+
+  <!-- TASK REVIEW -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold">Build tasks, task by task</h2>
+    <div class="grid md:grid-cols-2 gap-5">
+
+      <div class="card card-border bg-base-100 card-note">
+        <div class="card-body">
+          <h3 class="card-title text-base">T1 — /voice skill boots the loop <span class="badge badge-error badge-sm">rework needed</span></h3>
+          <p class="text-sm">Reads as a Pi skill launching a script and talking to a socket. It's actually: trim
+          Voice.app to a headless binary (keep AudioEngine/LiveVoiceBackend/VoiceRuntime/LocalServiceStarter, drop
+          the SwiftUI panel/hotkey layer), then build a small text bridge between it and Pi. That's the majority of
+          the real effort in this whole plan, and the memo doesn't size it as Swift work.</p>
+          <p class="text-sm"><strong>Good news found:</strong> <span class="evidence">LocalServiceStarter.swift</span>
+          already does exactly "on-demand, teardown on quit" — it spawns <span class="evidence">run-browser.sh --reuse-running</span>
+          on launch and calls <span class="evidence">stop()</span> on quit, with health-probe reuse logic. Answers
+          Open Question 1 directly: reuse this, don't rebuild it.</p>
+        </div>
+      </div>
+
+      <div class="card card-border bg-base-100">
+        <div class="card-body">
+          <h3 class="card-title text-base">T2 — Message pipe Pi ↔ Luna <span class="badge badge-success badge-sm">sound</span></h3>
+          <p class="text-sm">Every event/class named (<span class="evidence">TranscriptionCompletedEvent</span>,
+          <span class="evidence">SpeechStartedEvent/StoppedEvent</span>, <span class="evidence">SESSION_END</span>,
+          <span class="evidence">pipeline/control.py</span>) exists exactly as described, timeouts included. Correctly scoped as new plumbing — nothing here can be "reused" as-is since the audio side never previously talked to an external process.</p>
+        </div>
+      </div>
+
+      <div class="card card-border bg-base-100 card-note">
+        <div class="card-body">
+          <h3 class="card-title text-base">T3 — Strip Luna tools <span class="badge badge-warning badge-sm">trade-off not named</span></h3>
+          <p class="text-sm">The tool list is accurate. What's missing: <span class="evidence">server_tools.py</span>'s
+          own docstring explains these tools were deliberately pulled <em>in-process</em> specifically to kill a
+          round trip ("client called sidecar, posted output back, asked for a new response... none of that is
+          necessary"). Routing them to Pi reintroduces exactly that round trip, and T3 ships before T4's async
+          filler exists. Build the ack-filler first, or the voice will visibly get laggier before it gets smarter.</p>
+          <p class="text-sm"><strong>Also unaddressed:</strong> <span class="evidence">screenshot</span> stays
+          client-side today because macOS Screen Recording permission is granted per code identity
+          (<span class="evidence">VoiceTools.swift</span> + ScreenCaptureKit) — Pi's process is a different
+          identity and won't inherit Voice.app's grant automatically. And <span class="evidence">remember/forget</span>
+          currently write Luna's own chat-history store — moving them to Pi means picking one of three memory stores
+          (Luna's, Pi's own sessions, or Jack's private-journal) as the source of truth, not three.</p>
+        </div>
+      </div>
+
+      <div class="card card-border bg-base-100">
+        <div class="card-body">
+          <h3 class="card-title text-base">T4 — Async, never blocks <span class="badge badge-success badge-sm">sound, but sequence-dependent</span></h3>
+          <p class="text-sm">No contradicting evidence — the pipeline already has the cancellation primitives
+          (<span class="evidence">SESSION_END</span>, barge-in flush of both audio and LLM queues) this would hook
+          into. Correctly placed last, but per the T3 note above, consider building its ack-filler mechanism
+          <em>alongside</em> T3 rather than strictly after it.</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- OPEN QUESTIONS -->
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold">Open questions — all decided</h2>
+    <ul class="steps steps-vertical">
+      <li class="step step-success">
+        <div class="text-left ml-3">
+          <p class="font-semibold">1. Always-on vs on-demand? <span class="badge badge-success badge-sm ml-1">Decided: on-demand</span></p>
+          <p class="text-sm text-base-content/70">
+            <strong>Always-on</strong> would mean the voice backend (the program listening on port 8766) starts
+            when your Mac boots and just keeps running forever, whether or not you're using Luna — like a lamp
+            that's always plugged in and switched on, burning power in an empty room.
+            <strong>On-demand</strong> means it only starts the moment you actually launch Voice (or type
+            <span class="evidence">/voice</span> in Pi), and shuts itself down when you quit — like a lamp with a
+            motion sensor: it lights up when you walk in, and turns off when you leave.
+          </p>
+          <p class="text-sm text-base-content/70 mt-1">
+            Good news: <span class="evidence">LocalServiceStarter.swift</span> already does the on-demand version
+            today — it starts <span class="evidence">run-browser.sh --reuse-running</span> when Voice launches and
+            calls <span class="evidence">stop()</span> when it quits. Nothing to build here, just carry this piece
+            into the headless version.
+          </p>
+        </div>
+      </li>
+      <li class="step step-success">
+        <div class="text-left ml-3">
+          <p class="font-semibold">2. Chrome bridge <span class="badge badge-success badge-sm ml-1">Decided: retire it</span></p>
+          <p class="text-sm text-base-content/70">
+            Your call — Pi doesn't need a second, separate way to read web pages. Retire
+            <span class="evidence">web_app/chrome_article_bridge</span> (the custom Chrome extension) and let Pi's
+            own <span class="evidence">browser-tools</span> skill be the one path for anything web-related.
+          </p>
+          <p class="text-sm text-base-content/70 mt-1">
+            One thing worth a 30-second check before deleting the extension: the old bridge's whole point was
+            reading whatever tab you already had open in your normal Chrome window, hands-free, mid-conversation.
+            If Pi's <span class="evidence">browser-tools</span> only knows how to open and drive its own separate
+            browser session (rather than looking at a tab you're already on), that specific "glance at what I'm
+            looking at" trick goes away. Not a blocker — just confirm that's an acceptable trade, or check whether
+            browser-tools can attach to your existing Chrome window.
+          </p>
+        </div>
+      </li>
+      <li class="step step-success">
+        <div class="text-left ml-3">
+          <p class="font-semibold">3. Siri voice + listening language <span class="badge badge-success badge-sm ml-1">Decided: keep as-is</span></p>
+          <p class="text-sm text-base-content/70">
+            As a reminder, these were two separate dials:
+          </p>
+          <ul class="list-disc list-inside text-sm text-base-content/70 mt-1 space-y-1">
+            <li><strong>SIRI_VOICE = en-US-F</strong> — which voice Luna talks back with. "en-US" = English
+            (United States), "F" = a female-sounding voice. This is just which Siri voice reads Pi's answers out
+            loud.</li>
+            <li><strong>STT_LOCALE = en-US</strong> — which language/accent the speech recognizer expects to
+            <em>hear</em> from you. Apple's on-device engine can't auto-detect the language, so it has to be told
+            up front: "listen for American English."</li>
+          </ul>
+          <p class="text-sm text-base-content/70 mt-1">
+            <strong>Decision: leave both untouched for v1.</strong> Luna keeps listening for and speaking American
+            English with the existing voice — no change needed anywhere in <span class="evidence">run-openrouter.sh</span>.
+          </p>
+        </div>
+      </li>
+    </ul>
+    <div class="alert alert-info alert-soft">
+      <span><strong>Unrelated but worth naming:</strong> the parent repo has a <em>different</em>, already-retired
+      "orchestration/" scaffold (removed in commit <span class="evidence">c2f5ffe</span>, "Remove orchestration
+      scaffolding") — that was a coordinator/worker task-delegation setup for coding work (Orca + worktrees), not
+      about Luna's voice architecture. Same word, unrelated system — no conflict with this plan, just flagging so
+      it isn't confused with this "orchestrator" plan.</span>
+    </div>
+  </section>
+
+  <!-- RECOMMENDATION -->
+  <section class="space-y-3">
+    <h2 class="text-2xl font-bold">Bottom line</h2>
+    <div class="card card-border bg-base-100">
+      <div class="card-body">
+        <p>The architecture direction — Pi as the one brain, Luna as dumb ears+mouth, async, writer/actor split — is
+        the right shape and matches the ChatGPT voice pattern well. The research behind it is mostly excellent (the
+        Pi-side facts are perfect). Before building:</p>
+        <ol class="list-decimal list-inside space-y-1 text-sm">
+          <li>Re-scope T1 as "headless Voice.app build," not "Pi client on the websocket" — size it as Swift work.</li>
+          <li>Reuse <span class="evidence">LocalServiceStarter</span>'s existing lifecycle logic instead of rebuilding it.</li>
+          <li>Decide the T3/T4 sequencing explicitly — build the ack-filler alongside the tool strip, not after.</li>
+          <li>Pick one memory store before wiring <span class="evidence">remember/forget</span> to Pi.</li>
+          <li>Chrome bridge: retiring it per your call — just confirm Pi's <span class="evidence">browser-tools</span>
+          can read a tab you already have open, not only drive its own session, before deleting the extension.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>

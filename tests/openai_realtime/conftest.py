@@ -27,7 +27,7 @@ def _session_pipeline() -> RealtimeSessionCreateRequest:
 
 @pytest.fixture
 def runtime_config():
-    cfg = RuntimeConfig()
+    cfg = RuntimeConfig(thinker="luna")
     cfg.session = _session_pipeline()
     return cfg
 

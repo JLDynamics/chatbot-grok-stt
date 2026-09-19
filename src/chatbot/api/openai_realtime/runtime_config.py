@@ -1,3 +1,6 @@
+import os
+from typing import Literal
+
 from openai.types.realtime import RealtimeSessionCreateRequest
 from openai.types.realtime.realtime_audio_config import RealtimeAudioConfig
 from openai.types.realtime.realtime_audio_config_input import RealtimeAudioConfigInput
@@ -5,6 +8,20 @@ from openai.types.realtime.realtime_audio_config_output import RealtimeAudioConf
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from chatbot.LLM.chat import Chat
+
+Thinker = Literal["luna", "pi"]
+
+
+def parse_thinker(value: str | None) -> Thinker:
+    if value is None or value == "":
+        return "luna"
+    if value in ("luna", "pi"):
+        return value
+    raise ValueError(f"VOICE_THINKER must be 'luna' or 'pi', got {value!r}")
+
+
+def _thinker_from_env() -> Thinker:
+    return parse_thinker(os.environ.get("VOICE_THINKER"))
 
 
 def _apply_update(current: BaseModel, update: BaseModel) -> None:
@@ -42,6 +59,12 @@ class RuntimeConfig(BaseModel):
         default_factory=lambda: RealtimeSessionCreateRequest(type="realtime"),
         validate_default=True,
     )
+    thinker: Thinker = Field(default_factory=_thinker_from_env)
+
+    @property
+    def allows_think(self) -> bool:
+        """Whether this session may enqueue an LLM think request."""
+        return self.thinker == "luna"
 
     @field_validator("session", mode="after")
     @classmethod
@@ -54,6 +77,15 @@ class RuntimeConfig(BaseModel):
         if v.audio.output is None:
             v.audio.output = RealtimeAudioConfigOutput()
         return v
+
+    @field_validator("thinker", mode="before")
+    @classmethod
+    def _parse_thinker(cls, value: object) -> Thinker:
+        if value is None:
+            return _thinker_from_env()
+        if not isinstance(value, str):
+            raise TypeError(f"thinker must be a string, got {type(value).__name__}")
+        return parse_thinker(value)
 
     @property
     def interrupt_response_enabled(self) -> bool:

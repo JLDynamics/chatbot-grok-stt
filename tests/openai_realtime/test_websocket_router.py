@@ -271,12 +271,14 @@ class TestClientEventDispatch:
                         "session": {
                             "type": "realtime",
                             "audio": {"output": {"voice": "coral"}},
+                            "thinker": "pi",
                         },
                     }
                 )
                 time.sleep(0.1)
                 cid = service.connection_ids[0]
                 assert service._state(cid).runtime_config.session.audio.output.voice == "coral"
+                assert service._state(cid).runtime_config.thinker == "pi"
 
     def test_session_update_receives_session_updated_confirmation(self, setup):
         """The OpenAI Realtime protocol requires a session.updated reply to

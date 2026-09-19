@@ -30,7 +30,7 @@ CURRENT = {"ready": True, "server_tools": True, "fingerprint": "abc", "stale": F
         ({**CURRENT, "ready": False}, "current"),  # still loading models, but current code
         ({**CURRENT, "ready": False, "server_tools": False}, "current"),  # LLM handler not set up yet
         ({**CURRENT, "stale": True}, "stale"),
-        ({**CURRENT, "server_tools": False}, "stale"),  # ready, but cannot research
+        ({**CURRENT, "server_tools": False}, "current"),  # ready without Luna tools is still this checkout
         ({**CURRENT, "source": "/Users/me/chatbot-refactor"}, "foreign"),
         ({"status": "ok", "ready": True}, "unknown"),  # pre-fingerprint backend
         ({"chatbotUrl": "ws://x", "search": True}, "unknown"),  # pre-fingerprint sidecar

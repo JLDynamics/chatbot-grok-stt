@@ -57,6 +57,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
+        if CommandLine.arguments.contains("--headless") {
+            setenv("VOICE_THINKER", "pi", 1)
+            NSApp.setActivationPolicy(.accessory)
+            HeadlessBridge.shared.attach(session: session)
+            if !session.isLive { session.toggleSession() }
+            return
+        }
         NSApp.setActivationPolicy(.regular)
 
         let root = RootView(

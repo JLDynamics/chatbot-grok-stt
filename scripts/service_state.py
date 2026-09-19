@@ -7,7 +7,7 @@ Prints one word:
 
   current      the service runs CHECKOUT_ROOT's code as it is on disk now
   stale        it runs CHECKOUT_ROOT's code, but the files have changed since
-               it started, or it lacks the server-side research tools
+               it started
   foreign      it runs from another checkout or worktree
   unknown      it answered without a fingerprint (predates this contract)
   unreachable  nothing answered within the timeout
@@ -30,12 +30,6 @@ def classify(info: Any, root: str) -> str:
     if info.get("source") != root:
         return "foreign"
     if info.get("stale"):
-        return "stale"
-    # HTTP binds before handler threads finish setup. The LLM handler is what
-    # sets server_tools, so a still-loading backend reports false even though
-    # it will research once ready. Only a *ready* backend without tools is
-    # the old "search never starts" mismatch.
-    if info.get("ready") is True and info.get("server_tools") is False:
         return "stale"
     return "current"
 

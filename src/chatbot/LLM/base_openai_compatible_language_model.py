@@ -846,6 +846,24 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         turn_id = request.turn_id
         turn_revision = request.turn_revision
         speech_stopped_at_s = request.speech_stopped_at_s
+        if request.speak_text is not None:
+            if request.speak_text:
+                yield LLMResponseChunk(
+                    text=request.speak_text,
+                    language_code=request.language_code,
+                    runtime_config=runtime_config,
+                    response=response,
+                    turn_id=turn_id,
+                    turn_revision=turn_revision,
+                    speech_stopped_at_s=speech_stopped_at_s,
+                    cancel_generation=self.cancel_scope.generation if self.cancel_scope else None,
+                )
+            yield EndOfResponse(
+                turn_id=turn_id,
+                turn_revision=turn_revision,
+                cancel_generation=self.cancel_scope.generation if self.cancel_scope else None,
+            )
+            return
         if not self._turn_output_allowed(turn_id, turn_revision):
             logger.info("Skipping stale LLM request for turn=%s rev=%s", turn_id, turn_revision)
             yield EndOfResponse(

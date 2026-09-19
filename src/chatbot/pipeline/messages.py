@@ -174,6 +174,7 @@ class GenerateResponseRequest(PipelineMessage):
     tag: Literal["generate_response"] = "generate_response"
     runtime_config: RuntimeConfig
     response: RealtimeResponseCreateParams | None = None
+    speak_text: str | None = None
     audio: np.ndarray | None = None
     audio_sample_rate: int = 16000
     language_code: Optional[str] = None

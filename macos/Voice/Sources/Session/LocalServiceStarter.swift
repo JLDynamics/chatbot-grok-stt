@@ -49,8 +49,8 @@ final class LocalServiceStarter {
         /// Current code, still loading.
         case starting
         /// Answering, but not something this app can use: code on disk has
-        /// changed since it started, it belongs to another checkout, it
-        /// predates the health contract, or it cannot run the research tools.
+        /// changed since it started, it belongs to another checkout, or it
+        /// predates the health contract.
         case stale
         /// Nothing answered.
         case unreachable
@@ -89,10 +89,6 @@ final class LocalServiceStarter {
         guard code == 200, let json, json["ready"] != nil else { return .stale }
         guard runsCurrentCode(json, root: root) else { return .stale }
         let ready = json["ready"] as? Bool == true
-        // HTTP binds before handler threads finish setup. server_tools is
-        // only false-as-a-problem once models are loaded: a still-starting
-        // backend has not constructed the LLM handler yet.
-        if ready && json["server_tools"] as? Bool != true { return .stale }
         return ready ? .ready : .starting
     }
 

@@ -43,7 +43,7 @@ from chatbot.api.openai_realtime.handlers import (
     ResponseHandler,
     SessionHandler,
 )
-from chatbot.api.openai_realtime.runtime_config import RuntimeConfig
+from chatbot.api.openai_realtime.runtime_config import RuntimeConfig, parse_thinker
 from chatbot.api.openai_realtime.service_metrics import GlobalUsageMetrics, UsageMetrics
 from chatbot.LLM.chat import Chat
 from chatbot.LLM.chat_factories import make_user_message
@@ -66,6 +66,12 @@ from chatbot.utils.utils import _generate_id
 
 logger = logging.getLogger(__name__)
 
+
+class ResponseSpeakEvent(BaseModel):
+    type: Literal["response.speak"] = "response.speak"
+    text: str
+
+
 PIPELINE_SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 512
 BYTES_PER_SAMPLE = 2
@@ -81,6 +87,7 @@ _EVENT_TYPE_TO_MODEL: dict[str, type[BaseModel]] = {
     "session.update": SessionUpdateEvent,
     "conversation.item.create": ConversationItemCreateEvent,
     "response.create": ResponseCreateEvent,
+    "response.speak": ResponseSpeakEvent,
     "response.cancel": ResponseCancelEvent,
 }
 
@@ -91,6 +98,7 @@ ClientEvent = Union[
     SessionUpdateEvent,
     ConversationItemCreateEvent,
     ResponseCreateEvent,
+    ResponseSpeakEvent,
     ResponseCancelEvent,
 ]
 
@@ -273,6 +281,16 @@ class RealtimeService:
     def handle_session_update(self, conn_id: str, event: SessionUpdateEvent) -> Optional[RealtimeErrorEvent]:
         return self.session.handle_session_update(conn_id, event)
 
+    def apply_thinker(self, conn_id: str, value: object) -> RealtimeErrorEvent | None:
+        """Set the per-session thinker from a client session.update field."""
+        if not isinstance(value, str):
+            return self.make_error("thinker must be 'luna' or 'pi'", "invalid_thinker")
+        try:
+            self._state(conn_id).runtime_config.thinker = parse_thinker(value)
+        except ValueError as exc:
+            return self.make_error(str(exc), "invalid_thinker")
+        return None
+
     def handle_audio_append(self, conn_id: str, event: InputAudioBufferAppendEvent) -> list[bytes]:
         return self.audio.handle_audio_append(conn_id, event)
 
@@ -293,6 +311,9 @@ class RealtimeService:
 
     def handle_response_create(self, conn_id: str, event: ResponseCreateEvent) -> ServerEvent | None:
         return self.response.handle_response_create(conn_id, event)
+
+    def handle_response_speak(self, conn_id: str, event: ResponseSpeakEvent) -> ServerEvent | None:
+        return self.response.handle_response_speak(conn_id, event)
 
     def handle_response_cancel(self, conn_id: str) -> list[ServerEvent]:
         return self.response.handle_response_cancel(conn_id)
@@ -449,6 +470,8 @@ class RealtimeService:
 
         queue = self.text_prompt_queue
         if response_transcript:
+            if not cfg.allows_think:
+                return events
             if queue:
                 st.response_pending = True
                 queue.put(
@@ -489,7 +512,7 @@ class RealtimeService:
             st.speculative_user_speech_stopped_at_s = event.speech_stopped_at_s
 
         queue = self.text_prompt_queue
-        if queue:
+        if queue and st.runtime_config.allows_think:
             st.response_pending = True
             queue.put(
                 GenerateResponseRequest(
